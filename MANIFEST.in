@@ -1,5 +1,7 @@
 include .env.example
 include .pre-commit-config.yaml
+include .python-version
+include uv.lock
 include CHANGELOG.md
 include conftest.py
 include LICENSE

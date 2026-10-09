@@ -5,6 +5,7 @@
 #   lint       — 与本地提交共用 pre-commit 配置
 #   audit      — Portable Windows runtime lock pip-audit (阻断式)
 #   test       — Linux/Windows 多 Python → pytest + coverage (≥50%)
+#   uv-test    — Linux/Windows 锁文件、源码安装和原生扩展验证
 #   test-macos — main 推送时运行 macOS py3.12
 #   portable   — Payload 构建 + Portable 全部测试
 #   coverage   — 汇总多矩阵覆盖率报告
@@ -163,6 +164,59 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  uv-test:
+    name: "uv / ${{ matrix.os }} / py3.12 / ${{ matrix.mode }}"
+    needs: lint
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            mode: native
+            skip-extensions: "0"
+          - os: windows-latest
+            mode: native
+            skip-extensions: "0"
+          - os: ubuntu-latest
+            mode: python
+            skip-extensions: "1"
+    env:
+      ASR_NO_MODEL_DOWNLOAD: "1"
+      BLC_SKIP_C_EXTENSIONS: ${{ matrix.skip-extensions }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.18"
+          enable-cache: true
+      - name: Check dependency lock
+        run: uv lock --check
+      - name: Install runtime without development tools
+        run: uv sync --locked --no-dev --extra web
+      - name: Verify installed command
+        run: uv run --locked --no-dev --extra web blc --help
+      - name: Install default development environment
+        run: uv sync --locked
+      - name: Require native extensions
+        if: matrix.mode == 'native'
+        run: uv run --locked python -c "from app.accelerators import _c_speedups, _cython_speedups"
+      - name: Verify Python fallback installation
+        if: matrix.mode == 'python'
+        run: |
+          uv run --locked python -c "import importlib.util; from app.accelerators.dispatcher import get_backend; assert importlib.util.find_spec('app.accelerators._c_speedups') is None; assert importlib.util.find_spec('app.accelerators._cython_speedups') is None; assert get_backend() == 'python'"
+      - name: Run focused tests
+        shell: bash
+        run: |
+          uv run --locked python -m pytest tests/unit/test_native_parity.py tests/unit/test_accelerator_fallback_parity.py tests/unit/test_quality_gate.py --timeout=120 --fail-on-skip
+
 # macOS runner 明显慢于 Linux/Windows，仅在 main 分支推送时执行。
 # 全量覆盖测试曾在 99% 进度触及 45 分钟上限；步骤预算扩为 90 分钟。
 # job 总预算 120 分钟，为依赖安装及覆盖率上传额外保留 30 分钟。
@@ -317,7 +371,7 @@ jobs:
 
   ci-status:
     name: "CI status"
-    needs: [lint, audit, test, test-macos, portable-test, coverage-summary]
+    needs: [lint, audit, test, uv-test, test-macos, portable-test, coverage-summary]
     if: always() && !cancelled() && github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
@@ -326,12 +380,13 @@ jobs:
           LINT_RESULT: ${{ needs.lint.result }}
           AUDIT_RESULT: ${{ needs.audit.result }}
           TEST_RESULT: ${{ needs.test.result }}
+          UV_RESULT: ${{ needs.uv-test.result }}
           PORTABLE_RESULT: ${{ needs.portable-test.result }}
           COVERAGE_RESULT: ${{ needs.coverage-summary.result }}
           MACOS_RESULT: ${{ needs.test-macos.result }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          for result in "$LINT_RESULT" "$AUDIT_RESULT" "$TEST_RESULT" "$PORTABLE_RESULT" "$COVERAGE_RESULT"; do
+          for result in "$LINT_RESULT" "$AUDIT_RESULT" "$TEST_RESULT" "$UV_RESULT" "$PORTABLE_RESULT" "$COVERAGE_RESULT"; do
             if [ "$result" != "success" ]; then
               echo "::error::A required CI job finished with $result"
               exit 1

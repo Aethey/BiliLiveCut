@@ -4,9 +4,38 @@
 
 ## 开发环境
 
-使用 Python 3.11/3.12，准备 FFmpeg 和 Node.js 22 或更新版本。在隔离虚拟环境中安装开发依赖：
+使用 Python 3.11/3.12，准备 FFmpeg 和 Node.js 22 或更新版本。uv 和传统 venv + pip 均受支持，共用 `pyproject.toml` 中的依赖与 extras。
+
+### uv
+
+先按 [uv 官方说明](https://docs.astral.sh/uv/getting-started/installation/)安装 uv，当前 CI 验证版本为 `0.12.18`。在项目根目录执行：
+
+```bash
+uv sync --locked
+uv run --locked pre-commit install
+uv run --locked python -m pytest tests/unit/test_native_parity.py
+uv run --locked pre-commit run --all-files --show-diff-on-failure
+```
+
+`.python-version` 默认选择 Python 3.12，不改变包的 `>=3.11` 要求；需要其他版本可用 `uv sync --locked --python 3.11`。`uv sync` 创建 `.venv` 并以 editable 方式安装项目，无需手动激活环境。[默认 dev 依赖组](https://docs.astral.sh/uv/concepts/projects/dependencies/#default-groups)复用原有 `dev`、`web` extras，并安装直接编译扩展所需的 setuptools，不默认安装 ASR/LLM 或下载模型。
+
+需要完整业务依赖时，同步与运行都传入所需 extras：
+
+```bash
+uv sync --locked --extra asr-all --extra llm
+uv run --locked --extra asr-all --extra llm blc serve
+```
+
+`uv run` 会同步环境，省略 extras 可能移除此前安装的可选依赖；已同步后可用 `uv run --no-sync ...` 运行当前环境。纯运行环境使用 `uv sync --locked --no-dev --extra web`，对应命令为 `uv run --locked --no-dev --extra web blc ...`。
+
+`uv.lock` 纳入版本管理，锁定源码环境的依赖；Portable 的 Windows ABI 锁仍按原流程维护。修改依赖后执行 `uv lock` 并一起提交 `pyproject.toml` 和 `uv.lock`；有意升级单个包时用 `uv lock --upgrade-package 包名`。[`--locked` 会拒绝过期锁文件](https://docs.astral.sh/uv/concepts/projects/sync/#checking-the-lockfile)，CI 在 Linux/Windows 验证锁文件、运行与开发安装、原生扩展导入和目标测试。原有 pip 多 Python 测试矩阵继续运行。
+
+### venv + pip
+
+先用 `python -m venv .venv` 创建环境，Linux/macOS 执行 `source .venv/bin/activate`，PowerShell 执行 `.\.venv\Scripts\Activate.ps1`，再安装开发依赖：
 
 ```powershell
+python -m pip install "setuptools>=77"
 pip install -e ".[dev,web,asr-all,llm]"
 python -m pre_commit install
 ```
@@ -23,7 +52,24 @@ Portable 依赖锁固定 `hydra-core==1.3.7` 和 `urllib3==2.8.0`，对应 [Hydr
 
 Windows 的 `FFMPEG_PATH`、`FFPROBE_PATH` 应指向真实二进制文件，避免指向 Chocolatey 的 `bin` 包装程序。包装进程可能在停止时留下仍持有管道的 FFmpeg 子进程。Windows CI 共用 `scripts/download_release_ffmpeg.py` 的 Release 下载入口，沿用 BtbN/Gyan 来源、每源最多三次尝试及 ZIP 完整性校验，绕开 Chocolatey 服务超时后返回成功但未安装文件的问题。通过 `--github-env` 指定 Actions 环境文件时，脚本先执行两个二进制的版本探测并确认 `subtitles`、`drawtext` 滤镜，全部成功后才写入真实绝对路径，并把已验证目录加入后续步骤的 PATH；失败保留具体原因并返回非零状态。Portable Full 已使用随包二进制的绝对路径。
 
+### 原生扩展构建与安装排错
+
 Python 镜像配置见[使用指南](usage.md#python-依赖源)。普通源码运行缺少原生扩展时可按函数回退到 Python 参考实现；完整验证和 Portable 发行需要对应 ABI 的 C、Cython、Rust 三个扩展。Windows C/Cython 构建需要可用的 MSVC 工具链，Rust 需要 Rust 工具链。
+
+默认安装编译 C/Cython；uv 与 pip 使用相同构建后端。Ubuntu 使用系统 Python 3.12 时，`Python.h: No such file or directory` 表示缺少开发头文件，可执行 `sudo apt-get install build-essential python3.12-dev`（其他 Python 版本安装对应的开发包）。uv 也可管理 Python：`uv python install 3.12` 后使用 `uv sync --locked --managed-python`，仍需 C 编译器；若已有使用系统 Python 的 `.venv`，应先退出并将该环境移走，再创建新环境。
+
+不需要原生加速时，可以显式跳过扩展安装：
+
+```bash
+# Linux/macOS
+BLC_SKIP_C_EXTENSIONS=1 uv sync --locked
+# pip 同样支持此开关
+BLC_SKIP_C_EXTENSIONS=1 python -m pip install -e ".[dev,web]"
+```
+
+PowerShell 对应执行 `$env:BLC_SKIP_C_EXTENSIONS = "1"` 后再安装。uv 运行命令时保持该环境变量；恢复原生构建先取消它（PowerShell：`Remove-Item Env:BLC_SKIP_C_EXTENSIONS`），再执行 `uv sync --locked --reinstall-package bili-live-cut`。uv 构建缓存跟踪此开关及 C/Cython 源文件，切换模式后不会沿用不匹配的构建缓存；本地已生成的扩展文件不会因此删除。纯 Python 安装不代表完整原生发行验证通过。
+
+使用 uv 编译时，在下列 Python 命令前加 `uv run --locked`：
 
 ```powershell
 python setup.py build_ext --inplace

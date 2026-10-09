@@ -78,6 +78,21 @@ dev = [
 # 安装后可直接用 `blc` 命令调用 CLI。
 blc = "app.cli:app"
 
+[dependency-groups]
+# uv 默认安装开发环境；复用 pip extras，避免维护两份依赖清单。
+# setuptools 供显式的 setup.py build_ext 命令使用（隔离构建另有 build-system）。
+dev = ["bili-live-cut[dev,web]", "setuptools>=77"]
+
+[tool.uv]
+# 原生源文件或跳过开关变化后重新构建，避免复用不匹配的 editable wheel。
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "setup.py" },
+    { file = "tools/native/c/*.c" },
+    { file = "tools/native/cython/*.pyx" },
+    { env = "BLC_SKIP_C_EXTENSIONS" },
+]
+
 [build-system]
 requires = ["setuptools>=77", "Cython==3.2.9"]
 build-backend = "setuptools.build_meta"
