@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import argparse
+import os
 import subprocess
 import sys
 import tempfile
@@ -26,17 +28,18 @@ YELLOW = "\033[33m"
 RESET = "\033[0m"
 
 
-def _run(cmd: list[str], cwd: str | None = None, desc: str = "") -> bool:
+def _run(cmd: list[str], cwd: str | None = None, desc: str = "", env: dict[str, str] | None = None) -> bool:
     """Run a command and report success/failure.
 
     :param cmd: Command and args list.
     :param cwd: Working directory (default: REPO_ROOT).
     :param desc: Human-readable description.
+    :param env: Optional child-process environment.
     :returns: True if command succeeded (exit 0).
     """
     print(f"\n{YELLOW}[{desc}]{RESET}")
     print(f"  $ {' '.join(cmd)}")
-    result = subprocess.run(cmd, cwd=cwd or str(REPO_ROOT))
+    result = subprocess.run(cmd, cwd=cwd or str(REPO_ROOT), env=env)
     if result.returncode == 0:
         print(f"{GREEN}  PASS{RESET}")
         return True
@@ -65,13 +68,16 @@ def _pytest(path: str, extra_args: list[str] | None = None, desc: str = "") -> b
             path,
             "-v",
             "--timeout=120",
+            "--fail-on-skip",
             f"--basetemp={run_root / 'pytest'}",
             "-o",
             f"cache_dir={run_root / 'cache'}",
         ]
         if extra_args:
             cmd.extend(extra_args)
-        return _run(cmd, desc=desc or f"pytest {path}")
+        env = os.environ.copy()
+        env.setdefault("ASR_NO_MODEL_DOWNLOAD", "1")
+        return _run(cmd, desc=desc or f"pytest {path}", env=env)
 
 
 def main() -> int:
@@ -79,9 +85,11 @@ def main() -> int:
 
     :returns: 0 if all checks pass, 1 if any fail.
     """
-    skip_portable = "--skip-portable" in sys.argv
-    skip_coverage = "--skip-coverage" in sys.argv
-    skip_audit = "--skip-audit" in sys.argv
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--skip-portable", action="store_true", help="Run a partial gate without Windows Payload/tests")
+    parser.add_argument("--skip-coverage", action="store_true", help="Run a partial gate without coverage measurement")
+    parser.add_argument("--skip-audit", action="store_true", help="Run a partial gate without dependency auditing")
+    args = parser.parse_args()
 
     print("=" * 60)
     print("  BiliLiveCut Local CI Gate")
@@ -92,57 +100,47 @@ def main() -> int:
 
     all_ok = True
 
-    # ── 1. Ruff check ──
+    # 同一配置覆盖本地提交和 CI 的全部轻量检查。
     all_ok &= _run(
-        [sys.executable, "scripts/run_ruff.py", "check"],
-        desc="1/8 ruff check",
+        [sys.executable, "-m", "pre_commit", "run", "--all-files", "--show-diff-on-failure"],
+        desc="pre-commit quality checks",
     )
 
-    # ── 2. Ruff format ──
-    all_ok &= _run(
-        [sys.executable, "scripts/run_ruff.py", "format"],
-        desc="2/8 ruff format check",
-    )
-
-    # ── 3. Version consistency ──
-    all_ok &= _run(
-        [sys.executable, "scripts/check_version_consistency.py"],
-        desc="3/8 version consistency",
-    )
-
-    # ── 4. Release audit ──
-    all_ok &= _run(
-        [sys.executable, "scripts/release_audit.py", "--quick"],
-        desc="4/8 release audit",
-    )
-
-    # ── 5. Portable runtime lock audit ──
-    if not skip_audit:
+    # 联网依赖审计。
+    if not args.skip_audit:
         all_ok &= _run(
             [sys.executable, "scripts/audit_portable_runtime_locks.py"],
-            desc="5/8 Portable runtime lock audit",
+            desc="Portable runtime lock audit",
         )
 
-    # ── 6. Main tests + coverage ──
+    # 主测试与可选的覆盖率测量。
     cov_args = ["--cov=app", "--cov-report=term-missing", "--cov-fail-under=50"]
-    if skip_coverage:
+    if args.skip_coverage:
         cov_args = []
     all_ok &= _pytest(
         "tests/",
         extra_args=cov_args,
-        desc="6/8 pytest tests/ (coverage >= 50%)",
+        desc="pytest tests/" if args.skip_coverage else "pytest tests/ (coverage >= 50%)",
     )
 
-    # ── 7. Portable tests ──
-    if not skip_portable:
-        all_ok &= _pytest(
-            "packaging/portable/tests/",
-            desc="7/8 pytest packaging/portable/tests/",
+    # 先构建再验收 Portable。
+    if not args.skip_portable:
+        payload_built = _run(
+            [sys.executable, "packaging/portable/build_payload.py"],
+            desc="Build Windows Payload before Portable tests",
         )
+        all_ok &= payload_built
+        if payload_built:
+            all_ok &= _pytest("packaging/portable/tests/", desc="pytest packaging/portable/tests/")
+        else:
+            print(f"{RED}  Payload build failed; refusing to test stale artifacts{RESET}")
 
-    # ── 8. Final judgment ──
+    # 部分检查不能声明完整 CI 通过。
     print(f"\n{'=' * 60}")
-    if all_ok:
+    partial = args.skip_portable or args.skip_coverage or args.skip_audit
+    if all_ok and partial:
+        print(f"{YELLOW}  SELECTED CHECKS PASSED — full CI gate not evaluated{RESET}")
+    elif all_ok:
         print(f"{GREEN}  ALL CHECKS PASSED — CI gate open{RESET}")
     else:
         print(f"{RED}  SOME CHECKS FAILED — CI gate closed{RESET}")

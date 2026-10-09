@@ -4,11 +4,18 @@
 
 ## 开发环境
 
-使用 Python 3.11/3.12，准备 FFmpeg 和 Node.js。在隔离虚拟环境中安装开发依赖：
+使用 Python 3.11/3.12，准备 FFmpeg 和 Node.js 22 或更新版本。在隔离虚拟环境中安装开发依赖：
 
 ```powershell
 pip install -e ".[dev,web,asr-all,llm]"
+python -m pre_commit install
 ```
+
+`pre-commit install` 为当前 checkout 安装提交钩子；每次克隆后执行一次。首次运行需要联网准备隔离的 hook 环境，之后复用缓存。项目的 Python 检查脚本不需要在 hook 环境安装应用或下载模型；前端检查使用 PATH 中的 Node.js。
+
+提交时检查暂存文件的 Ruff lint/格式、JSON/YAML/TOML、冲突标记和新增文件大小（上限 1 MiB），并运行项目版本一致性、changelog 归档和快速发行契约审计。Web 或前端检查脚本变更时，还检查 JavaScript 文件、模板内联脚本的语法，以及仪表盘、设置中心、录播导入三组交互。Ruff 会自动修复可修复的问题；修改后的文件需要检查并重新暂存后再提交。
+
+Ruff 与 pre-commit 的版本固定在项目配置中；更新 Ruff 时同步修改 `pyproject.toml` 和 `.pre-commit-config.yaml`。更新 pre-commit 时同步修改开发依赖、配置最低版本和 CI 安装版本。新增超过上限且确需入库的文件应明确调整 hook 配置；录像、模型及发行产物应继续放在存储或构建目录中。
 
 源码依赖要求 `sqlmodel>=0.0.22,<0.0.45`，Portable 完整锁继续使用 `0.0.39`。当前 Schema 与 API 使用既有无时区 UTC 时间约定；[SQLModel 0.0.45 起改变默认日期时间行为](https://sqlmodel.tiangolo.com/advanced/datetime/#upgrade-existing-applications)，直接升级会影响入库、查询、时间比较与响应格式。依赖上限用于保持现有数据契约，不触发数据库迁移。
 
@@ -35,13 +42,12 @@ CI 使用 `pip install -e ".[dev,web]"` 安装依赖。`dev` 复用 `asr-whisper
 
 ```powershell
 python -m pytest
-python scripts/run_ruff.py check
-python scripts/run_ruff.py format
-python scripts/check_version_consistency.py
-python scripts/check_changelog_archive.py
-node scripts/check_frontend_interactions.mjs
-node scripts/check_configuration_interactions.mjs
+python -m pre_commit run --all-files --show-diff-on-failure
 ```
+
+提交钩子、CI 的 lint job 和发布前检查共用 `.pre-commit-config.yaml`。只验证前端可执行 `python scripts/check_frontend.py`。完整测试、覆盖率、联网依赖审计和 Portable 构建由 CI/发布门禁执行，不放进每次提交。文档包含版本信息并参与源码发行，因此 Markdown 修改也触发 CI 的检查。
+
+CI 的每周定时任务只运行依赖审计，避免无源码变更时重复执行整套测试与 Portable 构建。各矩阵覆盖率文件按目录保存；`CI status` 汇总所有适用 job 的结果，可作为分支保护的必需检查。是否启用分支保护由仓库管理员配置。
 
 GitHub Actions 的 macOS 全量测试仅在 `main` 推送时运行。覆盖率测试步骤上限为 90 分钟，整个 job 上限为 120 分钟，为依赖安装和报告上传保留余量。超时配置更新仅对使用新提交的运行生效，重跑旧提交仍使用其原有时限。
 
@@ -57,6 +63,8 @@ python scripts/ci_gate.py
 # 发布前门禁：拒绝测试跳过、无效审计结果及不完整或不可复现的产物
 python scripts/release_gate.py
 ```
+
+`dev` extra 包含门禁使用的 `pytest-timeout`。本地 CI 门禁和发布门禁均拒绝测试跳过；本地 CI 门禁先构建 Windows Payload，再执行 Portable 测试，构建失败时拒绝复用旧产物。完整 Portable 检查需要 Windows 和相应原生构建工具；其他平台可运行 `python scripts/ci_gate.py --skip-portable`。所有 `--skip-*` 模式都会明确标记为部分检查通过，不代表完整 CI 门禁通过。
 
 真实高光插件联调需要单独提供插件仓库，命令见[使用指南](usage.md#可插拔高光评分)，不属于宿主默认测试集。
 

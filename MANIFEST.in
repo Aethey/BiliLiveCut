@@ -1,4 +1,5 @@
 include .env.example
+include .pre-commit-config.yaml
 include CHANGELOG.md
 include conftest.py
 include LICENSE

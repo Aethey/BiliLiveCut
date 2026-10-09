@@ -5,7 +5,7 @@
   1. release_audit (完整审计)
   2. version_consistency (版本一致性)
   3. Portable runtime lock audit
-  4. Ruff lint + format check
+  4. 共用 pre-commit 质量检查
   5. Payload 构建 + Manifest/ZIP 契约验证
   6. Portable production provisioning 编排测试
   7. 主线全部测试
@@ -94,9 +94,11 @@ def main() -> int:  # noqa: D103
         desc="3/9 Portable runtime lock audit",
     )
 
-    # ── Step 4: Ruff ──
-    all_ok &= _run([sys.executable, "scripts/run_ruff.py", "check"], desc="4/9 ruff check")
-    all_ok &= _run([sys.executable, "scripts/run_ruff.py", "format"], desc="4/9 ruff format check")
+    # ── Step 4: 与提交及 CI 共用轻量质量检查 ──
+    all_ok &= _run(
+        [sys.executable, "-m", "pre_commit", "run", "--all-files", "--show-diff-on-failure"],
+        desc="4/9 pre-commit quality checks",
+    )
 
     # ── Step 5: Payload 构建 + 契约验证 ──
     payload_built = _run([sys.executable, "packaging/portable/build_payload.py"], desc="5/9 build_payload")

@@ -109,14 +109,12 @@ jobs:
             --trusted-host mirrors.aliyun.com \
             --trusted-host pypi.tuna.tsinghua.edu.cn
           python setup.py build_ext --inplace
-      - name: Ruff lint
-        run: python scripts/run_ruff.py check
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
 
-      - name: Ruff format check
-        run: python scripts/run_ruff.py format
-
-      - name: Version consistency
-        run: python scripts/check_version_consistency.py
+      - name: Shared pre-commit checks
+        run: python -m pre_commit run --all-files --show-diff-on-failure
 
       - name: Release audit (full)
         run: python scripts/release_audit.py

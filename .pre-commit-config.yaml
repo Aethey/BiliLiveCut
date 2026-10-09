@@ -1,0 +1,49 @@
+minimum_pre_commit_version: "4.6.2"
+default_stages: [pre-commit]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.10
+    hooks:
+      - id: ruff-check
+        args: [--fix, --no-respect-gitignore]
+      - id: ruff-format
+        types_or: [python, pyi]
+        args: [--no-respect-gitignore]
+
+  - repo: local
+    hooks:
+      - id: version-consistency
+        name: Check project version consistency
+        entry: python scripts/check_version_consistency.py
+        language: python
+        pass_filenames: false
+        always_run: true
+      - id: changelog-archive
+        name: Check changelog archive
+        entry: python scripts/check_changelog_archive.py
+        language: python
+        pass_filenames: false
+        always_run: true
+      - id: release-audit
+        name: Audit release contracts (quick)
+        entry: python scripts/release_audit.py --quick
+        language: python
+        pass_filenames: false
+        always_run: true
+      - id: frontend-checks
+        name: Check JavaScript syntax and frontend interactions
+        entry: python scripts/check_frontend.py
+        language: python
+        pass_filenames: false
+        files: ^(app/web/|scripts/check_(frontend|configuration_interactions|recording_import_interactions)|\.pre-commit-config\.yaml$)

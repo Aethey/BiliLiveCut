@@ -2,7 +2,7 @@
 # 触发: push/PR 到 main → lint → audit + test → portable → coverage summary
 #
 # Job 结构:
-#   lint       — ruff check + format + version + release_audit + JS syntax
+#   lint       — 与本地提交共用 pre-commit 配置
 #   audit      — Portable Windows runtime lock pip-audit (阻断式)
 #   test       — Linux/Windows 多 Python → pytest + coverage (≥50%)
 #   test-macos — main 推送时运行 macOS py3.12
@@ -14,20 +14,8 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - ".vscode/**"
-      - ".gitignore"
-      - "KNOWN_ISSUES.md"
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - ".vscode/**"
-      - ".gitignore"
-      - "KNOWN_ISSUES.md"
   schedule:
     # 每周一 08:00 UTC 跑一次依赖审计
     - cron: "0 8 * * 1"
@@ -46,6 +34,7 @@ permissions:
 jobs:
   lint:
     name: "lint"
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4  # v4.2.2
@@ -54,30 +43,21 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install ruff
-        run: pip install ruff
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
 
-      - name: Ruff check
-        run: python scripts/run_ruff.py check
+      - name: Install pre-commit
+        run: python -m pip install pre-commit==4.6.2
 
-      - name: Ruff format check
-        run: python scripts/run_ruff.py format
+      - name: Cache hook environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-py312-${{ hashFiles('.pre-commit-config.yaml') }}
 
-      - name: Check version consistency
-        run: python scripts/check_version_consistency.py
-
-      - name: Release audit (quick)
-        run: python scripts/release_audit.py --quick
-
-      - name: JavaScript syntax check
-        run: |
-          for file in app/web/static/js/*.js; do
-            node --check "$file"
-          done
-          node --check app/web/static/app.js
-
-      - name: JavaScript module and interaction check
-        run: node scripts/check_frontend_interactions.mjs
+      - name: Run shared pre-commit checks
+        run: python -m pre_commit run --all-files --show-diff-on-failure
 
 # ═══════════════════════════════════════════════════════════════════
 # Job 2: Audit — Portable Windows runtime locks (fail-closed)
@@ -85,6 +65,7 @@ jobs:
   audit:
     name: "audit"
     needs: lint
+    if: always() && !cancelled() && (github.event_name == 'schedule' || needs.lint.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -290,7 +271,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev,web]"
-          pip install pytest-cov pytest-timeout
 
       - name: Build Payload
         run: |
@@ -312,14 +292,15 @@ jobs:
     name: "coverage summary"
     needs: [test, test-macos]
     runs-on: ubuntu-latest
-    if: always() && !cancelled()
+    if: always() && !cancelled() && github.event_name != 'schedule'
     steps:
       - name: Download all coverage artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: coverage-*
           path: coverage-artifacts
-          merge-multiple: true
+          # 每个矩阵保留自己的目录，避免同名 coverage.xml 互相覆盖。
+          merge-multiple: false
 
       - name: Show coverage files
         run: |
@@ -333,3 +314,31 @@ jobs:
       - name: Summary
         run: |
           echo "All matrix tests complete. Coverage reports archived."
+
+  ci-status:
+    name: "CI status"
+    needs: [lint, audit, test, test-macos, portable-test, coverage-summary]
+    if: always() && !cancelled() && github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all applicable checks to pass
+        env:
+          LINT_RESULT: ${{ needs.lint.result }}
+          AUDIT_RESULT: ${{ needs.audit.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          PORTABLE_RESULT: ${{ needs.portable-test.result }}
+          COVERAGE_RESULT: ${{ needs.coverage-summary.result }}
+          MACOS_RESULT: ${{ needs.test-macos.result }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          for result in "$LINT_RESULT" "$AUDIT_RESULT" "$TEST_RESULT" "$PORTABLE_RESULT" "$COVERAGE_RESULT"; do
+            if [ "$result" != "success" ]; then
+              echo "::error::A required CI job finished with $result"
+              exit 1
+            fi
+          done
+          if [ "$EVENT_NAME" = "push" ]; then
+            test "$MACOS_RESULT" = "success"
+          else
+            test "$MACOS_RESULT" = "skipped"
+          fi
