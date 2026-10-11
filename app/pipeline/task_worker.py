@@ -18,7 +18,9 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
+from functools import partial
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from loguru import logger
 from sqlmodel import select
@@ -34,7 +36,7 @@ from app.db.entities import (
 from app.db.session import get_session
 
 # ── 从子模块导入 ────────────────────────────────────────────────
-from app.pipeline.claiming import pop_and_claim
+from app.pipeline.claiming import pop_and_claim, release_unstarted_claim
 from app.pipeline.lifecycle import (
     _WORKER_ID,
     cleanup_subprocesses,
@@ -66,6 +68,27 @@ from app.pipeline.stale_recovery import (
 
 
 _logger = logger
+_T = TypeVar("_T")
+
+
+async def _thread_io(operation: Callable[[], _T], cancel_result: Callable[[_T], None] | None = None) -> _T:
+    """隔离有限时的同步 I/O；取消时先收尾并撤回尚未派发的领取结果。"""
+    pending = asyncio.create_task(asyncio.to_thread(operation))
+    cancelled = False
+    while True:
+        try:
+            result = await asyncio.shield(pending)
+            break
+        except asyncio.CancelledError:
+            if pending.cancelled():
+                raise
+            cancelled = True
+    if cancelled:
+        if cancel_result is not None:
+            await _thread_io(partial(cancel_result, result))
+        raise asyncio.CancelledError
+    return result
+
 
 if TYPE_CHECKING:
     from app.analysis.session_summary import SessionSummaryClaim
@@ -274,10 +297,10 @@ class TaskWorker:
         from app.pipeline.publish_recovery import recover_publish_state
 
         await asyncio.to_thread(recover_publish_state)
-        recover_orphans()
+        await _thread_io(recover_orphans)
         from app.analysis.session_summary import recover_running_session_summary_requests
 
-        recover_running_session_summary_requests()
+        await _thread_io(recover_running_session_summary_requests)
         self._main_task = asyncio.create_task(self._loop())
         if settings.asr_preload_on_start:
             self._preload_task = asyncio.create_task(self._preload_models())
@@ -380,43 +403,47 @@ class TaskWorker:
                 from app.core.configuration import reload_configuration
                 from app.pipeline.publish_recovery import recover_publish_state
 
-                await asyncio.to_thread(reload_configuration)
-                await asyncio.to_thread(get_process_pool().cleanup_idle)
+                await _thread_io(reload_configuration)
+                await _thread_io(get_process_pool().cleanup_idle)
                 if time.monotonic() >= self._next_maintenance:
                     from app.core.settings_store import get_bool
                     from app.pipeline.storage_lifecycle import run_disk_maintenance
 
                     self._next_maintenance = time.monotonic() + 3600
-                    await asyncio.to_thread(run_disk_maintenance, cleanup=get_bool("storage_cleanup_enabled"))
-                await asyncio.to_thread(recover_publish_state)
-                process_pending_session_reanalyses()
-                retry_expired()
-                recover_stale()
-                advance_recorded()
-                advance_transcribed()
-                advance_candidate()
-                advance_awaiting_review()
-                advance_approved()
-                advance_rendered()
+                    cleanup = await _thread_io(partial(get_bool, "storage_cleanup_enabled"))
+                    await _thread_io(partial(run_disk_maintenance, cleanup=cleanup))
+                for maintenance in (
+                    recover_publish_state,
+                    process_pending_session_reanalyses,
+                    retry_expired,
+                    recover_stale,
+                    advance_recorded,
+                    advance_transcribed,
+                    advance_candidate,
+                    advance_awaiting_review,
+                    advance_approved,
+                    advance_rendered,
+                ):
+                    await _thread_io(maintenance)
                 if time.monotonic() >= self._next_summary_scan:
                     from app.analysis.session_summary import compensate_session_summaries
 
-                    _, self._summary_scan_cursor = await asyncio.to_thread(
-                        compensate_session_summaries, after_id=self._summary_scan_cursor
+                    _, self._summary_scan_cursor = await _thread_io(
+                        partial(compensate_session_summaries, after_id=self._summary_scan_cursor)
                     )
                     self._next_summary_scan = time.monotonic() + 60
                 await self._dispatch_session_summaries()
                 # V0.1.13: Disk protection
                 from app.pipeline.storage_lifecycle import is_safe_for_new_tasks
 
-                disk_safe = is_safe_for_new_tasks()
+                disk_safe = await _thread_io(is_safe_for_new_tasks)
                 if disk_safe:
                     from app.core.settings_store import asr_task_max_concurrency
 
                     await self._dispatch(
                         TaskStatus.QUEUED_FOR_TRANS,
                         self._transcribing,
-                        asr_task_max_concurrency(),
+                        await _thread_io(asr_task_max_concurrency),
                     )
                     await self._dispatch(TaskStatus.QUEUED_FOR_ANALYSIS, self._analyzing, settings.max_analyzing)
                     await self._dispatch(TaskStatus.QUEUED_FOR_RENDER, self._rendering, settings.max_rendering)
@@ -464,7 +491,13 @@ class TaskWorker:
             execute_session_summary_claim,
         )
 
-        claim = claim_pending_session_summary()
+        def return_unstarted(claim: SessionSummaryClaim | None) -> None:
+            if claim is not None:
+                from app.analysis.session_summary import interrupt_summary_execution
+
+                interrupt_summary_execution(claim)
+
+        claim = await _thread_io(claim_pending_session_summary, return_unstarted)
         if claim is None:
             return
         task = asyncio.create_task(
@@ -499,7 +532,10 @@ class TaskWorker:
                 cost_spec = {}
                 acquired = True
             try:
-                task = pop_and_claim(queued_stage)
+                task = await _thread_io(
+                    partial(pop_and_claim, queued_stage),
+                    partial(release_unstarted_claim, queued_stage=queued_stage),
+                )
             except BaseException:
                 if acquired and cost_spec:
                     from app.core.resource_budget import release_resources

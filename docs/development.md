@@ -70,6 +70,16 @@ python scripts/release_gate.py
 - 真实 Engine Pack 与 fixture 必须明确区分。Fixture 的摘要来自实际构建文件；它只用于验证，不能作为正式模型包分发。主模型、子模型和随附组件使用统一模型目录，保留所需许可证和来源证据。
 - 发布清单记录最终文件名、版本、大小、SHA-256 和 CRC32；跨制品检查源码、构建器、Payload 与版本身份。重新构建后的摘要必须重新计算，并检查源码路径、敏感配置、缓存和临时文件未进入产物。
 
+## 可选本地 ASR 集成检查
+
+完成 Engine Pack 安装后，可以显式运行真实模型检查（默认 CPU/int8），不会自动下载模型、调用 LLM 或访问现有业务数据库：
+
+```powershell
+python scripts/check_local_asr.py --models-dir "D:/测试安装/models" --audio "D:/测试音频/speech.wav" --engine whisper --expect speech --contains "已知的语音文字" --output .local/local-asr.json
+```
+
+`--engine` 可选 `whisper`、`paraformer`、`funasr_nano`；`--device cuda` 用于具备匹配驱动的 GPU 环境；合法静音使用 `--expect no_speech` 并去掉 `--contains`。命令先逐文件重算已安装模型的 SHA-256，再执行生产隔离流水线，核对结果分类、非空语音文本和时间戳，并确认进程回收。输入、依赖、模型或推理异常直接失败，报告不包含转写正文。运行前按当前依赖安装运行环境并提供 FFmpeg；该检查独立于 CI 的确定性回归，CPU 通过不能代替现场 GPU 故障复现。
+
 ## 文档约定
 
 - README 提供项目简介、核心功能、快速开始、重要限制和文档入口；详细用法进入对应指南，避免每个版本继续追加历史小节。

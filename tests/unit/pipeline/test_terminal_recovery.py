@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -290,3 +291,61 @@ def test_shutdown_does_not_consume_task_retry_budget(temp_db: None, monkeypatch:
         task = db.get(SegmentTask, task_id)
         assert task.stage == TaskStatus.QUEUED_FOR_TRANS and task.attempts == 0
         assert task.lease_token is None
+
+
+@pytest.mark.parametrize("summary", [False, True])
+async def test_database_claim_wait_keeps_loop_responsive_and_cancel_requeues(temp_db: None, summary: bool) -> None:
+    from app.db import session as db_session
+
+    stage = TaskStatus.COMPLETED if summary else TaskStatus.QUEUED_FOR_TRANS
+    task_id, _, session_id = seed(stage)
+    if summary:
+        stale_recovery.recover_stale()
+        session_summary.request_session_timeline_summary(session_id, reason="ended")
+    locked = threading.Event()
+    release = threading.Event()
+
+    def hold_database_write_lock() -> None:
+        with db_session.engine.connect() as connection:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            locked.set()
+            assert release.wait(4), "test write lock release was not signalled"
+            connection.rollback()
+
+    holder = threading.Thread(target=hold_database_write_lock)
+    holder.start()
+    assert await asyncio.to_thread(locked.wait, 2)
+    worker = task_worker.TaskWorker()
+    worker._running = True
+    task_worker.shutdown_event.clear()
+    operation = (
+        worker._dispatch_session_summaries()
+        if summary
+        else worker._dispatch(TaskStatus.QUEUED_FOR_TRANS, worker._transcribing, 1)
+    )
+    pending = asyncio.create_task(operation)
+    started = time.monotonic()
+    try:
+        await asyncio.sleep(0.1)
+        assert time.monotonic() - started < 1, "SQLite lock blocked the event loop"
+        assert not pending.done()
+        pending.cancel()
+        await asyncio.sleep(0)
+        assert not pending.done(), "cancellation abandoned a database claim still in flight"
+    finally:
+        release.set()
+        await asyncio.to_thread(holder.join, 3)
+        if not pending.done():
+            pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+    assert not holder.is_alive()
+    assert not worker._session_summaries and not worker._transcribing
+    with get_session() as db:
+        if summary:
+            request = json.loads(db.get(AppSetting, f"session_timeline_summary_request:{session_id}").value)
+            assert request["status"] == "pending" and request["attempts"] == 0
+        else:
+            task = db.get(SegmentTask, task_id)
+            assert task.stage == TaskStatus.QUEUED_FOR_TRANS and task.attempts == 0
+            assert task.lease_token is None
