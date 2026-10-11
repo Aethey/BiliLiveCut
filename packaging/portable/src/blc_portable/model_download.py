@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import logging
+import os
 import random
 import time
 import traceback
@@ -14,6 +15,7 @@ from functools import partial
 from pathlib import Path
 
 from blc_portable.diagnostics import redact_diagnostic, safe_host
+from blc_portable.launcher.progress import ModelScopeProgress, emit_progress, hf_progress_class
 
 ATTEMPTS_PER_SOURCE = 2
 HF_MIRRORS = ["https://hf-mirror.com", "https://huggingface.co"]
@@ -27,7 +29,12 @@ def download_hf_snapshot(repo_id: str, target_dir: Path, revision: str | None, e
     # SDK 1.26 的请求/退避日志也会输出签名 URL；在来源 logger 处脱敏，
     # 使其自身 handler 和向上传播的 handler 都只接收安全诊断。
     with _safe_sdk_logs():
-        snapshot_download(repo_id=repo_id, revision=revision, local_dir=str(target_dir), endpoint=endpoint, token=False)
+        emit_progress("prepare", repo_id + "：获取文件清单")
+        progress = {"tqdm_class": hf_progress_class()} if os.environ.get("BLC_MODEL_PROGRESS") == "1" else {}
+        snapshot_download(
+            repo_id=repo_id, revision=revision, local_dir=str(target_dir), endpoint=endpoint, token=False, **progress
+        )
+        emit_progress("verify", repo_id)
 
 
 def download_ms_snapshot(model_id: str, target_dir: Path, revision: str | None, endpoint: str) -> None:
@@ -36,6 +43,7 @@ def download_ms_snapshot(model_id: str, target_dir: Path, revision: str | None, 
     from modelscope_hub.compat.snapshot_download import snapshot_download
 
     with _safe_sdk_logs():
+        emit_progress("prepare", model_id + "：获取文件清单")
         files = [
             item
             for item in HubApi(endpoint=endpoint).list_repo_files(model_id, "model", revision=revision, recursive=True)
@@ -51,7 +59,11 @@ def download_ms_snapshot(model_id: str, target_dir: Path, revision: str | None, 
             # SDK 将缺失 Size 归一化为 0；合法空文件必须有 SHA256 证明。
             if item.size <= 0 and not item.sha256:
                 raise RuntimeError(f"phase=verify：模型文件缺少大小和 SHA256：{item.path}")
-        snapshot_download(model_id=model_id, revision=revision, local_dir=str(target_dir), endpoint=endpoint)
+        progress = {"progress_callbacks": [ModelScopeProgress]} if os.environ.get("BLC_MODEL_PROGRESS") == "1" else {}
+        snapshot_download(
+            model_id=model_id, revision=revision, local_dir=str(target_dir), endpoint=endpoint, **progress
+        )
+        emit_progress("verify", model_id)
         for item in files:
             path = (root / item.path).resolve()
             if not path.is_relative_to(root) or not path.is_file():
@@ -125,6 +137,7 @@ def _exception_chain(error: BaseException) -> Iterator[BaseException]:
 def _failure_kind(error: Exception) -> tuple[str, bool, str]:
     """按本地错误、HTTP 状态和连接错误分流，未知错误不盲目切源。"""
     import httpx
+    from huggingface_hub.errors import FileMetadataError
     from requests.exceptions import ConnectionError as RequestsConnectionError
     from requests.exceptions import Timeout as RequestsTimeout
 
@@ -147,6 +160,12 @@ def _failure_kind(error: Exception) -> tuple[str, bool, str]:
             return f"http_{status}", True, "检查网络、代理和上游服务，或提供当前版本的 Engine Pack"
         if isinstance(status, int) and 400 <= status <= 499:
             return f"http_{status}", False, "核对仓库访问权限及锁定的模型/revision；不会把 HTTP 错误当作连接超时"
+    if any(isinstance(item, FileMetadataError) for item in chain):
+        return (
+            "metadata",
+            True,
+            "端点未提供 SDK 要求的固定 revision 文件元数据；切换下一已配置端点，或使用内容兼容的 Engine Pack",
+        )
     if any(
         isinstance(
             item, (httpx.TransportError, RequestsConnectionError, RequestsTimeout, TimeoutError, ConnectionError)
@@ -165,7 +184,7 @@ def download_with_retry(
     endpoints: Sequence[str],
     operation: Callable[[str], None],
 ) -> None:
-    """仅对网络及可恢复上游错误重试，每源两次，始终保持调用方锁定的内容身份。"""
+    """网络错误每源最多两次；元数据协议异常直接切源，内容身份始终锁定。"""
     if not endpoints:
         raise ValueError("模型下载未配置端点")
     for source_index, endpoint in enumerate(endpoints):
@@ -186,7 +205,8 @@ def download_with_retry(
                     if request is not None:
                         failed_host = safe_host(str(request.url))
                         break
-                retry = recoverable and (attempt < ATTEMPTS_PER_SOURCE or source_index + 1 < len(endpoints))
+                retry_same_source = recoverable and kind != "metadata" and attempt < ATTEMPTS_PER_SOURCE
+                retry = recoverable and (retry_same_source or source_index + 1 < len(endpoints))
                 root_detail = redact_diagnostic(str(root), limit=1024)
                 summary = redact_diagnostic(
                     f"模型准备失败 engine={engine} model={model} revision={revision} phase=download "
@@ -197,5 +217,7 @@ def download_with_retry(
                 if not retry:
                     raise RuntimeError(summary) from exc
                 print(summary, flush=True)
-                if attempt < ATTEMPTS_PER_SOURCE:
+                if not retry_same_source:
+                    break
+                if retry_same_source:
                     time.sleep(random.uniform(0.8, 1.2))

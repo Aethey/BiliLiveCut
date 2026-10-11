@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 import shutil
 import uuid
 import zipfile
@@ -23,6 +24,7 @@ from .identity import (
     manifest_engine_identity,
     model_set_fingerprint,
 )
+from .manifest import MANIFEST_FILENAME
 
 CHUNK_SIZE = 8 * 1024 * 1024
 INSTALLED_MANIFEST_NAME = "engine-pack-installed.json"
@@ -79,7 +81,7 @@ def find_local_engine_packs(
     expected_filename: str,
     user_path: str | None = None,
 ) -> list[Path]:
-    """Return the current release pack or one explicit user-selected file."""
+    """按当前名称优先查找标准命名的包；具体兼容性由内容校验决定。"""
     if user_path:
         selected = Path(user_path)
         if selected.is_file():
@@ -97,7 +99,9 @@ def find_local_engine_packs(
         if not root.is_dir():
             continue
         exact = root / expected_filename
-        for candidate in [exact] if exact.is_file() else []:
+        for candidate in ([exact] if exact.is_file() else []) + sorted(root.glob("BiliLiveCut-EnginePack-*.zip")):
+            if not candidate.is_file():
+                continue
             resolved = candidate.resolve()
             if resolved not in seen:
                 candidates.append(candidate)
@@ -105,12 +109,36 @@ def find_local_engine_packs(
     return candidates
 
 
-def _safe_extract(zip_path: Path, target_dir: Path) -> None:
-    """Safely extract a pack using the shared archive limits."""
-    from blc_portable.archive.safe_zip import safe_extract
+def _safe_extract(zip_path: Path, target_dir: Path) -> Path:
+    """安全提取根清单或唯一一层目录包装的包，并返回实际包根。"""
+    from blc_portable.archive.safe_zip import iter_archive_members, normalized_member_name, safe_extract
 
     with zipfile.ZipFile(zip_path) as archive:
+        members = list(iter_archive_members(archive, target_dir))
+        candidates = [
+            info
+            for info, _ in members
+            if normalized_member_name(info.filename).rsplit("/", 1)[-1].casefold() == MANIFEST_FILENAME
+        ]
+        if len(candidates) != 1:
+            raise EnginePackValidationError(
+                f"phase=archive_layout: 必须且只能有一个 {MANIFEST_FILENAME}，实际 {len(candidates)}"
+            )
+        name = normalized_member_name(candidates[0].filename)
+        parts = name.split("/")
+        if parts[-1] != MANIFEST_FILENAME or len(parts) > 2:
+            raise EnginePackValidationError("phase=archive_layout: 清单名称必须规范，且只支持根目录或唯一一层目录包装")
+        wrapper = parts[0] if len(parts) == 2 else None
+        if wrapper and any(
+            normalized_member_name(info.filename) != wrapper
+            and not normalized_member_name(info.filename).startswith(wrapper + "/")
+            for info in archive.infolist()
+        ):
+            raise EnginePackValidationError("phase=archive_layout: 包装目录外还有其他成员")
+        print(f"  phase=archive_layout manifest={name}")
         safe_extract(archive, target_dir)
+        print("  phase=archive_extract ZIP 成员完整性与 CRC 校验通过")
+        return target_dir / wrapper if wrapper else target_dir
 
 
 def _catalog_engines() -> list[Any]:
@@ -273,8 +301,12 @@ def _load_current_manifest(models_dir: Path) -> tuple[dict[str, Any] | None, lis
         return None, [f"Installed manifest schema unsupported: {installed.get('schema_version')}"]
     if set(installed) != _CURRENT_MANIFEST_FIELDS:
         return None, ["Installed manifest fields invalid"]
-    if installed["release_version"] != RELEASE_VERSION or installed["source_commit"] != SOURCE_COMMIT_FULL:
-        return None, ["Installed manifest release identity mismatch"]
+    if not isinstance(installed["release_version"], str) or not re.fullmatch(
+        r"[0-9]+(?:\.[0-9]+){2,3}(?:-[a-zA-Z0-9.]+)?", installed["release_version"]
+    ):
+        return None, ["Installed manifest release provenance invalid"]
+    if not isinstance(installed["source_commit"], str) or not re.fullmatch(r"[0-9a-f]{40}", installed["source_commit"]):
+        return None, ["Installed manifest source provenance invalid"]
     if installed.get("identity_schema_version") != IDENTITY_SCHEMA_VERSION:
         return None, ["Installed manifest identity schema mismatch"]
     if not isinstance(installed.get("engines"), dict):
@@ -439,6 +471,9 @@ def install_from_engine_pack(
     expected_sha256: str,
 ) -> dict[str, Any]:
     """Install only stale engines from a fully verified local pack."""
+    from blc_portable.launcher.progress import emit_progress
+
+    emit_progress("verify", pack_path.name + "：ZIP 摘要")
     actual_crc32 = compute_crc32(pack_path)
     if expected_crc32 and actual_crc32 != expected_crc32:
         raise EnginePackValidationError(f"CRC32 mismatch: expected={expected_crc32} actual={actual_crc32}")
@@ -449,7 +484,8 @@ def install_from_engine_pack(
         )
     if not expected_crc32 and not expected_sha256:
         print("  Engine Pack has no external digest; validating its complete internal manifest")
-    print(f"  Engine Pack 校验通过: CRC32={actual_crc32} SHA256={actual_sha256[:16]}...")
+    digest_status = "比对通过" if expected_crc32 or expected_sha256 else "已计算（无外部期望值）"
+    print(f"  phase=archive_digest ZIP 摘要{digest_status}: CRC32={actual_crc32} SHA256={actual_sha256}")
 
     from blc_portable.archive.locks import FileLock, get_engine_pack_lock_path
 
@@ -464,28 +500,61 @@ def install_from_engine_pack(
         try:
             staging_dir.mkdir(parents=True, exist_ok=True)
             try:
-                _safe_extract(pack_path, staging_dir)
-                manifest_path = staging_dir / "engine-pack-manifest.json"
+                emit_progress("install", pack_path.name + "：解压与 CRC 校验")
+                pack_root = _safe_extract(pack_path, staging_dir)
+                manifest_path = pack_root / MANIFEST_FILENAME
                 if not manifest_path.is_file():
                     raise RuntimeError("Engine Pack 缺少 engine-pack-manifest.json")
-                manifest = load_manifest(manifest_path)
-                verification_errors = verify_extracted_tree(staging_dir, manifest)
+                manifest = load_manifest(manifest_path, require_current_release=False)
+                print(
+                    f"  phase=manifest_schema schema={manifest.format_version} "
+                    f"来源版本={manifest.engine_pack_version} source_commit={manifest.source_commit}"
+                )
+                if manifest.portable_release_version != RELEASE_VERSION or manifest.source_commit != SOURCE_COMMIT_FULL:
+                    print("  [提示] Engine Pack 发行来源与主程序不同，按锁定的模型内容判断兼容性")
+                emit_progress("verify", "Engine Pack 全部模型 SHA-256")
+                verification_errors = verify_extracted_tree(pack_root, manifest, require_current_release=False)
                 if verification_errors:
                     raise RuntimeError("Engine Pack 校验失败:\n  " + "\n  ".join(verification_errors))
                 pack_engines = {engine.engine_id: engine for engine in manifest.engines}
                 if set(pack_engines) != set(desired):
                     raise RuntimeError("Engine Pack engine set does not match the current catalog")
+                catalog = {engine.engine_id: engine for engine in _catalog_engines()}
                 for engine_id, desired_record in desired.items():
+                    pack_engine = pack_engines[engine_id]
+                    expected_model = (
+                        catalog[engine_id].repo_id
+                        if catalog[engine_id].hub == "huggingface"
+                        else catalog[engine_id].repository
+                    )
+                    if pack_engine.model_id != expected_model:
+                        raise RuntimeError(f"Engine Pack model_id mismatch: {engine_id}")
+                    for required in catalog[engine_id].required_files:
+                        relative = f"{pack_engine.target_path}/{required}"
+                        if relative not in manifest.files or manifest.files[relative]["size"] <= 0:
+                            raise RuntimeError(f"Engine Pack required file missing or empty: {relative}")
+                    for component in [*catalog[engine_id].sub_models, *catalog[engine_id].third_party_components]:
+                        prefix = f"{pack_engine.target_path}/{component.target_subdir}/"
+                        if not any(
+                            relative.startswith(prefix) and info["size"] > 0
+                            for relative, info in manifest.files.items()
+                        ):
+                            raise RuntimeError(f"Engine Pack component missing or empty: {prefix}")
                     pack_identity = manifest_engine_identity(pack_engines[engine_id])
                     if engine_fingerprint(pack_identity) != desired_record["content_fingerprint"]:
                         raise RuntimeError(f"Engine Pack content fingerprint mismatch: {engine_id}")
+                print(
+                    "  phase=content_compatibility 模型文件 SHA-256、仓库与锁定 revision 验证通过"
+                    "（Runtime 由独立预检验证）"
+                )
             except (ValueError, RuntimeError, zipfile.BadZipFile, zlib.error, EOFError) as exc:
                 raise EnginePackValidationError(f"Engine Pack 无效: {exc}") from exc
             for engine_id, desired_record in desired.items():
                 if engine_id in reused:
                     print(f"  reuse engine by content fingerprint: {engine_id}")
                     continue
-                source_dir = staging_dir / str(pack_engines[engine_id].target_path)
+                emit_progress("install", engine_id)
+                source_dir = pack_root / str(pack_engines[engine_id].target_path)
                 _install_engine_directory(
                     app_root,
                     engine_id,
@@ -501,6 +570,8 @@ def install_from_engine_pack(
     complete, errors = check_installed_models(app_root / "models", full_rehash=True)
     if not complete:
         raise RuntimeError("Post-install model verification failed: " + "; ".join(errors[:5]))
+    emit_progress("complete", "本地 Engine Pack 安装验证通过")
+    print("  phase=accepted 本地 Engine Pack 已接受并完成安装验证")
     return {
         "source": "engine_pack",
         "method": "content_addressed_extract",

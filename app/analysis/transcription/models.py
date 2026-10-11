@@ -20,7 +20,7 @@ V0.1.12.2 变更:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
     pass
@@ -84,6 +84,7 @@ class ASRTranscriptResult:
     """
 
     text: str  # 全文
+    result_type: Literal["speech", "no_speech"] = "speech"
     segments: list[ASRSegmentResult] = field(default_factory=list)
 
     backend: str = ""

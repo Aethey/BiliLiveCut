@@ -177,7 +177,7 @@ def mark_failed(task: SegmentTask, error: str, permanent: bool = False) -> None:
     task.last_error = error
     task.error_is_permanent = permanent
     task.failed_stage = task.stage
-    task.heartbeat_at = None
+    release_lease(task)
     if permanent:
         task.stage = TaskStatus.FAILED
         task.completed_at = _now()
@@ -191,6 +191,15 @@ def mark_failed(task: SegmentTask, error: str, permanent: bool = False) -> None:
         delay = _jitter(min(_RETRY_BASE_S * (2 ** max(task.attempts - 1, 0)), _RETRY_MAX_S))
         task.next_retry_at = _now() + timedelta(seconds=delay)
         task.stage = TaskStatus.TRANSIENT_FAILED
+    task.stage_key = make_stage_key(task.segment_id, task.stage)
+
+
+def release_lease(task: SegmentTask) -> None:
+    """原子状态变更中的租约释放；终态和等待态不得留下活跃所有者。"""
+    task.claimed_by = None
+    task.claimed_at = None
+    task.heartbeat_at = None
+    task.lease_token = None
 
 
 def enqueue_next(

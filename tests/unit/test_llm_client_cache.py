@@ -32,7 +32,8 @@ class FakeClient:
 def clients(monkeypatch: MonkeyPatch) -> list[FakeClient]:
     created: list[FakeClient] = []
 
-    def create(*, api_key: str, base_url: str | None) -> FakeClient:
+    def create(*, api_key: str, base_url: str | None, max_retries: int) -> FakeClient:
+        assert max_retries == 0  # 只保留业务显式的有限回退，不能叠加 SDK 重试。
         client = FakeClient(api_key=api_key, base_url=base_url)
         created.append(client)
         return client
@@ -94,7 +95,8 @@ def test_failed_replacement_keeps_existing_connection(clients: list[FakeClient],
     provider = LLMProvider("failed", "test", "https://example.invalid", "samehead-old", "test")
     first = llm._get_client(provider)
 
-    def fail(*, api_key: str, base_url: str | None) -> FakeClient:
+    def fail(*, api_key: str, base_url: str | None, max_retries: int) -> FakeClient:
+        assert max_retries == 0
         raise OSError("client initialization failed")
 
     monkeypatch.setattr(sys.modules["openai"], "OpenAI", fail)

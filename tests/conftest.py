@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import sys
+import wave
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
@@ -17,13 +18,26 @@ if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
 
 
+@pytest.fixture()
+def pcm_wav(tmp_path: Path) -> Path:
+    """8.336 秒有效 PCM，供音频验证和模型边界替身共用。"""
+    path = tmp_path / "audio.wav"
+    with wave.open(str(path), "wb") as audio:
+        audio.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+        audio.writeframes(b"\x00\x00" * 133376)
+    return path
+
+
 @pytest.fixture(autouse=True)
 def isolated_pipeline_shutdown() -> Iterator[None]:
     """每个测试模拟独立进程，避免 Web lifespan 关闭标记污染随后直接调用的流水线。"""
+    from app.analysis.transcription.process_pool import get_process_pool, reset_process_pool
     from app.pipeline.lifecycle import shutdown_event
 
+    reset_process_pool()
     shutdown_event.clear()
     yield
+    get_process_pool().shutdown(0)
     shutdown_event.clear()
 
 

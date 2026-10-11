@@ -454,7 +454,7 @@ def test_frozen_entry_prepare_models_uses_package_safe_imports(tmp_path: Path, m
     venv_python.parent.mkdir(parents=True)
     venv_python.write_bytes(b"fixture")
 
-    def fake_run(args: list[str], **_kwargs: object):
+    def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         assert args[0] == str(venv_python)
         assert args[1:3] == ["-m", "blc_portable.launcher.model_downloader"]
         return subprocess.CompletedProcess(
@@ -464,7 +464,7 @@ def test_frozen_entry_prepare_models_uses_package_safe_imports(tmp_path: Path, m
             stderr="",
         )
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("blc_portable.launcher.progress.run_provisioner", fake_run)
     entry_path = _src_dir / "blc_portable" / "launcher" / "main.py"
     namespace = runpy.run_path(str(entry_path), run_name="main")
 

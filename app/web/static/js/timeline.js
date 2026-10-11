@@ -207,6 +207,10 @@ function renderWholeSessionSummary(data) {
   const source = summary.source === "llm" ? "LLM 整场 ASR 分析" : "本场无可分析 ASR";
   const generatedAt = summary.generated_at ? formatGmt8(summary.generated_at) : "";
   const message = SUMMARY_STATUS_LABELS[summary.status] || "等待生成";
+  const coverage = summary.coverage;
+  const coverageText = coverage
+    ? `${summary.summary_mode === "recovered" ? "补齐后重新生成" : coverage.mode === "degraded" ? "部分证据总结" : "完整证据总结"} · 已覆盖 ${Number(coverage.covered_segments)} / ${Number(coverage.total_segments)} 段 · 无语音 ${Number(coverage.no_speech_segments)} 段`
+    : "";
   return `
     <section class="whole-session-summary" aria-label="全场高光总结">
       <div class="head">
@@ -220,6 +224,9 @@ function renderWholeSessionSummary(data) {
           ? `<button class="secondary" onclick="regenerateSessionSummary(${Number(data.session.session_id)})">重新生成</button>`
           : ""}
       </div>
+      ${coverage ? `<p class="muted">${esc(coverageText)}</p>${(coverage.missing || []).length
+        ? `<details><summary>查看缺失片段与原因</summary><ul>${coverage.missing.map(item => `<li>片段 #${Number(item.segment_id)} · ${esc(item.start_at || "时间未知")} 至 ${esc(item.end_at || "时间未知")} · ${esc(item.stage || "状态未知")}：${esc(item.reason)}</li>`).join("")}</ul></details>`
+        : ""}` : ""}
       ${ready
         ? `<p class="whole-session-summary-text">${esc(summary.summary || "本场没有可供分析的最终 ASR 文本。").replace(/\n/g, "<br>")}</p>`
         : `<p class="muted">${esc(summary.error || message)}。页面会随处理进度自动更新；生成时会把全场最终 ASR 组织为一个完整上下文，只做一次全局分析。</p>`}

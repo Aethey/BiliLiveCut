@@ -139,7 +139,9 @@ class FunASRBackend:
             self._primary_model_name = str(__import__("pathlib").Path(models_dir) / "paraformer")
         else:
             self._primary_model_name = primary or self.MODEL_ID_PRIMARY
-        self._use_sensevoice = sensevoice if sensevoice is not None else settings.asr_sensevoice
+        self._use_sensevoice = (
+            sensevoice if sensevoice is not None else settings.asr_sensevoice
+        ) and settings.asr_sensevoice_enabled
         self._use_funasr = funasr_nano if funasr_nano is not None else settings.asr_funasr_review
 
     @property
@@ -760,6 +762,13 @@ class FasterWhisperBackend:
         :param initial_prompt: hotwords 引导。
         :returns: :class:`ASRTranscriptResult`。
         """
+        from app.analysis.transcription.progress import report_progress
+        from app.analysis.transcription.speech_evidence import no_speech_result
+
+        empty = no_speech_result(audio_path, backend="whisper")
+        if empty is not None:
+            report_progress("result_ready", backend="whisper", result_type="no_speech", segment_count=0)
+            return empty
         audio_duration = _probe_audio_duration(audio_path)
         kwargs: dict = {"vad_filter": True, "word_timestamps": True}
         if initial_prompt:
@@ -767,6 +776,7 @@ class FasterWhisperBackend:
         t0 = time.time()
         with model_pool.use("fallback", self.model_identity, self._load_model) as model:
             fw_segments, info = model.transcribe(audio_path, **kwargs)
+            report_progress("result_iteration", backend="whisper")
 
             segments: list[ASRSegmentResult] = []
             all_text: list[str] = []
@@ -792,6 +802,7 @@ class FasterWhisperBackend:
 
         elapsed = time.time() - t0
         full_text = "".join(all_text).strip()
+        report_progress("result_ready", backend="whisper", result_type="speech", segment_count=len(segments))
         logger.info("Whisper 兜底转写完成, 耗时 {:.1f}s, 语言={}", elapsed, info.language)
         asr_metrics.record_backend_call("whisper", elapsed, success=True)
         asr_metrics.record_fallback()

@@ -23,7 +23,22 @@ def current_manifest(files: dict[str, dict[str, object]] | None = None) -> dict[
 
 
 def current_tree_manifest(root: Path) -> dict[str, Any]:
-    """根据临时目录中的四引擎文件生成当前内部 Manifest。"""
+    """补齐测试模型的契约必需文件，再对真实目录计算内部 Manifest。"""
+    from blc_portable.engine_pack.installer import _catalog_engines
+
+    for engine in _catalog_engines():
+        required_files = [
+            *engine.required_files,
+            *(
+                f"{component.target_subdir}/fixture.bin"
+                for component in [*engine.sub_models, *engine.third_party_components]
+            ),
+        ]
+        for relative in required_files:
+            target = root / engine.target_path / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not target.exists():
+                target.write_bytes(f"fixture:{engine.engine_id}/{relative}".encode())
     files: dict[str, dict[str, object]] = {}
     for path in sorted(root.rglob("*")):
         if path.is_file() and path.name != "engine-pack-manifest.json":

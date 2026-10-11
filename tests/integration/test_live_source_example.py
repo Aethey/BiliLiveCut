@@ -402,9 +402,14 @@ async def test_disable_loaded_plugin_drains_active_real_ffmpeg(
 
 
 def _advance_real_pipeline(room_id: int, session_id: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dataclasses import asdict
+    from typing import Any
+
     from app.analysis import llm
     from app.analysis.transcription.backends import FasterWhisperBackend
     from app.analysis.transcription.models import ASRSegmentResult, ASRTranscriptResult, Word
+    from app.analysis.transcription.pipeline import ASRPipeline
+    from app.analysis.transcription.process_pool import ASRProcessPool
     from app.clipping.core import probe_media
     from app.db.entities import FinalClip, HighlightCandidate, HotspotEvent, TaskStatus, Transcript
     from app.pipeline import scheduler
@@ -452,6 +457,15 @@ def _advance_real_pipeline(room_id: int, session_id: int, monkeypatch: pytest.Mo
         return None  # 外部模型服务边界：真实分析执行其规则回退。
 
     monkeypatch.setattr(FasterWhisperBackend, "transcribe", recognize)
+
+    def offline_model_request(self: ASRProcessPool, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        # 模型进程是外部 SDK 边界；保留真实标准化、ASR 合并、任务租约与持久流水线。
+        # spawn 不继承父进程 monkeypatch，真实子进程生命周期在专用回归集验收。
+        kwargs["check_cancelled"]()
+        result = ASRPipeline().transcribe(payload["audio_path"], payload.get("initial_prompt"))
+        return {"result": asdict(result)}
+
+    monkeypatch.setattr(ASRProcessPool, "execute", offline_model_request)
     monkeypatch.setattr(llm, "call_text", language_model)
     with get_session() as db:
         room = db.get(LiveRoom, room_id)

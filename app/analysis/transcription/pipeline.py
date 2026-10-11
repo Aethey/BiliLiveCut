@@ -86,6 +86,7 @@ class ASRPipeline:
     ) -> None:
         self._primary = primary_backend
         self._whisper = whisper_backend
+        self._last_backend_error: Exception | None = None
         self._use_fallback = settings.asr_fallback_whisper
         self._review_risk_threshold = getattr(
             settings,
@@ -137,6 +138,31 @@ class ASRPipeline:
         audio_path: str,
         initial_prompt: str | None = None,
     ) -> ASRTranscriptResult:
+        """执行模型并为最终结果分类，空文本不得冒充成功。"""
+        from app.analysis.transcription.speech_evidence import no_speech_result, require_final_result
+
+        self._last_backend_error = None
+        result = self._run_backends(audio_path, initial_prompt)
+        model_failed = bool(result.primary_error_type and result.primary_error_type != "ASRQualityError")
+        if not (result.final_text or result.text).strip():
+            if model_failed:
+                raise RuntimeError(
+                    f"ASR 模型异常且无可用回退: {result.primary_error_type}: {result.primary_error_message}"
+                ) from self._last_backend_error
+            if result.result_type != "no_speech":
+                empty = no_speech_result(audio_path, backend=result.backend)
+                if empty is not None:
+                    empty.emotions = result.emotions
+                    empty.primary_backend = result.primary_backend
+                    empty.fallback_backend = result.fallback_backend
+                    result = empty
+        return require_final_result(result)
+
+    def _run_backends(
+        self,
+        audio_path: str,
+        initial_prompt: str | None = None,
+    ) -> ASRTranscriptResult:
         """对标准化音频执行多引擎识别与质量回退。"""
         primary_name = settings.asr_primary.strip().lower().replace("-", "_")
 
@@ -144,6 +170,7 @@ class ASRPipeline:
             try:
                 result = self._get_primary().transcribe_funasr(audio_path, initial_prompt)
             except Exception as exc:
+                self._last_backend_error = exc
                 logger.opt(exception=True).error("Fun-ASR-Nano 主引擎转写失败: {}", exc)
                 result = ASRTranscriptResult(
                     text="",
@@ -186,11 +213,16 @@ class ASRPipeline:
             try:
                 secondary = self._get_primary().transcribe(audio_path, initial_prompt)
             except Exception as exc:
+                self._last_backend_error = exc
                 logger.opt(exception=True).error("Paraformer 次级引擎转写失败: {}", exc)
+                result.primary_error_type = type(exc).__name__
+                result.primary_error_message = safe_exception_summary(exc, limit=500)
             else:
+                _merge_auxiliary(result, secondary)
                 secondary_text = secondary.final_text or secondary.text
                 secondary_quality = assess_transcript_quality(secondary_text)
                 if secondary_quality.usable:
+                    _merge_auxiliary(secondary, result)
                     secondary.base_text = secondary.text or secondary_text
                     secondary.final_text = secondary_text
                     secondary.final_text_source = "fallback"
@@ -210,6 +242,7 @@ class ASRPipeline:
             if self._use_fallback:
                 logger.info("Fun-ASR-Nano 与 Paraformer 均无有效输出，切换 Whisper 兜底")
                 fallback_result = self._get_whisper().transcribe(audio_path, initial_prompt)
+                _merge_auxiliary(fallback_result, result)
                 fallback_result.base_text = fallback_result.text
                 fallback_result.review_text = fallback_result.text
                 fallback_result.final_text = fallback_result.text
@@ -228,6 +261,7 @@ class ASRPipeline:
             try:
                 result = self._get_primary().transcribe(audio_path, initial_prompt)
             except Exception as exc:
+                self._last_backend_error = exc
                 logger.opt(exception=True).error("Paraformer 主引擎转写失败: {}", exc)
                 result = ASRTranscriptResult(
                     text="",
@@ -258,6 +292,7 @@ class ASRPipeline:
                     primary_quality.repetition_ratio,
                 )
                 fallback_result = self._get_whisper().transcribe(audio_path, initial_prompt)
+                _merge_auxiliary(fallback_result, result)
                 # V0.1.12.4: 保留主模型失败信息
                 fallback_result.final_text_source = "fallback"
                 fallback_result.primary_backend = "paraformer"
@@ -278,8 +313,7 @@ class ASRPipeline:
         if primary_name == "whisper":
             return self._get_whisper().transcribe(audio_path, initial_prompt)
 
-        logger.warning("ASR 主引擎配置无效: {}, 返回空结果", settings.asr_primary)
-        return ASRTranscriptResult(text="", language="zh", backend="none")
+        raise ValueError(f"ASR 主引擎配置无效: {settings.asr_primary}")
 
     def _review_loop(
         self,
@@ -508,8 +542,13 @@ def transcribe_segment(
     if backend is not None:
         result = backend.transcribe(file_path, initial_prompt=initial_prompt)
     else:
-        pipeline = get_default_pipeline()
+        from app.analysis.transcription.isolated import IsolatedPipeline
+
+        pipeline = IsolatedPipeline(context={"segment_id": segment_id, "entry": "transcribe_segment"})
         result = pipeline.transcribe(file_path, initial_prompt=initial_prompt)
+    from app.analysis.transcription.speech_evidence import require_final_result
+
+    require_final_result(result)
 
     # 应用房间级 aliases 纠错
     text = _apply_room_aliases(result.text, segment_id)
@@ -531,7 +570,11 @@ def transcribe_segment(
     )
 
     # V0.1.12.2: 序列化辅助特征 + reviewed_segments
-    auxiliary_payload: dict[str, object] = {"asr_quality": transcript_quality_payload(quality)}
+    auxiliary_payload: dict[str, object] = {
+        "asr_quality": transcript_quality_payload(quality),
+        "result_type": result.result_type,
+        "audio_evidence": result.metadata.get("audio_evidence"),
+    }
     if result.emotions or result.reviewed_segments:
         auxiliary_payload.update(
             {
@@ -680,6 +723,16 @@ def _refine_transcript_for_storage(text: str) -> TranscriptRefinement | None:
     if refinement is None:
         logger.info("单切片转写未获得可用 LLM 整理结果，已保留原始 ASR 文本。")
     return refinement
+
+
+def _merge_auxiliary(target: ASRTranscriptResult, source: ASRTranscriptResult) -> None:
+    """回退时保留主、次引擎已得到的声学事件，同类同时间事件去重。"""
+    keys = {(event.event_type, event.start, event.end) for event in target.emotions}
+    for event in source.emotions:
+        key = (event.event_type, event.start, event.end)
+        if key not in keys:
+            target.emotions.append(event)
+            keys.add(key)
 
 
 def _record_quality_failure(result: ASRTranscriptResult, quality: TranscriptQuality) -> None:

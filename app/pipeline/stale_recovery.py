@@ -6,7 +6,7 @@ from datetime import UTC, timedelta
 from pathlib import Path
 
 from loguru import logger
-from sqlmodel import select
+from sqlmodel import or_, select
 
 from app.core.config import settings
 from app.db.entities import (
@@ -21,6 +21,7 @@ from app.db.entities import (
 from app.db.entities import SegmentStatus as OldStatus
 from app.db.session import get_session
 from app.pipeline.lifecycle import now_utc
+from app.pipeline.stage_result import make_stage_key, release_lease
 
 
 def resume_stage(failed_stage: str | None) -> str:
@@ -32,12 +33,21 @@ def resume_stage(failed_stage: str | None) -> str:
     if failed_stage is None:
         return TaskStatus.QUEUED_FOR_TRANS
     mapping = {
+        TaskStatus.QUEUED_FOR_ANALYSIS: TaskStatus.QUEUED_FOR_ANALYSIS,
+        TaskStatus.QUEUED_FOR_RENDER: TaskStatus.QUEUED_FOR_RENDER,
+        TaskStatus.QUEUED_FOR_PUBLISH: TaskStatus.QUEUED_FOR_PUBLISH,
+        TaskStatus.APPROVED_WAITING_RENDER: TaskStatus.QUEUED_FOR_RENDER,
+        TaskStatus.AWAITING_PUBLISH_CONFIRMATION: TaskStatus.AWAITING_PUBLISH_CONFIRMATION,
+        TaskStatus.REVIEWED_WAITING_ACTION: TaskStatus.REVIEWED_WAITING_ACTION,
+        TaskStatus.AWAITING_REVIEW: TaskStatus.AWAITING_REVIEW,
+        TaskStatus.APPROVED: TaskStatus.QUEUED_FOR_RENDER,
         TaskStatus.TRANSCRIBING: TaskStatus.QUEUED_FOR_TRANS,
         TaskStatus.ANALYZING: TaskStatus.QUEUED_FOR_ANALYSIS,
         TaskStatus.RENDERING: TaskStatus.QUEUED_FOR_RENDER,
         TaskStatus.PUBLISHING: TaskStatus.QUEUED_FOR_PUBLISH,
         TaskStatus.TRANSCRIBED: TaskStatus.QUEUED_FOR_ANALYSIS,
-        TaskStatus.CANDIDATE_CREATED: TaskStatus.QUEUED_FOR_RENDER,
+        TaskStatus.CANDIDATE_CREATED: TaskStatus.CANDIDATE_CREATED,
+        TaskStatus.RENDERED: TaskStatus.RENDERED,
     }
     return mapping.get(failed_stage, TaskStatus.QUEUED_FOR_TRANS)
 
@@ -65,19 +75,14 @@ def recover_stale() -> None:
                         TaskStatus.PUBLISHING,
                     ]
                 ),
-                SegmentTask.heartbeat_at.is_not(None),
             )
         ).all()
         # 比较实际 UTC 时刻，不依赖 SQLite TEXT 的分隔符或时区表示。
         stale = [
             task
             for task in active
-            if task.heartbeat_at is not None
-            and (
-                task.heartbeat_at.replace(tzinfo=UTC)
-                if task.heartbeat_at.tzinfo is None
-                else task.heartbeat_at.astimezone(UTC)
-            )
+            if (last_seen := task.heartbeat_at or task.claimed_at or task.started_at or task.created_at) is not None
+            and (last_seen.replace(tzinfo=UTC) if last_seen.tzinfo is None else last_seen.astimezone(UTC))
             < stale_threshold
         ]
 
@@ -113,8 +118,9 @@ def recover_stale() -> None:
                     published_skipped += 1
                     continue
 
-            res = resume_stage(task.failed_stage or task.stage)
+            res = resume_stage(task.stage)
             task.stage = res
+            task.stage_key = make_stage_key(task.segment_id, res)
             task.claimed_by = None
             task.claimed_at = None
             task.heartbeat_at = None
@@ -122,6 +128,27 @@ def recover_stale() -> None:
             task.next_retry_at = None
             db.add(task)
 
+        # 修复历史失败路径留下的租约；只清理已结算的终态，不接管活动任务。
+        terminal = db.exec(
+            select(SegmentTask).where(
+                SegmentTask.stage.in_(
+                    [TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.COMPLETED, TaskStatus.TRANSIENT_FAILED]
+                ),
+                or_(
+                    SegmentTask.claimed_by.is_not(None),
+                    SegmentTask.claimed_at.is_not(None),
+                    SegmentTask.heartbeat_at.is_not(None),
+                    SegmentTask.lease_token.is_not(None),
+                ),
+            )
+        ).all()
+        for task in terminal:
+            if any((task.claimed_by, task.claimed_at, task.heartbeat_at, task.lease_token)):
+                logger.warning(
+                    "terminal_lease_released task={} session={} stage={}", task.id, task.session_id, task.stage
+                )
+                release_lease(task)
+                db.add(task)
         if stale:
             skipped_msg = f" (跳过 {published_skipped} 个发布任务)" if published_skipped else ""
             logger.warning("recover_stale: 回退 {} 个心跳超时任务。{}", len(stale) - published_skipped, skipped_msg)
@@ -154,6 +181,35 @@ def recover_orphans() -> None:
             db.add(t)
         if orphan_segs:
             logger.info("恢复: 为 {} 个孤立片段创建任务。", len(orphan_segs))
+
+
+def release_stopped_computations(worker_id: str) -> int:
+    """撤销关闭宽限后计算线程的租约，迟到的 LLM/ASR 结果不得写入。"""
+    with get_session() as db:
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        tasks = db.exec(
+            select(SegmentTask).where(
+                SegmentTask.claimed_by == worker_id,
+                SegmentTask.stage.in_([TaskStatus.TRANSCRIBING, TaskStatus.ANALYZING]),
+            )
+        ).all()
+        for task in tasks:
+            logger.warning(
+                "shutdown_lease_revoked task={} segment={} session={} stage={} worker={} lease={} started_at={}",
+                task.id,
+                task.segment_id,
+                task.session_id,
+                task.stage,
+                worker_id,
+                task.lease_token,
+                task.started_at,
+            )
+            task.stage = resume_stage(task.stage)
+            task.stage_key = make_stage_key(task.segment_id, task.stage)
+            release_lease(task)
+            db.add(task)
+        return len(tasks)
 
 
 def recover_pending_clips() -> int:

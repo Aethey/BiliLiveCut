@@ -113,6 +113,9 @@ class Settings(BaseSettings):
     asr_vad_max_segment_s: int = Field(default=30, ge=5, le=120)
     # 同时执行的分段 ASR 任务数；实际模型实例由共享池按角色并发上限分配。
     asr_task_max_concurrency: int = Field(default=1, ge=1, le=8)
+    asr_inference_base_timeout_s: int = Field(default=600, ge=30, le=7200)
+    asr_inference_timeout_rtf: float = Field(default=10.0, ge=1, le=100)
+    asr_inference_max_timeout_s: int = Field(default=7200, ge=60, le=43200)
 
     # ---------- V0.1.12.2: 分后端设备与并发控制 ----------
     asr_primary_device: str = "cpu"
@@ -133,6 +136,7 @@ class Settings(BaseSettings):
 
     # ---------- AI:大模型(OpenAI 兼容协议,境内推荐 DeepSeek/通义/Kimi/GLM) ----------
     llm_daily_budget: float = Field(default=0.0, ge=0.0)
+    llm_request_timeout_s: float = Field(default=90.0, ge=1.0, le=600.0)
     # 每个录制切片完成 ASR 后，是否调用 LLM 整理正文并生成摘要。
     transcript_llm_refine_enabled: bool = True
     transcript_llm_refine_max_tokens: int = Field(default=65536, ge=128, le=65536)

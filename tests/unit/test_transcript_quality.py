@@ -70,6 +70,7 @@ def test_repair_local_decode_loop_only_collapses_small_exact_loop() -> None:
 def test_non_wav_input_is_normalized_to_16k_mono_pcm(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
+    pcm_wav: Path,
 ) -> None:
     """TS 输入应经 FFmpeg 生成临时 16kHz 单声道 PCM WAV，并在用后清理。"""
     source = tmp_path / "segment.ts"
@@ -78,7 +79,7 @@ def test_non_wav_input_is_normalized_to_16k_mono_pcm(
 
     def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         captured.extend(command)
-        Path(command[-1]).write_bytes(b"RIFF-test")
+        Path(command[-1]).write_bytes(pcm_wav.read_bytes())
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -92,18 +93,18 @@ def test_non_wav_input_is_normalized_to_16k_mono_pcm(
     assert normalized_path.exists() is False
 
 
-def test_wav_input_bypasses_ffmpeg(monkeypatch: MonkeyPatch) -> None:
+def test_wav_input_bypasses_ffmpeg(monkeypatch: MonkeyPatch, pcm_wav: Path) -> None:
     """已标准化或测试用 WAV 不应重复转码。"""
 
     def fail_run(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("WAV 不应调用 FFmpeg")
 
     monkeypatch.setattr(subprocess, "run", fail_run)
-    with normalized_asr_audio("already-normalized.wav") as normalized:
-        assert normalized == "already-normalized.wav"
+    with normalized_asr_audio(str(pcm_wav)) as normalized:
+        assert normalized == str(pcm_wav)
 
 
-def test_hotspot_window_is_cut_before_priority_asr(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+def test_hotspot_window_is_cut_before_priority_asr(tmp_path: Path, monkeypatch: MonkeyPatch, pcm_wav: Path) -> None:
     """热点 ASR 必须只向 production pipeline 提交指定局部窗口。"""
     source = tmp_path / "segment.ts"
     source.write_bytes(b"transport-stream")
@@ -111,7 +112,7 @@ def test_hotspot_window_is_cut_before_priority_asr(tmp_path: Path, monkeypatch: 
 
     def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         captured.extend(command)
-        Path(command[-1]).write_bytes(b"RIFF-window")
+        Path(command[-1]).write_bytes(pcm_wav.read_bytes())
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(subprocess, "run", fake_run)

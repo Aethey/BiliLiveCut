@@ -15,6 +15,7 @@ from typing import Any
 
 from .manifest import (
     ENGINE_PACK_VERSION,
+    MANIFEST_FILENAME,
     EnginePackManifest,
     load_manifest,
     validate_manifest,
@@ -143,6 +144,8 @@ def verify_archive_manifest(
 def verify_extracted_tree(
     extracted_dir: Path,
     manifest: EnginePackManifest | dict[str, Any],
+    *,
+    require_current_release: bool = True,
 ) -> list[str]:
     """验证解压后的目录树与 Manifest 完全一致。
 
@@ -162,7 +165,7 @@ def verify_extracted_tree(
     else:
         parsed = manifest
 
-    manifest_errors = validate_manifest(parsed)
+    manifest_errors = validate_manifest(parsed, require_current_release=require_current_release)
     if manifest_errors:
         return [f"Manifest 校验失败: {error}" for error in manifest_errors]
 
@@ -170,7 +173,7 @@ def verify_extracted_tree(
     for engine in parsed.engines:
         tp = engine.target_path
         ep = extracted_dir / tp
-        if not ep.exists():
+        if ep.is_symlink() or not ep.resolve().is_relative_to(extracted_dir.resolve()) or not ep.is_dir():
             errors.append(f"缺少引擎目录: {tp}")
         elif not any(ep.iterdir()):
             errors.append(f"引擎目录为空: {tp}")
@@ -183,7 +186,7 @@ def verify_extracted_tree(
 
     for rel_path, info in files.items():
         target = extracted_dir / rel_path
-        if not target.exists():
+        if target.is_symlink() or not target.resolve().is_relative_to(extracted_dir.resolve()) or not target.is_file():
             missing_files.append(rel_path)
             continue
 
@@ -211,7 +214,7 @@ def verify_extracted_tree(
 
     # 3. 多余文件检测
     manifest_paths = set(files.keys())
-    manifest_paths.add("engine-pack-manifest.json")
+    manifest_paths.add(MANIFEST_FILENAME)
     for p in extracted_dir.rglob("*"):
         if p.is_file():
             rel = p.relative_to(extracted_dir).as_posix()

@@ -84,9 +84,11 @@ def test_clean_install_runs_real_external_provisioner(
     assert set(installed["engines"]) == {"whisper", "paraformer", "sensevoice", "funasr_nano"}
 
 
-@pytest.mark.parametrize("field,value", [("schema_version", 6), ("release_version", "0.1.18.4-alpha")])
-def test_old_installed_models_are_reprovisioned_by_real_child(
-    tmp_path: Path, monkeypatch: MonkeyPatch, field: str, value: str | int
+@pytest.mark.parametrize(
+    "field,value,expected_requests", [("schema_version", 6, 4), ("release_version", "0.1.18.4-alpha", 0)]
+)
+def test_schema_change_reprovisions_but_release_provenance_reuses_content(
+    tmp_path: Path, monkeypatch: MonkeyPatch, field: str, value: str | int, expected_requests: int
 ) -> None:
     _enable_tiny_provider(monkeypatch)
     _prepare_with_real_child(tmp_path)
@@ -95,7 +97,8 @@ def test_old_installed_models_are_reprovisioned_by_real_child(
     old[field] = value
     path.write_text(json.dumps(old), encoding="utf-8")
     result = _prepare_with_real_child(tmp_path)
-    assert result["source"] == "online_download" and result["network_requests"] == 4
+    assert result["source"] == ("online_download" if expected_requests else "already_installed")
+    assert result["network_requests"] == expected_requests
     reused = _prepare_with_real_child(tmp_path)
     assert reused["source"] == "already_installed"
 

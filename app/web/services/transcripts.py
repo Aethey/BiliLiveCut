@@ -430,10 +430,13 @@ def list_transcripts(limit: int = 30, session_id: int | None = None) -> list[dic
         segment = segments.get(transcript.segment_id)
         source = sources.get(segment.session_id, unknown_source_identity()) if segment else unknown_source_identity()
         refinement: dict[str, Any] = {}
+        auxiliary: dict[str, Any] = {}
         if transcript.auxiliary_json:
             try:
                 auxiliary = json.loads(transcript.auxiliary_json)
             except (json.JSONDecodeError, TypeError):
+                auxiliary = {}
+            if not isinstance(auxiliary, dict):
                 auxiliary = {}
             if isinstance(auxiliary, dict) and isinstance(auxiliary.get("transcript_refinement"), dict):
                 refinement = auxiliary["transcript_refinement"]
@@ -447,6 +450,8 @@ def list_transcripts(limit: int = 30, session_id: int | None = None) -> list[dic
                 "summary": str(refinement.get("summary", "")),
                 "llm_refined": refined_transcript_text(transcript) is not None,
                 "primary_backend": transcript.primary_backend,
+                "result_type": auxiliary.get("result_type", "speech"),
+                "audio_evidence": auxiliary.get("audio_evidence"),
                 "created_at": transcript.created_at.isoformat() if transcript.created_at else None,
                 "session_id": segment.session_id if segment else None,
                 "source_file_name": _source_file_name(segment.file_path) if segment else None,

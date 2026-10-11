@@ -236,7 +236,7 @@ async function loadTranscripts(forceRender = false) {
     <div class="item" id="transcript-item-${t.id}">
       <div class="sub">${esc(recordingTitle(t))} · 会话 #${t.session_id ?? "-"} · 片段 #${t.segment_id} · ${esc(t.language || "")} · ${esc(t.primary_backend || "")} · ${esc(t.created_at || "")}</div>
       ${sourceFile}
-      <div class="txt" id="transcript-final-${t.id}">${esc(t.text) || "(\u7a7a)"}</div>
+      <div class="txt" id="transcript-final-${t.id}">${esc(t.text) || (t.result_type === "no_speech" ? "无语音（音频与 VAD 检查通过）" : "(\u7a7a)")}</div>
       ${t.summary ? `<div class="sub" style="margin-top:8px"><b>片段概括：</b>${esc(t.summary)}</div>` : ""}
       ${rawDetails}
       <details class="transcript-correction" id="transcript-editor-${t.id}" data-transcript-editor="${t.id}" data-transcript-detail="${correctionDetailKey}" ${openTranscriptDetails.has(correctionDetailKey) ? "open" : ""} style="margin-top:8px">

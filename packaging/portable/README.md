@@ -1,8 +1,8 @@
 # BiliLiveCut · 即插即用版（`packaging/portable/`）
 
-**版本：V0.1.18.7 Alpha** (`0.1.18.7-alpha`)
+**版本：V0.1.18.8 Alpha** (`0.1.18.8-alpha`)
 
-本版修复模型下载端点和完整性校验、录制与弹幕故障收尾及后台作业状态，统一安全异常链、日志定位编号与启动失败记录。详细排错见[使用指南](../../docs/usage.md#排错)。升级仍使用全新目录与新数据库。
+本版修复模型源元数据回退、内容兼容的 Engine Pack 复用、Windows 静态 MIME、ASR 进程取消与停机，以及终态租约和整场总结补偿。详细排错见[使用指南](../../docs/usage.md#排错)。升级仍使用全新目录与新数据库。
 
 > **普通用户请先阅读：[Portable 小白使用说明](USER_GUIDE_ZH.md)**。该说明按 Windows 用户从下载、校验、解压、首次启动到第一次录制的顺序编写。
 
@@ -16,15 +16,14 @@ Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装�
 
 ---
 
-## V0.1.18.7 Alpha：Event-first 热点与原生加速
+## V0.1.18.8 Alpha：Event-first 热点与原生加速
 
 - 弹幕、音频、SenseVoice、ASR 与趋势先形成带稳定 ID 的热点事件；ASR 缺失或质量不足不再阻断自动切片，缺失证据会重归一化而不是记零分。
 - 热点可以跨连续原始分段更新和合并，一个分段也可以保留多个无关事件；真实录制缺口是不可跨越的媒体边界。
 - EventEnricher 只依据带 ID 的证据束生成标题、摘要和语义置信度；ClipScorer 再按完整事件判断是否生成候选，并从事件前后文确定动态边界。
 - GMT+8 场次时间线展示所有活动热点。低于成片阈值的事件仍显示来源评分与代表弹幕，但明确标记为“仅时间线，不生成视频”；有候选的事件才进入既有精审、渲染和发布流程。
 - 首次在线模型准备由 `.venv` Python 子进程执行并一次性预检下载依赖；程序管理的损坏 venv 会自动重建，真实不支持的 Python 会明确拒绝，准备中断可续跑。
-- Engine Pack 必须匹配当前发行版本与源码身份；在本版本内，四个模型按不可变来源和逐引擎内容指纹分别校验，完整引擎可复用，损坏引擎单独修复。
-- Engine Pack 内容清单只接受 schema 5，安装后的模型目录只接受 schema 7；其他 schema 不会被迁移或改写。只接受当前发行版本及源码身份生成的清单；本版本内可复用校验通过的完整引擎，旧版本安装状态不复用。
+- Engine Pack 内容清单仅支持 schema 5，已安装模型清单仅支持 schema 7，不迁移旧 schema。模型仓库、不可变 revision、格式、子模型/随附组件及逐文件完整性必须符合当前定义；发行版本或源码提交差异仅记录来源警告，内容相同的旧包及完整安装目录可以复用。Runtime、Payload 和数据库继续遵循各自严格身份与格式规则。
 - 候选聚类和弹幕文本特征使用 Rust/rayon；音频峰值、静音区间和滚动稳健增幅使用 Cython。Payload 强制携带当前 Python ABI 的 C、Cython、Rust 三个 `app.accelerators` 原生模块，不提供旧模块路径。
 - 设置页可保存下次启动 Web 端口；当前服务保持原端口，重启后 Launcher 从根目录 `config/launcher.json` 读取并仍只监听 `127.0.0.1`。
 - 数据库只接受当前版本创建的 Schema v6；历史数据库会被明确拒绝，不执行备份、迁移或字段补写。
@@ -37,7 +36,7 @@ Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装�
 - V0.1.17.2～V0.1.17.4 统一保护所有自动刷新页面的草稿、选择、展开状态和滚动位置；实时转写可按完整历史场次筛选、显示源 TS 并无损导出无黑首帧 MP4，每次录制前重新查询标题和主播名。
 - 整场结束后会把同场全部最终 ASR 作为一个完整上下文交给 LLM 分析，不直接拼接分段或节点摘要；人工纠错和重分析会使旧总结失效。
 
-逐项版本记录见 [0.1.17 系列 Changelog](../../docs/changelog/CHANGELOG_PRE_0.1.17.md)。当前 V0.1.18.7 不迁移 0.1.17.x 的数据库、Runtime、Payload 或已安装清单；请解压到全新目录并使用当前版本创建的新数据库。原始录像、成片和人工导出资料可作为普通文件独立保留。
+逐项版本记录见 [0.1.17 系列 Changelog](../../docs/changelog/CHANGELOG_PRE_0.1.17.md)。当前 V0.1.18.8 不迁移 0.1.17.x 的数据库、Runtime、Payload 或已安装清单；请解压到全新目录并使用当前版本创建的新数据库。原始录像、成片和人工导出资料可作为普通文件独立保留。
 
 ## V0.1.16.5 Alpha：严重正确性修复
 
@@ -46,7 +45,7 @@ Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装�
 - 拒绝候选会原子同步审核事件、仍可取消的任务和全部未发布关联成片；拒绝记录不会继续以 `reviewing` 出现在成品队列，已经发布的外部结果不会被事后改写。
 - 主播下播或持续断流时，连续重试默认最多 20 次或 300 秒，任一先到即自动收尾；成功产出新片段后重试预算归零。
 - 转写整理与高光复核默认各允许最多 `65536` 个输出 token。长转写的局部解码复读会触发 Paraformer、Whisper 回退，LLM 只保守清理残余的 ASR/VAD 边界重复。
-- Alpha 当前版不迁移其他版本的配置、Runtime、Payload、数据库或 Engine Pack 已安装清单。所有结构只接受当前精确 schema；Engine Pack 同时校验发行版本、源码身份及逐引擎内容指纹，拒绝旧版本包与安装状态。
+- Engine Pack 内容清单仅支持 schema 5，已安装模型清单仅支持 schema 7，不迁移旧 schema。模型仓库、不可变 revision、格式、子模型/随附组件及逐文件完整性必须符合当前定义；发行版本或源码提交差异仅记录来源警告，内容相同的旧包及完整安装目录可以复用。Runtime、Payload 和数据库继续遵循各自严格身份与格式规则。
 
 ---
 
@@ -87,7 +86,7 @@ Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装�
 | **模型** | 不含模型，通过独立 **Engine Pack** 或在线下载安装 | 不含模型，通过独立 **Engine Pack** 或在线下载安装 |
 | **适用场景** | 熟悉 Python/FFmpeg 的高级用户 | 普通用户、小规模分发测试 |
 
-> **模型策略**: Lite 和 Full 均不携带四引擎 ASR 模型。模型统一由独立的 **Portable Engine Pack** 提供。仅当前发行版 Engine Pack 会被自动发现和接受；首次启动会严格校验版本、源码提交、内部 Manifest 与逐文件 SHA-256，再用不可变仓库 revision 的内容指纹判断每个引擎能否复用；正式同名构建还会校验外部 CRC32/SHA-256。没有当前有效包时仅在线下载缺失或内容变化的引擎。
+Engine Pack 内容清单仅支持 schema 5，已安装模型清单仅支持 schema 7，不迁移旧 schema。模型仓库、不可变 revision、格式、子模型/随附组件及逐文件完整性必须符合当前定义；发行版本或源码提交差异仅记录来源警告，内容相同的旧包及完整安装目录可以复用。Runtime、Payload 和数据库继续遵循各自严格身份与格式规则。
 
 ---
 
@@ -195,21 +194,23 @@ Lite 和 Full 均不携带 ASR 模型。四个引擎模型统一由独立的 **E
 
 ### 使用方式
 
-1. 下载 BiliLiveCut-EnginePack-0.1.18.7-alpha.zip（模型内容按当前清单中的不可变身份校验）
+1. 准备可信的 BiliLiveCut-EnginePack-*.zip（包括内容兼容的旧发行模型包）
 2. 放在 Launcher EXE **同级目录** (或 packages/ 子目录)
-3. 双击启动 Launcher → 自动 **CRC32 校验** → 校验通过即离线安装 (网络请求 0)
-4. 无可用本地包或包校验失败 → 扫描既有 `models/`，只在线准备缺失或身份变化的引擎
+3. 双击启动 Launcher → 外部摘要比对（有发布摘要时）→ ZIP 结构、schema、模型身份与逐文件 SHA-256 全部通过 → 离线安装（网络请求 0）
+4. 包缺失记录 `local_not_found`；包拒绝记录 `local_rejected` 及具体阶段。扫描既有 `models/` 后，只有允许联网回退时才准备缺失或内容变化的引擎，`--offline` 禁止下载
 
-### CRC32 校验
+ZIP 中的 `engine-pack-manifest.json` 可以直接位于根目录，或全部内容置于唯一一层包装目录。多个 manifest、多层包装、包外条目和歧义路径均拒绝。没有期望 CRC32/SHA-256 时只计算摘要并明确记录，不会伪称外部摘要已验证，也不会跳过内部验证。
+
+### 摘要与内部校验
 
 | 行为 | 说明 |
 |------|------|
-| CRC32 匹配 | 解压安装，**完全离线**，网络请求 → 0 |
+| CRC32 匹配 | 仅代表外部摘要相符；仍必须通过内部 manifest、模型身份及全部文件校验 |
 | CRC32 不匹配 | 拒绝该 ZIP，保留既有有效模型，只在线准备缺失/变化的引擎 |
 | 本地包缺失 | 扫描既有模型，逐引擎复用或在线准备 |
 | 内部 Hash 失败 | 拒绝不可信 ZIP，不破坏已经提交的有效模型 |
 
-四个引擎独立校验、独立 staging、独立提交。只接受当前发行版本及源码身份的 Engine Pack、在线准备结果和安装记录；旧版本目录及缺少当前清单的人工复制模型不会直接复用。单个引擎失败不会回滚本版本中其他已成功安装的模型。
+Engine Pack 内容清单仅支持 schema 5，已安装模型清单仅支持 schema 7，不迁移旧 schema。模型仓库、不可变 revision、格式、子模型/随附组件及逐文件完整性必须符合当前定义；发行版本或源码提交差异仅记录来源警告，内容相同的旧包及完整安装目录可以复用。Runtime、Payload 和数据库继续遵循各自严格身份与格式规则。
 
 ### 模型安装目录
 
@@ -238,7 +239,7 @@ python build_engine_pack.py --from-cache  # 从已验证缓存构建
 
 输出:
 
-- dist/engine-pack/BiliLiveCut-EnginePack-0.1.18.7-alpha.zip
+- dist/engine-pack/BiliLiveCut-EnginePack-0.1.18.8-alpha.zip
 - dist/engine-pack/engine-pack-manifest.json
 - dist/engine-pack/CRC32SUMS.txt
 - dist/engine-pack/SHA256SUMS.txt
@@ -311,7 +312,7 @@ python build_exe.py --without-engine-pack
 python build_full_bundle.py
 ```
 
-若还需独立模型包，执行 `python build_engine_pack.py --from-cache`（已有完整缓存）或 `python build_engine_pack.py`（联网下载）。构建缓存必须有当前发行版与锁定模型定义的下载记录；缺失时先运行 `python download_engines.py`。Launcher 同时校验发行身份和逐引擎内容指纹，拒绝旧版本包及安装状态。
+若还需独立模型包，执行 `python build_engine_pack.py --from-cache`（已有完整缓存）或 `python build_engine_pack.py`（联网下载）。构建缓存必须有当前发行版与锁定模型定义的下载记录；缺失时先运行 `python download_engines.py`。构建器仍严格检查当前发行身份；消费端按上述内容契约接受模型包与已安装目录。
 
 ---
 
@@ -347,7 +348,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── runtime/                  # ★ Runtime 版本管理
 │   ├── current.json          #   当前激活的 Release 信息
 │   └── releases/
-│       └── 0.1.18.7-alpha+<source-sha>+<payload-hash>/  # 内容寻址的固定版本源码
+│       └── 0.1.18.8-alpha+<source-sha>+<payload-hash>/  # 内容寻址的固定版本源码
 │
 ├── .venv/                    # Python 虚拟环境（launcher.exe 自动创建）
 ├── models/                   # 四引擎 ASR 模型 (由 Engine Pack 或在线下载安装)
@@ -480,7 +481,7 @@ TRANSCRIPT_LLM_REFINE_MAX_TOKENS=65536  # 五分钟转写整理的最大输出�
 HIGHLIGHT_LLM_MAX_TOKENS=65536        # 高光复核的最大输出预算（含推理 token）
 ```
 
-**多模型配置**：服务商、base_url、模型、联网参数、价格和 API Key 只在 Web 控制台「模型」Tab 管理。可同时添加 DeepSeek / 通义千问 / Kimi / 智谱 GLM 等服务商并设置优先级，某个不可用时自动切换到下一个。“测试连通”直接测试当前表单且不会保存 API Key；页面会显示每个服务商的响应或错误详情，确认无误后再点击“保存全部”。旧的 `.env` `LLM_*` 字段不会被读取并会导致当前配置校验失败。转写梳理可在「配置 → 功能开关」独立关闭，关闭后仍保留本地 ASR 原文。两类五分钟切片请求默认各预留 `65536` 个最大输出 token，实际消耗仍以服务商返回为准。
+**多模型配置**：服务商、base_url、模型、联网参数、价格和 API Key 只在 Web 控制台「模型」Tab 管理。可同时添加 DeepSeek / 通义千问 / Kimi / 智谱 GLM 等服务商并设置优先级，某个不可用时自动切换到下一个。“测试连通”直接测试当前表单且不会保存 API Key；页面会显示每个服务商的响应或错误详情，确认无误后再点击“保存全部”。旧的 `.env` 服务商字段（如 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL`）已废弃；`LLM_REQUEST_TIMEOUT_S` 等运行参数仍有效。转写梳理可在「配置 → 功能开关」独立关闭，关闭后仍保留本地 ASR 原文。两类五分钟切片请求默认各预留 `65536` 个最大输出 token，实际消耗仍以服务商返回为准。
 
 ### 网感资料库（可选，用于热点采集）
 
@@ -587,7 +588,7 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 
 ## 回主工程
 
-此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.18.7-Alpha` 的发布基线 Commit。
+此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.18.8-Alpha` 的发布基线 Commit。
 
 - **主仓库**: [README](../../README.md)
 - **完整变更日志**: [CHANGELOG](../../CHANGELOG.md)

@@ -29,6 +29,83 @@ from blc_portable.launcher import model_downloader
 REVISION = "a" * 40
 
 
+@pytest.mark.parametrize("redirect", [False, True])
+def test_real_sdk_metadata_failure_switches_endpoint_without_same_source_retry(
+    tmp_path: Path, monkeypatch: MonkeyPatch, no_download_wait: list[float], redirect: bool
+) -> None:
+    import huggingface_hub
+    from huggingface_hub import constants
+    from huggingface_hub.utils import _http
+
+    payload = b'{"complete":true}'
+    digest = hashlib.sha1(b"blob " + str(len(payload)).encode() + b"\0" + payload).hexdigest()
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert "authorization" not in request.headers
+        if "/tree/" in request.url.path:
+            assert REVISION in request.url.path
+            return httpx.Response(
+                200, json=[{"type": "file", "path": "config.json", "size": len(payload), "oid": digest}]
+            )
+        assert f"/resolve/{REVISION}/config.json" in request.url.path
+        if request.url.host == "hf-mirror.com":
+            assert request.method == "HEAD"
+            return (
+                httpx.Response(308, headers={"Location": "https://cdn.invalid/fixture"})
+                if redirect
+                else httpx.Response(200, headers={"Content-Length": str(len(payload))})
+            )
+        assert request.url.host == "huggingface.co"
+        return httpx.Response(
+            200,
+            headers={"X-Repo-Commit": REVISION, "ETag": digest, "Content-Length": str(len(payload))},
+            content=b"" if request.method == "HEAD" else payload,
+        )
+
+    monkeypatch.setattr(constants, "HF_HUB_OFFLINE", False)
+    monkeypatch.setenv("HF_TOKEN", "must-not-leak")
+    old_factory = _http._GLOBAL_CLIENT_FACTORY
+    huggingface_hub.set_client_factory(lambda: httpx.Client(transport=httpx.MockTransport(respond)))
+    try:
+        model_downloader._download_locked_model("whisper", "huggingface", "fixture/model", tmp_path, REVISION)
+    finally:
+        huggingface_hub.set_client_factory(old_factory)
+    assert (tmp_path / "config.json").read_bytes() == payload
+    assert sum(request.url.host == "hf-mirror.com" and request.method == "HEAD" for request in requests) == 1
+    assert any(
+        request.url.host == "huggingface.co" and request.method == "GET" and "/resolve/" in request.url.path
+        for request in requests
+    )
+    assert no_download_wait == []
+
+
+def test_wrapped_metadata_failures_exhaust_each_source_once(no_download_wait: list[float]) -> None:
+    from huggingface_hub.errors import FileMetadataError, LocalEntryNotFoundError
+
+    calls: list[str] = []
+
+    def download(endpoint: str) -> None:
+        calls.append(endpoint)
+        try:
+            raise FileMetadataError("Distant resource does not seem to be on huggingface.co")
+        except FileMetadataError as exc:
+            raise LocalEntryNotFoundError("No local cache") from exc
+
+    with pytest.raises(RuntimeError, match="kind=metadata.*retry=False") as caught:
+        model_download.download_with_retry(
+            engine="whisper",
+            model="fixture/model",
+            revision=REVISION,
+            endpoints=model_downloader.HF_MIRRORS,
+            operation=download,
+        )
+    assert calls == list(model_downloader.HF_MIRRORS)
+    assert isinstance(caught.value.__cause__.__cause__, FileMetadataError)
+    assert no_download_wait == []
+
+
 @pytest.fixture
 def no_download_wait(monkeypatch: MonkeyPatch) -> list[float]:
     waits: list[float] = []
@@ -69,13 +146,19 @@ def hf_requests(monkeypatch: MonkeyPatch) -> Iterator[list[httpx.Request]]:
         huggingface_hub.set_client_factory(old_factory)
 
 
+@pytest.mark.parametrize("show_progress", [False, True])
 def test_preimported_sdk_uses_explicit_endpoint_for_tree_and_file_without_token(
-    tmp_path: Path, hf_requests: list[httpx.Request], monkeypatch: MonkeyPatch
+    tmp_path: Path,
+    hf_requests: list[httpx.Request],
+    monkeypatch: MonkeyPatch,
+    show_progress: bool,
+    capsys: CaptureFixture[str],
 ) -> None:
     import huggingface_hub  # 已导入 SDK 后才指定端点，不能依赖环境变量的导入时机。
 
     assert huggingface_hub.__version__ == "1.26.0"
     monkeypatch.setenv("HF_ENDPOINT", "https://unrelated.invalid")
+    monkeypatch.setenv("BLC_MODEL_PROGRESS", "1" if show_progress else "0")
     for index, endpoint in enumerate(model_downloader.HF_MIRRORS):
         target = tmp_path / str(index)
         model_downloader._download_hf_model("fixture/model", target, REVISION, endpoint)
@@ -85,6 +168,10 @@ def test_preimported_sdk_uses_explicit_endpoint_for_tree_and_file_without_token(
     assert any(request.method == "GET" and "/resolve/" in request.url.path for request in hf_requests)
     assert all("authorization" not in request.headers for request in hf_requests)
     assert os.environ["HF_ENDPOINT"] == "https://unrelated.invalid"
+    output = capsys.readouterr().out
+    assert ("BLC_MODEL_PROGRESS=" in output) is show_progress
+    if show_progress:
+        assert "Reconstructing" in output and "Downloading bytes" in output
 
 
 def test_first_source_timeout_falls_back_with_same_revision_and_directory(

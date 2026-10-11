@@ -11,7 +11,7 @@
 
 输出:
     dist/engine-pack/
-    ├── BiliLiveCut-EnginePack-0.1.18.7-alpha.zip
+    ├── BiliLiveCut-EnginePack-0.1.18.8-alpha.zip
     ├── engine-pack-manifest.json
     ├── CRC32SUMS.txt
     ├── SHA256SUMS.txt
@@ -444,14 +444,14 @@ def self_verify(archive_path: Path, manifest: dict[str, Any]) -> bool:
     try:
         from .installer import _safe_extract
 
-        _safe_extract(archive_path, verify_dir)
+        pack_root = _safe_extract(archive_path, verify_dir)
 
-        from .manifest import load_manifest
+        from .manifest import MANIFEST_FILENAME, load_manifest
         from .verifier import verify_extracted_tree
 
-        parsed = load_manifest(verify_dir / "engine-pack-manifest.json")
+        parsed = load_manifest(pack_root / MANIFEST_FILENAME)
 
-        errors = verify_extracted_tree(verify_dir, parsed)
+        errors = verify_extracted_tree(pack_root, parsed)
         if errors:
             for e in errors:
                 print(f"  [FAIL] {e}")

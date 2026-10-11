@@ -460,8 +460,11 @@ class PluginManager:
         names: list[str] = []
         for name in set(sys.modules).difference(previous_modules):
             module = sys.modules.get(name)
-            raw_path = getattr(module, "__file__", None)
-            paths = [raw_path] if isinstance(raw_path, str) else list(getattr(module, "__path__", ()))
+            # 模块级 __getattr__ 可能触发 transformers 等依赖的惰性导入；
+            # 生命周期扫描只读取已存在的元数据，不执行无关模块代码。
+            metadata = vars(module) if isinstance(module, ModuleType) else {}
+            raw_path = metadata.get("__file__")
+            paths = [raw_path] if isinstance(raw_path, str) else list(metadata.get("__path__", ()))
             for location in paths:
                 try:
                     Path(location).resolve().relative_to(root)
@@ -472,9 +475,10 @@ class PluginManager:
         owned = set(names)
         for name in names:
             module = sys.modules.get(name)
-            if getattr(module, "__file__", None) is not None:
+            metadata = vars(module) if isinstance(module, ModuleType) else {}
+            if metadata.get("__file__") is not None:
                 continue
-            paths = list(getattr(module, "__path__", ()))
+            paths = list(metadata.get("__path__", ()))
             shared_path = any(not Path(location).resolve().is_relative_to(root) for location in paths)
             shared_child = any(child.startswith(name + ".") and child not in owned for child in tuple(sys.modules))
             if shared_path or shared_child:
@@ -488,7 +492,7 @@ class PluginManager:
         names = cls._module_names_from_root(root, set())
         for name in sorted(names, key=lambda value: value.count("."), reverse=True):
             module = sys.modules.get(name)
-            cached = getattr(module, "__cached__", None)
+            cached = vars(module).get("__cached__") if isinstance(module, ModuleType) else None
             if isinstance(cached, str):
                 cache_path = Path(cached).resolve()
                 if cache_path.is_relative_to(root) and cache_path.suffix == ".pyc":
@@ -498,7 +502,7 @@ class PluginManager:
                         logger.warning("插件字节码缓存清理失败: {} {}", name, exc)
             parent_name, _, child = name.rpartition(".")
             parent = sys.modules.get(parent_name)
-            if parent is not None and getattr(parent, child, None) is module:
+            if isinstance(parent, ModuleType) and vars(parent).get(child) is module:
                 delattr(parent, child)
             sys.modules.pop(name, None)
         importlib.invalidate_caches()

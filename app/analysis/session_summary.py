@@ -13,6 +13,7 @@ from uuid import uuid4
 from loguru import logger
 from sqlmodel import Session, select
 
+from app.analysis.session_coverage import session_asr_coverage
 from app.analysis.transcription.content import transcript_text
 from app.core.config import settings
 from app.core.runtime_settings import configured_entry
@@ -31,7 +32,7 @@ from app.db.session import get_session
 _RESULT_PREFIX = "session_timeline_summary:"
 _REQUEST_PREFIX = "session_timeline_summary_request:"
 _REANALYSIS_PREFIX = "session_reanalysis:"
-_SUMMARY_VERSION = 2
+_SUMMARY_VERSION = 3
 _REQUEST_FIELDS = {
     "version",
     "session_id",
@@ -54,6 +55,8 @@ _RESULT_FIELDS = {
     "source",
     "summary",
     "generated_at",
+    "coverage",
+    "summary_mode",
 }
 _MAX_ATTEMPTS = 3
 _GMT8 = timezone(timedelta(hours=8))
@@ -111,6 +114,8 @@ def request_session_timeline_summary(
     :raises ValueError: 录制会话不存在。
     """
     with _SUMMARY_LOCK, get_session() as db:
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         if db.get(RecordingSession, session_id) is None:
             raise ValueError(f"录制会话不存在: session_id={session_id}")
         created = request_session_timeline_summary_in_session(
@@ -132,47 +137,44 @@ def request_session_timeline_summary_in_session(
     reason: str,
     force: bool = False,
 ) -> bool:
-    """在调用方事务内登记总结请求。"""
-    with _SUMMARY_LOCK:
-        reason = reason.strip()
-        if not reason:
-            raise ValueError("整场总结触发原因不能为空")
-        if db.get(RecordingSession, session_id) is None:
-            raise ValueError(f"录制会话不存在: session_id={session_id}")
-        key = _request_key(session_id)
-        existing = db.get(AppSetting, key)
-        previous = _decode_request(existing.value if existing is not None else None)
-        if (
-            not force
-            and previous.get("version") == _SUMMARY_VERSION
-            and previous.get("status") in {"pending", "running"}
-        ):
-            return False
-        payload = {
-            "version": _SUMMARY_VERSION,
-            "session_id": session_id,
-            "request_id": uuid4().hex,
-            "reason": reason[:200],
-            "status": "pending",
-            "attempts": 0,
-            "requested_at": _now_iso(),
-            "started_at": None,
-            "next_retry_at": None,
-            "last_error": None,
-        }
-        value = _encode(payload)
-        if existing is None:
-            existing = AppSetting(key=key, value=value)
-        else:
-            existing.value = value
-            existing.updated_at = datetime.now(UTC)
-        db.add(existing)
-        return True
+    """在调用方已持有的写事务内登记请求，不再取得进程锁，避免锁序反转。"""
+    reason = reason.strip()
+    if not reason:
+        raise ValueError("整场总结触发原因不能为空")
+    if db.get(RecordingSession, session_id) is None:
+        raise ValueError(f"录制会话不存在: session_id={session_id}")
+    key = _request_key(session_id)
+    existing = db.get(AppSetting, key)
+    previous = _decode_request(existing.value if existing is not None else None)
+    if not force and previous.get("version") == _SUMMARY_VERSION and previous.get("status") in {"pending", "running"}:
+        return False
+    payload = {
+        "version": _SUMMARY_VERSION,
+        "session_id": session_id,
+        "request_id": uuid4().hex,
+        "reason": reason[:200],
+        "status": "pending",
+        "attempts": 0,
+        "requested_at": _now_iso(),
+        "started_at": None,
+        "next_retry_at": None,
+        "last_error": None,
+    }
+    value = _encode(payload)
+    if existing is None:
+        existing = AppSetting(key=key, value=value)
+    else:
+        existing.value = value
+        existing.updated_at = datetime.now(UTC)
+    db.add(existing)
+    return True
 
 
 def ensure_session_timeline_summary_requested(session_id: int) -> bool:
     """为已结束且缺少当前整场 ASR 有效总结的场次补登记请求。"""
-    with get_session() as db:
+    with _SUMMARY_LOCK, get_session() as db:
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         recording = db.get(RecordingSession, session_id)
         if recording is None or recording.ended_at is None:
             return False
@@ -183,17 +185,35 @@ def ensure_session_timeline_summary_requested(session_id: int) -> bool:
         result = db.get(AppSetting, _result_key(session_id))
         result_payload = _decode_result(result.value if result is not None else None)
         blocks = _session_transcript_blocks(db, session_id)
-        if result_payload.get("version") == _SUMMARY_VERSION and result_payload.get(
-            "transcript_signature"
-        ) == session_transcript_signature(blocks):
+        coverage = session_asr_coverage(db, session_id)
+        if (
+            result_payload.get("version") == _SUMMARY_VERSION
+            and result_payload.get("transcript_signature") == session_transcript_signature(blocks)
+            and result_payload.get("coverage") == coverage
+        ):
             return False
-    return request_session_timeline_summary(session_id, reason="timeline_viewed")
+        return request_session_timeline_summary_in_session(db, session_id, reason="missing_or_changed_input")
+
+
+def compensate_session_summaries(*, after_id: int = 0, limit: int = 50) -> tuple[int, int]:
+    """有界补登记已结束场次，返回登记数量和下次游标；一轮结束后回到起点。"""
+    with get_session() as db:
+        ids = db.exec(
+            select(RecordingSession.id)
+            .where(RecordingSession.ended_at.is_not(None), RecordingSession.id > after_id)
+            .order_by(RecordingSession.id)
+            .limit(limit)
+        ).all()
+    created = sum(ensure_session_timeline_summary_requested(session_id) for session_id in ids)
+    return created, ids[-1] if len(ids) == limit else 0
 
 
 def recover_running_session_summary_requests() -> int:
     """服务启动时把上次进程遗留的运行请求恢复为等待状态。"""
     recovered = 0
     with _SUMMARY_LOCK, get_session() as db:
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         rows = db.exec(select(AppSetting).where(AppSetting.key.startswith(_REQUEST_PREFIX))).all()
         for row in rows:
             payload = _decode_request(row.value)
@@ -206,6 +226,7 @@ def recover_running_session_summary_requests() -> int:
             payload.update(
                 {
                     "status": "pending",
+                    "request_id": uuid4().hex,
                     "started_at": None,
                     "next_retry_at": None,
                     "last_error": "服务重启后重新排队",
@@ -224,6 +245,8 @@ def claim_pending_session_summary() -> SessionSummaryClaim | None:
     """原子领取一个已经结束且分析稳定的整场总结请求。"""
     now = datetime.now(UTC)
     with _SUMMARY_LOCK, get_session() as db:
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         rows = db.exec(
             select(AppSetting).where(AppSetting.key.startswith(_REQUEST_PREFIX)).order_by(AppSetting.updated_at.asc())
         ).all()
@@ -266,6 +289,7 @@ def execute_session_summary_claim(claim: SessionSummaryClaim) -> bool:
     """执行一个已领取请求，并以请求版本保护最终提交。"""
     try:
         result = build_session_timeline_summary(claim.session_id)
+        committed = _commit_summary_result(claim, result)
     except SessionSummaryNotReady:
         _return_claim_to_queue(claim, error="场次重分析尚未稳定", count_attempt=False)
         return False
@@ -273,7 +297,6 @@ def execute_session_summary_claim(claim: SessionSummaryClaim) -> bool:
         logger.exception("整场高光总结失败 session={}", claim.session_id)
         _return_claim_to_queue(claim, error=safe_exception_summary(exc), count_attempt=True)
         return False
-    committed = _commit_summary_result(claim, result)
     if not committed:
         return False
     logger.info(
@@ -291,7 +314,15 @@ def build_session_timeline_summary(session_id: int) -> dict[str, Any]:
         if not _session_ready(db, session_id):
             raise SessionSummaryNotReady(f"录制会话尚未完成最终分析: session_id={session_id}")
         blocks = _session_transcript_blocks(db, session_id)
+        coverage = session_asr_coverage(db, session_id)
         source_label = _session_source_label(db, session_id)
+        previous_row = db.get(AppSetting, _result_key(session_id))
+        previous = _decode_result(previous_row.value if previous_row else None)
+        recovered = (
+            coverage["mode"] == "full"
+            and bool(previous)
+            and (previous["coverage"]["mode"] == "degraded" or previous.get("summary_mode") == "recovered")
+        )
 
     signature = session_transcript_signature(blocks)
     if not blocks:
@@ -301,7 +332,9 @@ def build_session_timeline_summary(session_id: int) -> dict[str, Any]:
         from app.analysis import llm
 
         raw = llm.call_text(
-            _summary_prompt(source_label, blocks),
+            _summary_prompt(source_label, blocks)
+            + "\n覆盖情况（仅根据已有证据分析，不推断缺失时段）："
+            + _encode(coverage),
             max_tokens=settings.highlight_llm_max_tokens,
         )
         parsed = llm.extract_json(raw) if raw else None
@@ -321,6 +354,8 @@ def build_session_timeline_summary(session_id: int) -> dict[str, Any]:
         "source": source,
         "summary": generated,
         "generated_at": _now_iso(),
+        "coverage": coverage,
+        "summary_mode": "recovered" if recovered else coverage["mode"],
     }
 
 
@@ -337,6 +372,7 @@ def session_timeline_summary_view(
         result = _decode_result(result_row.value if result_row is not None else None)
         request = _decode_request(request_row.value if request_row is not None else None)
         blocks = _session_transcript_blocks(db, session_id)
+        coverage = session_asr_coverage(db, session_id)
     signature = session_transcript_signature(blocks)
 
     base = {
@@ -347,6 +383,7 @@ def session_timeline_summary_view(
         "source": None,
         "generated_at": None,
         "needs_regeneration": False,
+        "coverage": coverage,
     }
     if not ended or processing_state == "recording":
         return {**base, "status": "recording"}
@@ -366,10 +403,11 @@ def session_timeline_summary_view(
             "error": request["last_error"] or "整场总结生成失败",
         }
 
-    if result and result["transcript_signature"] == signature:
+    if result and result["transcript_signature"] == signature and result["coverage"] == coverage:
         return {
             **base,
             "status": "ready",
+            "summary_mode": result.get("summary_mode", coverage["mode"]),
             "transcript_count": result["transcript_count"],
             "character_count": result["character_count"],
             "summary": result["summary"],
@@ -420,6 +458,8 @@ def _summary_prompt(source_label: str, blocks: list[SessionTranscriptBlock]) -> 
 
 def _commit_summary_result(claim: SessionSummaryClaim, result: dict[str, Any]) -> bool:
     with _SUMMARY_LOCK, get_session() as db:
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         request = db.get(AppSetting, _request_key(claim.session_id))
         request_payload = _decode_request(request.value if request is not None else None)
         if (
@@ -429,6 +469,13 @@ def _commit_summary_result(claim: SessionSummaryClaim, result: dict[str, Any]) -
         ):
             logger.info("整场总结结果已过期并丢弃 session={}", claim.session_id)
             return False
+        if (
+            not _session_ready(db, claim.session_id)
+            or result["transcript_signature"]
+            != session_transcript_signature(_session_transcript_blocks(db, claim.session_id))
+            or result["coverage"] != session_asr_coverage(db, claim.session_id)
+        ):
+            raise SessionSummaryNotReady("总结生成期间输入或任务状态发生变化")
         key = _result_key(claim.session_id)
         row = db.get(AppSetting, key)
         value = _encode(result)
@@ -450,6 +497,8 @@ def _return_claim_to_queue(
     count_attempt: bool,
 ) -> None:
     with _SUMMARY_LOCK, get_session() as db:
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         row = db.get(AppSetting, _request_key(claim.session_id))
         payload = _decode_request(row.value if row is not None else None)
         if row is None or payload.get("version") != _SUMMARY_VERSION or payload.get("request_id") != claim.request_id:
@@ -460,6 +509,7 @@ def _return_claim_to_queue(
         payload.update(
             {
                 "status": "failed" if failed else "pending",
+                "request_id": uuid4().hex,
                 "attempts": attempts,
                 "started_at": None,
                 "next_retry_at": None if failed else (datetime.now(UTC) + timedelta(seconds=delay_s)).isoformat(),
@@ -469,6 +519,16 @@ def _return_claim_to_queue(
         row.value = _encode(payload)
         row.updated_at = datetime.now(UTC)
         db.add(row)
+
+
+def recover_failed_summary_execution(claim: SessionSummaryClaim, error: str) -> None:
+    """仅恢复已确认结束且异常退出的执行，保留请求版本及有限重试计数。"""
+    _return_claim_to_queue(claim, error=error, count_attempt=True)
+
+
+def interrupt_summary_execution(claim: SessionSummaryClaim) -> None:
+    """关闭时更换请求身份，阻止迟到的同步 LLM 写入，不消耗业务重试。"""
+    _return_claim_to_queue(claim, error="Worker 关闭，等待下次运行恢复", count_attempt=False)
 
 
 def _session_ready(db: Session, session_id: int) -> bool:
@@ -583,6 +643,8 @@ def _decode_result(raw: str | None) -> dict[str, Any]:
     for field_name in ("transcript_count", "character_count"):
         if not isinstance(value[field_name], int) or isinstance(value[field_name], bool) or value[field_name] < 0:
             return {}
+    if not isinstance(value["coverage"], dict) or value["coverage"].get("mode") not in {"full", "degraded"}:
+        return {}
     if value["source"] not in {"llm", "empty"}:
         return {}
     if not isinstance(value["summary"], str) or not value["summary"]:

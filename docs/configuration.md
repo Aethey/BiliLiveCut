@@ -2,7 +2,7 @@
 
 通过 Web 左侧“设置中心”搜索中文名称或环境变量名，查看有效值、来源和生效时间。下表解释配置范围；实际注册定义位于 `app/core/configuration.py`，运行中的字段以设置中心返回为准。
 
-当前注册表共 147 项：137 项 Settings 与 10 项运行时配置；评分配置含 8 个权重和 6 个标量。表中默认值均来自代码/项目默认，不导出环境凭据。
+当前注册表共 151 项：141 项 Settings 与 10 项运行时配置；评分配置含 8 个权重和 6 个标量。表中默认值均来自代码/项目默认，不导出环境凭据。
 
 业务默认来自环境或项目配置；Web 覆盖以原键保存在 AppSetting。保存先整体校验，再在单一事务中提交；revision 防止旧表单覆盖。字段缺省保持原值，reset 删除覆盖并恢复环境/项目默认；凭据空白保持，clear 明确清空并阻止环境回退。
 
@@ -65,6 +65,10 @@
 | `asr_fallback_keep_loaded` | 兜底引擎模型常驻 | asr/global | False | boolean；不限..不限 | database/next_poll | `app/analysis/model_pool.py`（按角色动态读取） |
 | `asr_model_idle_unload_seconds` | 非驻留模型空闲卸载时间（0 关闭） | asr/global | 900 | integer；0..86400 | database/next_poll | `app/analysis/model_pool.py:109` |
 | `asr_preload_on_start` | 启动预加载模型 | asr/global | False | boolean；不限..不限 | database/restart | `app/pipeline/task_worker.py:244` |
+| `asr_inference_base_timeout_s` | ASR 加载及推理基础超时（秒） | asr/global | 600 | integer；30..7200 | database/next_task | `app/analysis/transcription/isolated.py` |
+| `asr_inference_timeout_rtf` | 每秒音频追加预算（秒） | asr/global | 10 | number；1..100 | database/next_task | `app/analysis/transcription/isolated.py` |
+| `asr_inference_max_timeout_s` | 单次 ASR 总预算上限（秒） | asr/global | 7200 | integer；60..43200 | database/next_task | `app/analysis/transcription/isolated.py` |
+| `llm_request_timeout_s` | LLM 单次请求超时（秒） | llm/global | 90 | number；1..600 | database/next_task | `app/analysis/llm.py` |
 | `llm_daily_budget` | LLM 每日预算（美元，0 不限） | llm/global | 0.0 | number；0.0..不限 | database/next_task | `app/analysis/llm.py:38` |
 | `transcript_llm_refine_enabled` | LLM 整理转写与摘要 | llm/global | True | boolean；不限..不限 | database/next_task | `app/core/settings_store.py:144`、`app/core/settings_store.py:150`、`app/web/services/settings.py:28`、`app/web/services/settings.py:36` |
 | `transcript_llm_refine_max_tokens` | 转写整理输出 Token 上限 | llm/global | 65536 | integer；128..65536 | database/next_task | `app/analysis/llm.py:585` |
@@ -185,3 +189,9 @@ GET /api/settings/configuration 返回脱敏字段清单；PATCH 同地址接受
 ## 录制重试保护
 
 `recording_reconnect_max_attempts` 与 `recording_reconnect_max_elapsed_s` 分别限制连续失败次数和重试时长；默认 20 次 / 180 秒。单项为 0 时关闭该项，两项同时为 0 仍保留 20 次安全上限。只有实际媒体达到目标分段时长才视为恢复，短末片不会重置预算。永久录制错误暂停自动重新启动，需处理后手动恢复。诊断与最小日志采集见 [Portable 排错](../packaging/portable/USER_GUIDE_ZH.md#反复显示录制异常)。
+
+## ASR 与 LLM 有限等待
+
+ASR 预算为 `min(asr_inference_max_timeout_s, asr_inference_base_timeout_s + 实测音频秒数 × asr_inference_timeout_rtf)`，覆盖资源等待、模型加载、调用、结果迭代与 IPC；音频标准化另有 300 秒上限且可取消。父进程一次预约可能用到的全部角色，避免跨进程资源死锁，因此兜底角色并发为 1 时也会限制整条管线并发。提高并发前需考虑每个模型槽独立占用的内存/显存。
+
+LLM 每次 SDK 请求受 `llm_request_timeout_s` 限制，不再执行 SDK 隐式重试；业务空响应重试和服务商故障切换仍有明确次数。停机时同步 HTTP 可能在期限内继续收尾，任务/总结代数使其迟到结果不可写回。
