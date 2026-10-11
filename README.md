@@ -67,10 +67,9 @@ python -m app.cli serve
 
 ## 鸣谢
 
-感谢每一位提供反馈、报告问题及支持本项目的朋友。GitHub 名单按 ID 去重，包含已打开和已关闭 issue 的提出者。
+感谢每一位提供反馈、报告问题及支持本项目的朋友。
 
 - GitHub：[shuangyiliu211126com](https://github.com/shuangyiliu211126com)（[#61](https://github.com/StarGazerQQD/BiliLiveCut/issues/61)、[#62](https://github.com/StarGazerQQD/BiliLiveCut/issues/62)）
-- GitHub：[StarGazerQQD](https://github.com/StarGazerQQD)（[#68](https://github.com/StarGazerQQD/BiliLiveCut/issues/68)、[#69](https://github.com/StarGazerQQD/BiliLiveCut/issues/69)、[#70](https://github.com/StarGazerQQD/BiliLiveCut/issues/70)、[#71](https://github.com/StarGazerQQD/BiliLiveCut/issues/71)）
 - GitHub：[xiu1zi3](https://github.com/xiu1zi3)（[#60](https://github.com/StarGazerQQD/BiliLiveCut/issues/60)）
 
 - Bilibili：[大口径喷子](https://space.bilibili.com/13886027)
