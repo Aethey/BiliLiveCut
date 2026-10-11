@@ -525,7 +525,11 @@ $("#btn-add").addEventListener("click", async () => {
       return;
     }
     toast("\u5df2\u6dfb\u52a0\u76f4\u64ad\u95f4");
-    loadRooms();
+    try {
+      await loadRooms();
+    } catch (error) {
+      toast("直播间已添加，但列表刷新失败：" + error.message);
+    }
   } catch (e) { toast("\u6dfb\u52a0\u5931\u8d25:" + e.message); }
 });
 

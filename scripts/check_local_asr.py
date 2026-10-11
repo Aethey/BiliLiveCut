@@ -55,7 +55,6 @@ def main(argv: list[str] | None = None) -> int:
             STORAGE_ROOT=str(Path(temporary) / "storage"),
             PLUGIN_DIR=str(Path(temporary) / "plugins"),
             BLC_MODELS_DIR=str(models),
-            ASR_NO_MODEL_DOWNLOAD="1",
             HF_HUB_OFFLINE="1",
             TRANSFORMERS_OFFLINE="1",
             MODELSCOPE_CACHE=str(Path(temporary) / "modelscope"),

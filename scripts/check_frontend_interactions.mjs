@@ -826,6 +826,21 @@ try {
   assert.match(element("refresh-status").textContent, /room database unavailable/);
   globalThis.fetch = savedFetch;
 
+  // A successful room creation must observe a failed follow-up refresh. Firefox
+  // can abort this request when navigating away before the response arrives.
+  globalThis.fetch = async (path, options) => {
+    if (path === "/api/rooms" && options.method === "POST") {
+      return { ok: true, status: 200, json: async () => ({ id: 90, room_id: 90 }) };
+    }
+    if (String(path).startsWith("/api/dashboard")) throw new Error("room refresh aborted");
+    return savedFetch(path, options);
+  };
+  element("new-url").value = "90";
+  await element("new-url").emit("input");
+  await element("btn-add").emit("click"); await settle();
+  assert.match(element("toast").textContent, /直播间已添加.*列表刷新失败.*room refresh aborted/);
+  globalThis.fetch = savedFetch;
+
   console.log(
     "PASS: frontend module graph, timeline scroll retention, session timeline expansion/reanalysis, transcript/room/model draft retention, locked switches and draft connectivity test",
   );
