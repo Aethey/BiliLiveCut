@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/StarGazerQQD/BiliLiveCut?include_prereleases&sort=semver)](https://github.com/StarGazerQQD/BiliLiveCut/releases)
 [![License](https://img.shields.io/github/license/StarGazerQQD/BiliLiveCut)](LICENSE)
 
-**当前版本：V0.1.18.7 Alpha** (`0.1.18.7-alpha`) · [更新记录](CHANGELOG.md)
+**当前版本：V0.1.18.8 Alpha** (`0.1.18.8-alpha`) · [更新记录](CHANGELOG.md)
 
 面向 Bilibili 直播的自动切片工具：**录制 → 转写 → 识别高光 → 人工审核 → 生成切片与文案 → 可选上传**。通过 Web 控制台管理直播间、录制场次、转写、候选和成品。
 
@@ -45,7 +45,7 @@ python -m app.cli serve
 
 ## 使用与升级注意事项
 
-- **不提供任何旧版本的向后兼容或自动迁移。** 旧数据库、配置键与环境变量别名、旧接口、旧运行时、旧 Engine Pack 和模型安装记录均不作为当前版本入口。升级请保留旧目录，在全新目录初始化数据库，按当前 `.env.example` 和 Web 设置重新配置，并准备当前版本的模型包或重新下载模型；不要覆盖旧目录或直接复制旧配置、数据库及安装状态。当前数据库结构为 Schema 6，模型安装清单为 schema 7；程序不会自动改写旧数据。
+- **不迁移旧版本数据库、配置别名、接口或运行时。** 升级请保留旧目录，在全新目录初始化 Schema 6 数据库，按当前 `.env.example` 和 Web 设置重新配置。模型内容可独立复用：支持 schema 5 Engine Pack 及 schema 7 安装清单，发行版本或源码提交不同仅提示来源差异，仍须通过当前模型仓库、revision、格式和文件完整性检查；不支持的 schema 不会自动升级。不要直接复制旧数据库、配置或运行时覆盖新目录。
 - 自动开播检测需要服务持续运行；程序退出或系统休眠期间不会检测。
 - 本地模型处理需要相应计算资源；录直播、采集弹幕及调用远程大模型需要联网。大模型与自动上传均可按需启用。
 - Web 业务设置持久化保存，具体生效时间可在设置中心查看。数据库、存储路径和登录身份等启动配置仍通过环境配置管理；远程部署必须设置 `ADMIN_PASSWORD`。
@@ -67,7 +67,7 @@ python -m app.cli serve
 
 ## 鸣谢
 
-感谢每一位提供反馈、报告问题及支持本项目的朋友。GitHub 名单按 ID 去重，包含已打开和已关闭 issue 的提出者。
+感谢每一位提供反馈、报告问题及支持本项目的朋友。
 
 - GitHub：[shuangyiliu211126com](https://github.com/shuangyiliu211126com)（[#61](https://github.com/StarGazerQQD/BiliLiveCut/issues/61)、[#62](https://github.com/StarGazerQQD/BiliLiveCut/issues/62)）
 - GitHub：[xiu1zi3](https://github.com/xiu1zi3)（[#60](https://github.com/StarGazerQQD/BiliLiveCut/issues/60)）
@@ -77,6 +77,8 @@ python -m app.cli serve
 - Bilibili：[_铃子](https://space.bilibili.com/95763745)
 - Bilibili：[爱莉希雅office](https://space.bilibili.com/11241685)
 - Bilibili：[七圣小伞](https://space.bilibili.com/330443150)
+- Bilibili：[溯园](https://space.bilibili.com/22335588)
+- Bilibili：[桜墨Moku](https://space.bilibili.com/6432607)
 
 ## 许可证
 

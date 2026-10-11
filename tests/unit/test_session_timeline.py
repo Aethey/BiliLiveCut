@@ -549,7 +549,9 @@ def test_whole_session_summary_recovers_running_request_and_rejects_stale_claim(
     assert stale_claim is not None
     assert recover_running_session_summary_requests() == 1
     recovered_claim = claim_pending_session_summary()
-    assert recovered_claim == stale_claim
+    assert recovered_claim is not None
+    assert recovered_claim.session_id == stale_claim.session_id
+    assert recovered_claim.request_id != stale_claim.request_id
 
     assert request_session_timeline_summary(session_id, reason="new-version", force=True) is True
     monkeypatch.setattr(

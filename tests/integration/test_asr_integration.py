@@ -24,6 +24,8 @@ from app.analysis.transcription.models import ASRSegmentResult, ASRTranscriptRes
 from app.analysis.transcription.pipeline import ASRPipeline
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from _pytest.monkeypatch import MonkeyPatch
 
 
@@ -61,7 +63,7 @@ class TestPipelineIntegration:
         val = _normalize_whisper_logprob(0.0)
         assert 0.0 <= val <= 1.0
 
-    def test_funasr_nano_is_default_primary(self, monkeypatch: MonkeyPatch) -> None:
+    def test_funasr_nano_is_default_primary(self, monkeypatch: MonkeyPatch, pcm_wav: Path) -> None:
         """默认主引擎应直接调用 Fun-ASR-Nano，而不是 Paraformer。"""
         from app.analysis.transcription import pipeline as pipeline_module
 
@@ -85,12 +87,12 @@ class TestPipelineIntegration:
         monkeypatch.setattr(pipeline_module.settings, "asr_primary", "funasr_nano")
         pipeline = ASRPipeline(primary_backend=FakePrimary())  # type: ignore[arg-type]
 
-        result = pipeline.transcribe("audio.wav")
+        result = pipeline.transcribe(str(pcm_wav))
 
         assert result.text == "Nano 主引擎文本"
         assert calls == ["funasr"]
 
-    def test_funasr_empty_falls_back_to_paraformer(self, monkeypatch: MonkeyPatch) -> None:
+    def test_funasr_empty_falls_back_to_paraformer(self, monkeypatch: MonkeyPatch, pcm_wav: Path) -> None:
         """Fun-ASR-Nano 空输出应先回退 Paraformer，并保留主引擎 provenance。"""
         from app.analysis.transcription import pipeline as pipeline_module
 
@@ -106,7 +108,7 @@ class TestPipelineIntegration:
         monkeypatch.setattr(pipeline_module.settings, "asr_primary", "funasr_nano")
         pipeline = ASRPipeline(primary_backend=FakePrimary())  # type: ignore[arg-type]
 
-        result = pipeline.transcribe("audio.wav")
+        result = pipeline.transcribe(str(pcm_wav))
 
         assert result.final_text == "Paraformer 回退文本"
         assert result.primary_backend == "funasr-nano"
@@ -115,7 +117,9 @@ class TestPipelineIntegration:
         assert result.primary_error_type == "ASRQualityError"
         assert result.final_text_source == "fallback"
 
-    def test_funasr_degenerate_repetition_falls_back_to_paraformer(self, monkeypatch: MonkeyPatch) -> None:
+    def test_funasr_degenerate_repetition_falls_back_to_paraformer(
+        self, monkeypatch: MonkeyPatch, pcm_wav: Path
+    ) -> None:
         """Nano 解码循环必须丢弃，并由 Paraformer 产生正式文本。"""
         from app.analysis.transcription import pipeline as pipeline_module
 
@@ -132,14 +136,16 @@ class TestPipelineIntegration:
         monkeypatch.setattr(pipeline_module.settings, "asr_primary", "funasr_nano")
         pipeline = ASRPipeline(primary_backend=FakePrimary())  # type: ignore[arg-type]
 
-        result = pipeline.transcribe("audio.wav")
+        result = pipeline.transcribe(str(pcm_wav))
 
         assert result.final_text == "Paraformer 给出的正常回退文本。"
         assert result.fallback_backend == "paraformer"
         assert result.fallback_trigger_reason == "primary_degenerate_repetition"
         assert result.primary_error_type == "ASRQualityError"
 
-    def test_funasr_local_decode_loop_is_repaired_without_discarding_primary(self, monkeypatch: MonkeyPatch) -> None:
+    def test_funasr_local_decode_loop_is_repaired_without_discarding_primary(
+        self, monkeypatch: MonkeyPatch, pcm_wav: Path
+    ) -> None:
         """占比较小的局部 Nano 复读应折叠，不应丢弃整段主引擎文本。"""
         from app.analysis.transcription import pipeline as pipeline_module
 
@@ -159,14 +165,16 @@ class TestPipelineIntegration:
         monkeypatch.setattr(pipeline_module.settings, "asr_primary", "funasr_nano")
         pipeline = ASRPipeline(primary_backend=FakePrimary())  # type: ignore[arg-type]
 
-        result = pipeline.transcribe("audio.wav")
+        result = pipeline.transcribe(str(pcm_wav))
 
         assert result.final_text != "Paraformer 已消除局部复读。"
         assert result.final_text.count("等一下我们先看看") == 2
         assert result.fallback_backend == ""
         assert result.metadata["repetition_repair"]["applied"] is True
 
-    def test_funasr_exception_provenance_survives_paraformer_fallback(self, monkeypatch: MonkeyPatch) -> None:
+    def test_funasr_exception_provenance_survives_paraformer_fallback(
+        self, monkeypatch: MonkeyPatch, pcm_wav: Path
+    ) -> None:
         """模型异常与空输出应使用不同回退原因，并保留原始异常类型。"""
         from app.analysis.transcription import pipeline as pipeline_module
 
@@ -182,7 +190,7 @@ class TestPipelineIntegration:
         monkeypatch.setattr(pipeline_module.settings, "asr_primary", "funasr_nano")
         pipeline = ASRPipeline(primary_backend=FakePrimary())  # type: ignore[arg-type]
 
-        result = pipeline.transcribe("audio.wav")
+        result = pipeline.transcribe(str(pcm_wav))
 
         assert result.fallback_trigger_reason == "primary_exception"
         assert result.primary_error_type == "RuntimeError"

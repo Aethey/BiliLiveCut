@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from sqlmodel import Session, select
 
 from app.analysis.hotspot_lifecycle import resolve_merged_hotspot_event
+from app.analysis.transcription.process_pool import ASRShutdownError
 from app.core.config import settings
 from app.db.entities import (
     HotspotEvent,
@@ -33,7 +34,7 @@ from app.pipeline.stage_result import enqueue_next, mark_completed
 from app.pipeline.task_context import event_first_context, update_event_first_context
 
 if TYPE_CHECKING:
-    from app.analysis.transcription.pipeline import ASRPipeline
+    from app.analysis.transcription.isolated import ASRExecutor
 
 _logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ def _load_segment_ctx(segment_id: int) -> dict[str, Any]:
     return {"file_path": file_path, "initial_prompt": initial_prompt, "session_id": session_id}
 
 
-def transcribe_compute(task_id: int) -> dict[str, Any]:
+def transcribe_compute(task_id: int, pipeline: ASRExecutor | None = None) -> dict[str, Any]:
     """仅执行转写计算, 不写 Transcript / RawSegment / SegmentTask 状态。
 
     流程:
@@ -108,7 +109,7 @@ def transcribe_compute(task_id: int) -> dict[str, Any]:
 
     # 3) 热点局部 ASR 与完整后台 ASR 使用同一 production pipeline，
     #    但作为两次独立可调度工作负载执行。
-    pipeline = get_task_pipeline()
+    pipeline = pipeline if pipeline is not None else get_task_pipeline()
     if task_event_first.get("asr_mode") == "hotspot":
         windows = task_event_first.get("attention_windows")
         return _transcribe_hotspot_attention(
@@ -121,6 +122,9 @@ def transcribe_compute(task_id: int) -> dict[str, Any]:
         )
 
     result = pipeline.transcribe(file_path, initial_prompt=initial_prompt)
+    from app.analysis.transcription.speech_evidence import require_final_result
+
+    require_final_result(result)
 
     # 4) 阿里别名纠错
     text = _apply_room_aliases(result.text, segment_id)
@@ -145,7 +149,11 @@ def transcribe_compute(task_id: int) -> dict[str, Any]:
     )
 
     # 6) 辅助特征 JSON
-    auxiliary_payload: dict[str, object] = {"asr_quality": transcript_quality_payload(quality)}
+    auxiliary_payload: dict[str, object] = {
+        "asr_quality": transcript_quality_payload(quality),
+        "result_type": result.result_type,
+        "audio_evidence": result.metadata.get("audio_evidence"),
+    }
     if result.emotions or result.reviewed_segments:
         auxiliary_payload.update(
             {
@@ -214,7 +222,7 @@ def transcribe_compute(task_id: int) -> dict[str, Any]:
 
 def _transcribe_hotspot_attention(
     *,
-    pipeline: ASRPipeline,
+    pipeline: ASRExecutor,
     file_path: str,
     initial_prompt: str | None,
     segment_id: int,
@@ -264,6 +272,8 @@ def _transcribe_hotspot_attention(
                     "model_revision": result.model_revision,
                 }
             )
+        except (LeaseLostError, ASRShutdownError):
+            raise
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             _logger.warning(
                 "hotspot_asr_unavailable segment=%s event=%s window=[%.3f,%.3f) error=%s",
@@ -314,6 +324,8 @@ def commit_transcript(lease: TaskLease, compute_result: dict[str, Any], ms: int)
     """
     try:
         with get_session() as db:
+            if db.get_bind().dialect.name == "sqlite":
+                db.connection().exec_driver_sql("BEGIN IMMEDIATE")
             if not still_owns_lease(db, lease):
                 raise LeaseLostError()
 
@@ -618,6 +630,15 @@ def run_transcribe(lease: TaskLease) -> None:
     :param lease: 任务租约。
     """
     t0 = time.time()
-    compute_result = transcribe_compute(lease.task_id)
+    from app.analysis.transcription.isolated import IsolatedPipeline
+
+    with get_session() as db:
+        task = db.get(SegmentTask, lease.task_id)
+        if task is None or not still_owns_lease(db, lease):
+            raise LeaseLostError(f"转写开始前租约已失效: task={lease.task_id}")
+        context = {"segment_id": task.segment_id, "session_id": task.session_id, "attempt": task.attempts}
+    pipeline = IsolatedPipeline(lease=lease, context=context)
+    compute_result = transcribe_compute(lease.task_id, pipeline=pipeline)
+    pipeline.check_cancelled()
     ms_val = int((time.time() - t0) * 1000)
     commit_transcript(lease, compute_result, ms_val)

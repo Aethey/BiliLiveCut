@@ -57,6 +57,32 @@ FAILURE
         await manager.stop()
 
 
+def test_unloading_plugin_does_not_execute_unrelated_lazy_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+    from types import ModuleType
+
+    lazy = ModuleType("unrelated_lazy_dependency")
+    touched: list[str] = []
+
+    def lazy_import(name: str) -> object:
+        touched.append(name)
+        raise ModuleNotFoundError("optional vision dependency must not be imported")
+
+    lazy.__getattr__ = lazy_import
+    monkeypatch.setitem(sys.modules, lazy.__name__, lazy)
+    plugin = ModuleType("local_plugin")
+    plugin.__file__ = str(tmp_path / "main.py")
+    monkeypatch.setitem(sys.modules, plugin.__name__, plugin)
+
+    PluginManager._unload_modules(tmp_path)
+
+    assert not touched
+    assert sys.modules[lazy.__name__] is lazy
+    assert plugin.__name__ not in sys.modules
+
+
 def test_unloading_plugin_preserves_shared_namespace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import importlib
     import sys

@@ -112,7 +112,7 @@ def _get_memory() -> dict:
             "percent": mem.percent,
         }
     except ImportError:
-        return {"total_gb": 0, "used_gb": 0, "percent": 0}
+        return {"total_gb": None, "used_gb": None, "percent": None}
 
 
 def _get_task_stats() -> dict:
@@ -208,9 +208,9 @@ def get_asr_metrics() -> JSONResponse:
 def get_asr_models() -> JSONResponse:
     """返回当前已加载 ASR 模型状态。"""
     try:
-        from app.analysis.model_pool import model_pool
+        from app.analysis.transcription.process_pool import get_process_pool
 
-        infos = model_pool.infos()
+        infos = get_process_pool().infos()
         return JSONResponse({"models": infos})
     except Exception as exc:
         from loguru import logger

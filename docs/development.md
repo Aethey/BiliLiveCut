@@ -29,6 +29,10 @@ python tools/native/build_rust.py
 
 先执行改动对应的目标测试，再运行完整测试和质量检查。项目的 `pytest` 默认收集 `tests/` 与 `packaging/portable/tests/`：
 
+CI 使用 `pip install -e ".[dev,web]"` 安装依赖。`dev` 复用 `asr-whisper` extra，包含无语音分类与独立 ASR 子进程回归需要的真实音频解码、CPU Silero VAD 及其 SDK 依赖；这些测试不需要 GPU，也不下载转写模型。验证依赖变更时应新建隔离虚拟环境，避免开发机已安装的 ASR SDK 掩盖声明遗漏；CI 保持 `ASR_NO_MODEL_DOWNLOAD=1`。
+
+`asr-whisper` 显式要求 `av>=11,<19`。当前 faster-whisper 1.2.1 仍向 `av.open()` 传入 `metadata_errors`，而 PyAV 19 已移除此参数（见[上游兼容性问题](https://github.com/SYSTRAN/faster-whisper/issues/1492)）；无上限安装会在音频解码前抛出 `TypeError`。Portable 的两个 ABI 锁继续使用已验证的 `av==18.0.0`。将来放开上限前，应先验证真实解码、CPU VAD 及独立子进程回归。
+
 ```powershell
 python -m pytest
 python scripts/run_ruff.py check
@@ -66,9 +70,19 @@ python scripts/release_gate.py
 ## 发行契约
 
 - Payload 保存文件清单与 SHA-256，Runtime 在安全解压和验证后通过 staging、锁和原子切换激活；用户配置、数据库、模型和媒体不随业务源码覆盖。具体目录布局见[Portable 构建说明](../packaging/portable/README.md)。
-- 数据库、Runtime、Payload 和模型清单遵循当前明确支持的格式；不能从历史重构记录推断迁移能力。模型安装及续传记录先严格校验当前发行版本和源码身份，再按模型目录与内容身份在本版本内复用；旧记录不迁移。
+- 数据库、Runtime、Payload 和模型清单遵循当前明确支持的格式；不能从历史重构记录推断迁移能力。模型安装清单按当前 schema、模型身份与文件内容检查，允许发行来源不同但内容相同的模型复用；在线下载续传记录及构建器仍校验其发行身份。旧 schema 不迁移。
 - 真实 Engine Pack 与 fixture 必须明确区分。Fixture 的摘要来自实际构建文件；它只用于验证，不能作为正式模型包分发。主模型、子模型和随附组件使用统一模型目录，保留所需许可证和来源证据。
 - 发布清单记录最终文件名、版本、大小、SHA-256 和 CRC32；跨制品检查源码、构建器、Payload 与版本身份。重新构建后的摘要必须重新计算，并检查源码路径、敏感配置、缓存和临时文件未进入产物。
+
+## 可选本地 ASR 集成检查
+
+完成 Engine Pack 安装后，可以显式运行真实模型检查（默认 CPU/int8），不会自动下载模型、调用 LLM 或访问现有业务数据库：
+
+```powershell
+python scripts/check_local_asr.py --models-dir "D:/测试安装/models" --audio "D:/测试音频/speech.wav" --engine whisper --expect speech --contains "已知的语音文字" --output .local/local-asr.json
+```
+
+`--engine` 可选 `whisper`、`paraformer`、`funasr_nano`；`--device cuda` 用于具备匹配驱动的 GPU 环境；合法静音使用 `--expect no_speech` 并去掉 `--contains`。命令先逐文件重算已安装模型的 SHA-256，再执行生产隔离流水线，核对结果分类、非空语音文本和时间戳，并确认进程回收。输入、依赖、模型或推理异常直接失败，报告不包含转写正文。运行前按当前依赖安装运行环境并提供 FFmpeg；该检查独立于 CI 的确定性回归，CPU 通过不能代替现场 GPU 故障复现。
 
 ## 文档约定
 

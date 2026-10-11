@@ -31,9 +31,9 @@ from config.launcher_settings import APP_ROOT_ENV, WEB_PORT_ENV, load_launcher_c
 
 # -- Constants ──────────────────────────────────────────────────
 APP_NAME = "BiliLiveCut"
-VERSION = "V0.1.18.7 Alpha"
-RELEASE_VERSION = "0.1.18.7-alpha"
-SOURCE_COMMIT_SHORT = "c415e1c"
+VERSION = "V0.1.18.8 Alpha"
+RELEASE_VERSION = "0.1.18.8-alpha"
+SOURCE_COMMIT_SHORT = "3cede1c"
 # NOTE: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 SUPPORTED_PYTHON_VERSIONS = frozenset({(3, 11), (3, 12)})
 
@@ -532,7 +532,8 @@ def _run_dependency_preflight(venv_python: Path) -> None:
         "assert version in supported, f'unsupported Python {version[0]}.{version[1]}'; "
         "import fastapi; import uvicorn; import sqlmodel; import pydantic; "
         "import playwright; import openai; import huggingface_hub; import modelscope; "
-        "print(f'Python {version[0]}.{version[1]}; 8 modules')"
+        "import psutil; assert psutil.virtual_memory().total > 0; "
+        "print(f'Python {version[0]}.{version[1]}; 9 modules')"
     )
     command = [str(venv_python), "-c", script]
     try:
@@ -559,7 +560,7 @@ def _run_dependency_preflight(venv_python: Path) -> None:
                 root_exception=f"child preflight exited with code {result.returncode}",
             )
         )
-    print(f"  dependency preflight OK: {(result.stdout or '').strip() or 'Python and 8 modules'}")
+    print(f"  dependency preflight OK: {(result.stdout or '').strip() or 'Python and 9 modules'}")
 
 
 def _run_import_smoke(venv_python: Path, module: str, source_dir: Path | None = None) -> None:
@@ -832,14 +833,13 @@ def prepare_models(
     env["BLC_MODEL_CONFIG_DIR"] = str(config_root.resolve())
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
+    env["PYTHONUNBUFFERED"] = "1"
+    env["BLC_MODEL_PROGRESS"] = "1"
+    from blc_portable.launcher.progress import run_provisioner
+
     try:
-        result = subprocess.run(
+        result = run_provisioner(
             command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=None,
             cwd=str(app_root),
             env=env,
         )
@@ -867,8 +867,6 @@ def prepare_models(
 
     visible_stdout = redact_diagnostic(visible_stdout)
     visible_stderr = redact_diagnostic(visible_stderr)
-    if visible_stdout:
-        print(visible_stdout)
     if result.returncode != 0:
         root_exception = (
             root_line.removeprefix(root_prefix) if root_line else f"child exited with code {result.returncode}"
@@ -883,8 +881,6 @@ def prepare_models(
                 root_exception=root_exception,
             )
         )
-    if visible_stderr:
-        print(visible_stderr, file=sys.stderr)
     if not result_line:
         raise RuntimeError(
             _format_process_failure(

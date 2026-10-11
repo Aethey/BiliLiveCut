@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from sqlmodel import select
 
+from app.analysis.transcription.process_pool import ASRShutdownError
 from app.core.config import settings
 from app.core.runtime_settings import configured_entry
 from app.core.sanitize import safe_exception_summary
@@ -324,7 +325,11 @@ def retry_expired() -> None:
 
     _logger = logging.getLogger(__name__)
     now = now_utc()
+    from app.pipeline.stage_result import make_stage_key, release_lease
+
     with get_session() as db:
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         tasks = db.exec(
             select(SegmentTask).where(
                 SegmentTask.stage == TaskStatus.TRANSIENT_FAILED,
@@ -355,9 +360,9 @@ def retry_expired() -> None:
                 res = resume_stage(task.failed_stage)
                 task.stage = res
                 task.next_retry_at = None
-                task.claimed_by = None
-                task.claimed_at = None
                 _logger.info("任务 %s 重试: %s -> %s", task.id, task.failed_stage, res)
+            release_lease(task)
+            task.stage_key = make_stage_key(task.segment_id, task.stage)
             db.add(task)
 
 
@@ -397,12 +402,35 @@ def execute_task(task_id: int, active_stage_val: str, lease_token: str | None = 
             run_render(lease)
         elif active_stage_val == TaskStatus.PUBLISHING:
             run_publish(lease)
+    except ASRShutdownError:
+        with get_session() as db:
+            if db.get_bind().dialect.name == "sqlite":
+                db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            task = db.get(SegmentTask, task_id)
+            if task is not None and lease is not None and still_owns_lease(db, lease):
+                enqueue_next(task, resume_stage(active_stage_val))
+                db.add(task)
+        _logger.info(
+            "execution_shutdown_requeued task=%s stage=%s worker=%s lease=%s",
+            task_id,
+            active_stage_val,
+            _WORKER_ID,
+            lease_token,
+        )
     except LeaseLostError:
-        _logger.warning("lease_lost_during_execution: task=%s", task_id)
+        _logger.warning(
+            "lease_lost_during_execution: task=%s stage=%s worker=%s lease=%s",
+            task_id,
+            active_stage_val,
+            _WORKER_ID,
+            lease_token,
+        )
     except Exception as exc:
         _ms = int((_time_mod.time() - t0) * 1000)
         _logger.exception("任务 %s 阶段 %s 失败: %s", task_id, active_stage_val, safe_exception_summary(exc))
         with get_session() as db:
+            if db.get_bind().dialect.name == "sqlite":
+                db.connection().exec_driver_sql("BEGIN IMMEDIATE")
             t = db.get(SegmentTask, task_id)
             if t is not None and lease is not None and still_owns_lease(db, lease):
                 mark_failed(t, safe_exception_summary(exc), permanent=False)
@@ -419,7 +447,7 @@ def execute_task(task_id: int, active_stage_val: str, lease_token: str | None = 
         if _task_resources_lock is None:
             _task_resources_lock = threading.Lock()
         with _task_resources_lock:
-            task_cost = _task_resources.pop(task_id, None)
+            task_cost = _task_resources.pop((task_id, lease_token), None)
         if task_cost:
             from app.core.resource_budget import release_resources
 

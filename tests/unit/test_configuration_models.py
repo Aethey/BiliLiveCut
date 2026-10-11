@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from threading import Event
 from types import ModuleType, SimpleNamespace
 from typing import TYPE_CHECKING
@@ -157,7 +158,7 @@ def test_loading_failure_does_not_consume_model_slot() -> None:
         assert pool.infos()[0]["is_loaded"] is True
 
 
-def test_whisper_lazy_output_is_consumed_under_model_lease(monkeypatch: MonkeyPatch) -> None:
+def test_whisper_lazy_output_is_consumed_under_model_lease(monkeypatch: MonkeyPatch, pcm_wav: Path) -> None:
     from app.analysis.model_pool import model_pool
     from app.analysis.transcription import backends
 
@@ -168,7 +169,8 @@ def test_whisper_lazy_output_is_consumed_under_model_lease(monkeypatch: MonkeyPa
     model = SimpleNamespace(transcribe=lambda *_args, **_kwargs: (segments(), SimpleNamespace(language="zh")))
     monkeypatch.setattr(backends, "_probe_audio_duration", lambda _path: 1)
     monkeypatch.setattr(backends.FasterWhisperBackend, "_load_model", lambda _self: model)
-    result = backends.FasterWhisperBackend().transcribe("audio.wav")
+    monkeypatch.setattr("faster_whisper.vad.get_speech_timestamps", lambda audio: [{"start": 0, "end": len(audio)}])
+    result = backends.FasterWhisperBackend().transcribe(str(pcm_wav))
     assert result.text == "可用语音"
     assert model_pool.infos()[0]["active_users"] == 0
 
@@ -199,7 +201,8 @@ def test_llm_same_prefix_rotation_does_not_close_active_client(monkeypatch: Monk
     release = Event()
 
     class FakeClient:
-        def __init__(self, *, api_key: str, base_url: str | None) -> None:
+        def __init__(self, *, api_key: str, base_url: str | None, max_retries: int) -> None:
+            assert max_retries == 0
             self.api_key = api_key
             self.closed = False
             clients.append(self)

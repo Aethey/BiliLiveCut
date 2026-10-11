@@ -20,7 +20,7 @@ _subprocesses: list = []
 _subprocesses_lock: threading.Lock = threading.Lock()
 
 # V0.1.13: Task-level resource tracking (ResourceBudget integration)
-_task_resources: dict[int, dict[str, int | float]] = {}
+_task_resources: dict[tuple[int, str | None], dict[str, int | float]] = {}
 _task_resources_lock: threading.Lock = threading.Lock()
 
 _RETRY_JITTER_S: float = 5.0

@@ -342,7 +342,7 @@ def test_dependency_preflight_checks_model_sdks_once(monkeypatch: pytest.MonkeyP
 
     def _fake_run(args: list[str], **_kwargs: object) -> _sp.CompletedProcess[str]:
         calls.append(args)
-        return _sp.CompletedProcess(args, 0, stdout="Python 3.12; 8 modules\n", stderr="")
+        return _sp.CompletedProcess(args, 0, stdout="Python 3.12; 9 modules\n", stderr="")
 
     monkeypatch.setattr(main.subprocess, "run", _fake_run)
 
@@ -352,6 +352,8 @@ def test_dependency_preflight_checks_model_sdks_once(monkeypatch: pytest.MonkeyP
     script = calls[0][-1]
     assert "import huggingface_hub" in script
     assert "import modelscope" in script
+    assert "import psutil" in script
+    assert "psutil.virtual_memory().total > 0" in script
     assert "unsupported Python" in script
 
 

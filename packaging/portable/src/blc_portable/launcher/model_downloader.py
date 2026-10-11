@@ -20,6 +20,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from blc_portable.launcher.progress import emit_progress
 from blc_portable.model_download import (
     HF_MIRRORS,
     MODELSCOPE_MIRRORS,
@@ -192,6 +193,7 @@ def _print_progress(current: int, total: int, name: str) -> None:
     :param total: 总数。
     :param name: 当前名称。
     """
+    emit_progress("prepare", f"引擎 {current + 1}/{total}：{name}")
     print(f"  引擎 {current + 1}/{total}：准备/下载中 {name}（非文件字节进度）", flush=True)
 
 
@@ -324,13 +326,16 @@ def download_all_engines(
                 encoding="utf-8",
             )
 
+        emit_progress("install", engine_id)
         marker.unlink(missing_ok=True)
         install_engine_from_staging(app_root, engine_id, target_dir)
         installed_now.append(engine_id)
 
+    emit_progress("verify", "全部模型文件 SHA-256")
     complete, errors = check_installed_models(app_root / "models", full_rehash=True)
     if not complete:
         raise RuntimeError("Online model provisioning incomplete: " + "; ".join(errors[:5]))
+    emit_progress("complete", "全部模型校验通过", total, total, "引擎")
     print("  四引擎模型供给完成")
     return {
         "source": "online_download",
@@ -362,6 +367,9 @@ def provision_models(
     This function is the production helper boundary and is expected to run
     under ``<app_root>/.venv`` rather than the frozen launcher interpreter.
     """
+    # 冻结布局将配置放在独立的 provisioner-config 目录；先装载显式目录，
+    # 再导入依赖 model_catalog 的本地包校验器，不能依赖源码相对路径。
+    _load_catalog_engines(config_dir)
     from ..engine_pack.installer import (
         EnginePackValidationError,
         check_installed_models,
@@ -370,8 +378,10 @@ def provision_models(
     )
 
     models_dir = app_root / "models"
+    emit_progress("verify", "本地模型内容与文件")
     ok, _ = check_installed_models(models_dir, full_rehash=repair or bool(user_engine_pack_path))
     if ok:
+        emit_progress("complete", "复用本地模型（无下载）")
         print("  4-engine models installed (content fingerprint match), skip model prep")
         return {"source": "already_installed", "method": "content_fingerprint", "network_requests": 0}
 
@@ -390,11 +400,11 @@ def provision_models(
             pack_errors.append(f"{pack_path}: {exc}")
             if user_engine_pack_path and not fallback_online:
                 raise
-            print(f"  local pack does not match the current release contract: {exc}")
+            print(f"  local_rejected: Engine Pack 未通过结构或内容校验: {exc}")
     if pack_paths:
         print("  no local Engine Pack candidate matched the desired content fingerprints")
     else:
-        print("\n  no local Engine Pack found")
+        print("\n  local_not_found: no local Engine Pack found")
 
     if user_engine_pack_path and not pack_paths and not fallback_online:
         raise EnginePackValidationError(f"指定的 Engine Pack 不存在: {user_engine_pack_path}")
@@ -402,7 +412,7 @@ def provision_models(
         detail = "\n".join(f"  - {item}" for item in pack_errors)
         raise RuntimeError(
             "Offline mode: no valid local Engine Pack was found and online download is blocked.\n"
-            "Provide the current-release Engine Pack ZIP or remove --offline."
+            "Provide a content-compatible Engine Pack ZIP or remove --offline."
             + (f"\nCandidate failures:\n{detail}" if detail else "")
         )
 

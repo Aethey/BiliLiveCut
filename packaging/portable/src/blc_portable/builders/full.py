@@ -27,7 +27,7 @@ LITE_DIR = PORTABLE_DIR / "dist" / "lite"
 PAYLOAD_DIR = PORTABLE_DIR / "dist" / "payload"
 RESOURCES_DIR = PORTABLE_DIR / "resources"
 
-RELEASE_VERSION = "0.1.18.7-alpha"
+RELEASE_VERSION = "0.1.18.8-alpha"
 FULL_NAME = f"BiliLiveCut-Portable-Full-{RELEASE_VERSION}-x64"
 
 
@@ -230,9 +230,10 @@ Compared to Lite:
 
 No models included:
   - Four ASR engine models are provided by a separate Engine Pack.
-  - Place BiliLiveCut-EnginePack-{RELEASE_VERSION}.zip in the same directory;
-    CRC32 is verified and models installed on first launch.
-  - Without Engine Pack, all four engine models are downloaded online.
+  - Place a trusted, content-compatible BiliLiveCut-EnginePack-*.zip next to EXE.
+    Release provenance may differ. Schema, model identity, revisions and every
+    file hash must pass; archive digest calculation alone is not verification.
+  - Without Engine Pack, only missing or changed engine models are downloaded online.
 
 File structure:
   BiliLiveCut-Portable.exe    # Launcher (double-click to run)

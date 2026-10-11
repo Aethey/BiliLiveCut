@@ -57,8 +57,38 @@ def _is_reserved_name(name: str) -> bool:
     :param name: 文件名 (不含路径)。
     :returns: 是否为保留名。
     """
-    stem = Path(name).stem.upper()
+    stem = name.split(".", 1)[0].upper()
     return stem in _WIN_RESERVED_NAMES
+
+
+def normalized_member_name(member_name: str) -> str:
+    """校验跨平台 ZIP/manifest 相对路径，返回统一的正斜线形式。"""
+    # 检查绝对路径
+    if member_name.startswith(("/", "\\")):
+        raise RuntimeError(f"Zip Slip: 绝对路径 '{member_name}'")
+
+    # 检查 Windows 盘符
+    if len(member_name) > 1 and member_name[1] == ":":
+        raise RuntimeError(f"Zip Slip: Windows 盘符路径 '{member_name}'")
+
+    # 检查 UNC 路径
+    if member_name.startswith("\\\\") or member_name.startswith("//"):
+        raise RuntimeError(f"Zip Slip: UNC 路径 '{member_name}'")
+
+    # 检查路径遍历
+    parts = member_name.replace("\\", "/").rstrip("/").split("/")
+    for part in parts:
+        if not part or part == "." or any(ord(char) < 32 or char in '<>:"|?*' for char in part):
+            raise RuntimeError(f"Zip Slip: 非规范路径 '{member_name}'")
+        if part == "..":
+            raise RuntimeError(f"Zip Slip: 路径遍历 '{member_name}'")
+        if _is_reserved_name(part):
+            raise RuntimeError(f"Zip Slip: 保留设备名 '{member_name}'")
+        # 尾部点和空格 (Windows 文件系统陷阱)
+        if part != part.rstrip(". ") and part not in (".", ".."):
+            raise RuntimeError(f"Zip Slip: 尾部点/空格 '{member_name}'")
+
+    return "/".join(parts)
 
 
 def _safe_relative_path(destination_root: Path, member_name: str) -> Path:
@@ -75,28 +105,7 @@ def _safe_relative_path(destination_root: Path, member_name: str) -> Path:
     :returns: 解析后的目标路径。
     :raises RuntimeError: 路径不安全时。
     """
-    # 检查绝对路径
-    if member_name.startswith(("/", "\\")):
-        raise RuntimeError(f"Zip Slip: 绝对路径 '{member_name}'")
-
-    # 检查 Windows 盘符
-    if len(member_name) > 1 and member_name[1] == ":":
-        raise RuntimeError(f"Zip Slip: Windows 盘符路径 '{member_name}'")
-
-    # 检查 UNC 路径
-    if member_name.startswith("\\\\") or member_name.startswith("//"):
-        raise RuntimeError(f"Zip Slip: UNC 路径 '{member_name}'")
-
-    # 检查路径遍历
-    parts = member_name.replace("\\", "/").split("/")
-    for part in parts:
-        if part == "..":
-            raise RuntimeError(f"Zip Slip: 路径遍历 '{member_name}'")
-        if _is_reserved_name(part):
-            raise RuntimeError(f"Zip Slip: 保留设备名 '{member_name}'")
-        # 尾部点和空格 (Windows 文件系统陷阱)
-        if part != part.rstrip(". ") and part not in (".", ".."):
-            raise RuntimeError(f"Zip Slip: 尾部点/空格 '{member_name}'")
+    member_name = normalized_member_name(member_name)
 
     # 安全解析
     target = (destination_root / member_name).resolve()
@@ -181,11 +190,14 @@ def iter_archive_members(
     total_uncompressed = 0
     file_count = 0
     visited: set[str] = set()
+    files: set[str] = set()
+    directories: set[str] = set()
+    spellings: dict[str, str] = {}
+    members: list[tuple[zipfile.ZipInfo, Path]] = []
 
     for info in zf.infolist():
-        if info.is_dir():
-            continue
-
+        if info.orig_filename != info.filename:
+            raise RuntimeError(f"ZIP 成员名包含空字符: {info.orig_filename!r}")
         # 符号链接检查
         if is_symlink(info):
             raise RuntimeError(f"拒绝符号链接: {info.filename}")
@@ -212,14 +224,35 @@ def iter_archive_members(
 
         # 路径安全检查
         target = _safe_relative_path(destination_root, info.filename)
+        parts = normalized_member_name(info.filename).split("/")
+        for index in range(1, len(parts) + 1):
+            spelling = "/".join(parts[:index])
+            key = spelling.casefold()
+            if key in spellings and spellings[key] != spelling:
+                raise RuntimeError(f"路径大小写冲突: {spellings[key]} / {spelling}")
+            spellings[key] = spelling
 
         # 重复路径检查
-        normalized = str(target.resolve()).lower()
+        normalized = str(target.resolve()).casefold()
         if normalized in visited:
             raise RuntimeError(f"重复路径: {info.filename}")
         visited.add(normalized)
+        parent_paths = {
+            str(parent).casefold()
+            for parent in target.parents
+            if parent != destination_root.resolve() and parent.is_relative_to(destination_root.resolve())
+        }
+        if parent_paths & files or (not info.is_dir() and normalized in directories):
+            raise RuntimeError(f"文件/目录路径冲突: {info.filename}")
+        if info.is_dir():
+            directories.add(normalized)
+        else:
+            files.add(normalized)
+            members.append((info, target))
+        directories.update(parent_paths)
 
-        yield info, target
+    # 所有成员（包括目录）预检通过后才允许写入首个文件。
+    yield from members
 
 
 def safe_extract(

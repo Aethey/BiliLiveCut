@@ -83,13 +83,17 @@ class ModelPool:
             else:
                 entry.active = True
         try:
+            from app.analysis.transcription.progress import report_progress
+
             if entry.model is None:
+                report_progress("model_load", role=role, model=identity)
                 started = time.monotonic()
                 model = loader()
                 with self._condition:
                     entry.model = model
                     entry.loaded_at = time.time()
                     entry.load_duration = time.monotonic() - started
+            report_progress("inference_call", role=role, model=identity)
             yield entry.model
         finally:
             with self._condition:
@@ -152,12 +156,12 @@ class ModelPool:
 model_pool = ModelPool()
 
 
-def preload_models() -> None:
+def preload_models(*, refresh: bool = True) -> None:
     """预加载当前启用链路到共享池，加载失败交给后台任务记录。"""
     from app.analysis.transcription.backends import FasterWhisperBackend, FunASRBackend
     from app.core.runtime_settings import settings_scope
 
-    with settings_scope(fresh=True):
+    with settings_scope(fresh=True, refresh=refresh):
         backend = FunASRBackend()
         loads: list[tuple[str, str, Callable[[], object]]] = []
         if settings.asr_primary == "whisper":

@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import threading
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -86,6 +88,34 @@ _oom_count: int = 0
 _fallback_count: int = 0
 _rtf_samples: list[float] = []
 _lock = threading.Lock()
+_event_sink: Callable[[str, dict[str, Any]], None] | None = None
+
+
+def set_event_sink(sink: Callable[[str, dict[str, Any]], None] | None) -> None:
+    """子进程逐事件转发指标；不重复合并累计快照。"""
+    global _event_sink
+    _event_sink = sink
+
+
+def apply_event(event: str, values: dict[str, Any]) -> None:
+    """只接受固定的指标事件类型。JSON 字典仅用于 IPC 边界。"""
+    handlers = {
+        "backend_call": record_backend_call,
+        "review": record_review,
+        "review_success": record_review_success,
+        "review_failure": record_review_failure,
+        "fallback": record_fallback,
+        "oom": record_oom,
+        "rtf": record_rtf,
+    }
+    if event not in handlers:
+        raise ValueError(f"未知 ASR 指标事件: {event}")
+    handlers[event](**values)
+
+
+def _emit(event: str, **values: Any) -> None:
+    if _event_sink is not None:
+        _event_sink(event, values)
 
 
 def record_backend_call(backend: str, duration: float, success: bool = True) -> None:
@@ -95,6 +125,7 @@ def record_backend_call(backend: str, duration: float, success: bool = True) -> 
     :param duration: 耗时秒。
     :param success: 是否成功。
     """
+    _emit("backend_call", backend=backend, duration=duration, success=success)
     with _lock:
         _backend_stats[backend].record(duration, success)
         _backend_stats[backend].recompute_percentiles()
@@ -102,6 +133,7 @@ def record_backend_call(backend: str, duration: float, success: bool = True) -> 
 
 def record_review(adopted: bool, kept_base: bool, manual_needed: bool) -> None:
     """记录一次复核结果。"""
+    _emit("review", adopted=adopted, kept_base=kept_base, manual_needed=manual_needed)
     with _lock:
         _review_stats.triggered += 1
         if adopted:
@@ -114,12 +146,14 @@ def record_review(adopted: bool, kept_base: bool, manual_needed: bool) -> None:
 
 def record_review_success() -> None:
     """记录一次复核成功。"""
+    _emit("review_success")
     with _lock:
         _review_stats.succeeded += 1
 
 
 def record_review_failure() -> None:
     """记录一次复核失败。"""
+    _emit("review_failure")
     with _lock:
         _review_stats.failed += 1
 
@@ -127,6 +161,7 @@ def record_review_failure() -> None:
 def record_fallback() -> None:
     """记录一次 Whisper fallback (V0.1.14.11: 线程安全的 fallback 计数)。"""
     global _fallback_count
+    _emit("fallback")
     with _lock:
         _fallback_count += 1
 
@@ -134,12 +169,14 @@ def record_fallback() -> None:
 def record_oom() -> None:
     """记录一次 OOM。"""
     global _oom_count
+    _emit("oom")
     with _lock:
         _oom_count += 1
 
 
 def record_rtf(rtf: float) -> None:
     """记录一次 RTF。"""
+    _emit("rtf", rtf=rtf)
     with _lock:
         _rtf_samples.append(rtf)
         if len(_rtf_samples) > 1000:

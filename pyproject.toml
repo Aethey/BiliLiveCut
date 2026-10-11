@@ -1,6 +1,6 @@
 [project]
 name = "bili-live-cut"
-version = "0.1.18.7-alpha"
+version = "0.1.18.8-alpha"
 description = "AI 直播实时切片系统:监听 Bilibili 直播,自动录制、转写、识别高光、生成切片与文案"
 readme = "README.md"
 license = "MIT"
@@ -21,6 +21,7 @@ dependencies = [
     "websockets>=12.0",       # 弹幕 WebSocket 长连接
     "brotli>=1.1",            # 弹幕协议解压(B 站使用 brotli)
     "pyyaml>=6.0",            # 读取评分权重配置
+    "psutil>=7.2.2",          # 实测内存及进程资源
     "numpy>=1.26",            # 音频特征计算(RMS 包络、静音检测)
 ]
 
@@ -29,9 +30,11 @@ dependencies = [
 # 若当前 Python 版本无预编译 wheel,请改用 Python 3.11/3.12 虚拟环境。
 asr-whisper = [
     "faster-whisper>=1.0",
+    "av>=11,<19", # faster-whisper 1.2.1 仍使用 PyAV 19 已移除的 metadata_errors 参数
 ]
 # V0.1.12.2: Paraformer-zh / SenseVoice-Small / Fun-ASR-Nano 所需依赖。
 asr-funasr = [
+    "bili-live-cut[asr-whisper]", # 所有后端共用 faster-whisper 提供的 CPU Silero VAD
     "funasr>=1.0",
     "modelscope>=1.20",
 ]
@@ -53,6 +56,7 @@ web = [
 ]
 # 开发与测试工具。
 dev = [
+    "bili-live-cut[asr-whisper]", # 回归测试使用真实 CPU VAD/音频解码，不下载转写模型
     "huggingface-hub==1.26.0", # 与 Portable 锁一致；用真实 SDK + 本地 HTTP 夹具验证端点，不下载模型
     "modelscope-hub==0.2.0", # 验证锁定 SDK 的文件清单与半下载失败边界
     "Cython==3.2.9",

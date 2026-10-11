@@ -18,7 +18,7 @@ class TestLiteBuilder:
     def test_lite_has_release_version(self) -> None:
         from blc_portable.builders.lite import RELEASE_VERSION, build_exe  # noqa: E402
 
-        assert RELEASE_VERSION == "0.1.18.7-alpha"
+        assert RELEASE_VERSION == "0.1.18.8-alpha"
         assert callable(build_exe)
 
     def test_lite_rejects_everything_empty(self) -> None:
@@ -194,15 +194,24 @@ class TestFullBuilder:
     def test_full_has_release_version(self) -> None:
         from blc_portable.builders.full import RELEASE_VERSION  # noqa: E402
 
-        assert RELEASE_VERSION == "0.1.18.7-alpha"
+        assert RELEASE_VERSION == "0.1.18.8-alpha"
 
-    def test_full_check_missing_components(self) -> None:
+    def test_full_check_missing_components(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Full build without portable-python or wheels must raise RuntimeError."""
-        from blc_portable.builders.full import build_full_bundle  # noqa: E402
+        from blc_portable.builders import full  # noqa: E402
 
-        # No portable-python, no wheels, no ffmpeg -> must fail
-        with pytest.raises(RuntimeError):
-            build_full_bundle()
+        monkeypatch.delenv("BLC_FIXTURE_BUILD", raising=False)
+        monkeypatch.setattr(full, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(full, "LITE_DIR", tmp_path / "lite")
+        monkeypatch.setattr(full, "DIST_DIR", tmp_path / "dist")
+        full.LITE_DIR.mkdir()
+        (full.LITE_DIR / f"BiliLiveCut-Portable-Lite-v{full.RELEASE_VERSION}-x64.exe").write_bytes(b"MZ-test")
+
+        # Use an isolated source tree, even when the developer has built a real Full.
+        with pytest.raises(RuntimeError, match="missing components") as error:
+            full.build_full_bundle()
+        for component in ("portable-python/python.exe", "vendor/wheels/", "bin/ffmpeg.exe", "bin/ffprobe.exe"):
+            assert component in str(error.value)
 
     def test_full_fixture_ok(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("BLC_FIXTURE_BUILD", "1")

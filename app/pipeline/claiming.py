@@ -12,7 +12,26 @@ from sqlmodel import select
 from app.db.entities import SegmentTask
 from app.db.session import get_session
 from app.pipeline.lifecycle import _WORKER_ID, now_utc
-from app.pipeline.stage_result import active_stage
+from app.pipeline.stage_result import active_stage, make_stage_key
+
+
+def release_unstarted_claim(claim: SegmentTask | None, queued_stage: str) -> None:
+    """撤销关闭期间刚领取但尚未启动的任务，不消耗尝试次数或覆盖新租约。"""
+    if claim is None:
+        return
+    with get_session() as db:
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        task = db.get(SegmentTask, claim.id)
+        if task is None or task.lease_token != claim.lease_token or task.stage != active_stage(queued_stage):
+            return
+        task.stage = queued_stage
+        task.stage_key = make_stage_key(task.segment_id, queued_stage)
+        task.attempts = max(0, task.attempts - 1)
+        task.claimed_by = task.claimed_at = task.heartbeat_at = task.lease_token = None
+        task.started_at = None
+        db.add(task)
+    logger.info("领取期间关闭，任务重新排队 task_id={} stage={}", claim.id, queued_stage)
 
 
 def pop_and_claim(queued_stage: str) -> SegmentTask | None:

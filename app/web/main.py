@@ -19,7 +19,6 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from loguru import logger
 
@@ -36,6 +35,7 @@ from app.web.routers.subtitle_template_router import router as subtitle_template
 from app.web.services import notifications as notifications_service
 from app.web.services import rooms as rooms_service
 from app.web.services import schedules as schedules_service
+from app.web.staticfiles import WebStaticFiles
 
 _BASE_DIR = Path(__file__).resolve().parent
 _TEMPLATES = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
@@ -629,7 +629,7 @@ app.include_router(monitor_router)
 app.include_router(subtitle_template_router)
 app.include_router(intro_template_router)
 app.include_router(plugin_page_router)
-app.mount("/static", StaticFiles(directory=str(_BASE_DIR / "static")), name="static")
+app.mount("/static", WebStaticFiles(directory=str(_BASE_DIR / "static")), name="static")
 
 
 @app.get("/", response_class=HTMLResponse)

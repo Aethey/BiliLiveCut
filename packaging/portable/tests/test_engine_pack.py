@@ -122,7 +122,7 @@ def test_explicit_pack_repairs_only_damaged_engine(
     assert check_installed_models(tmp_path / "models", full_rehash=True)[0]
 
 
-@pytest.mark.parametrize("invalid", ["version", "zip", "hash"])
+@pytest.mark.parametrize("invalid", ["schema", "zip", "hash"])
 @pytest.mark.parametrize("fallback,offline", [(True, False), (False, False), (True, True)])
 def test_invalid_pack_fallback_respects_policy(
     tmp_path: Path,
@@ -137,8 +137,8 @@ def test_invalid_pack_fallback_respects_policy(
     bad = tmp_path / "bad.zip"
     if invalid == "zip":
         bad.write_bytes(b"not a zip")
-    elif invalid == "version":
-        _rewrite_pack_manifest(fixture_engine_pack, bad, lambda data: data.update(engine_pack_version="0.1.17.4-alpha"))
+    elif invalid == "schema":
+        _rewrite_pack_manifest(fixture_engine_pack, bad, lambda data: data.update(format_version=999))
     else:
         shutil.copyfile(fixture_engine_pack, bad)
     calls: list[Path] = []
@@ -459,13 +459,13 @@ class TestEnginePackInstall:
         assert result["source"] == "engine_pack"
         assert result["network_requests"] == 0
 
-    def test_older_release_pack_is_rejected_even_when_content_matches(
+    def test_older_release_pack_is_accepted_only_when_content_matches(
         self,
         tmp_app_root: Path,
         fixture_engine_pack: Path,
         tmp_path: Path,
     ) -> None:
-        """旧发行包不得绕过当前版本与源码提交契约。"""
+        """发行来源不参与模型内容身份，安装后仍逐文件复检。"""
         from blc_portable.engine_pack.installer import install_from_engine_pack
 
         old_pack = _rewrite_pack_manifest(
@@ -479,9 +479,12 @@ class TestEnginePackInstall:
             ),
         )
 
-        with pytest.raises(RuntimeError, match="engine_pack_version 不匹配"):
-            install_from_engine_pack(tmp_app_root, old_pack, "", "")
-        assert not (tmp_app_root / "models" / "engine-pack-installed.json").exists()
+        result = install_from_engine_pack(tmp_app_root, old_pack, "", "")
+        assert result["network_requests"] == 0
+        assert len(result["installed_engines"]) == 4
+        from blc_portable.engine_pack.installer import check_installed_models
+
+        assert check_installed_models(tmp_app_root / "models", full_rehash=True) == (True, [])
 
     def test_second_install_only_replaces_stale_engine(
         self,
@@ -572,12 +575,18 @@ class TestCheckInstalledModels:
         assert not ok
 
     @pytest.mark.parametrize(
-        "field,value", [("release_version", "0.1.18.4-alpha"), ("source_commit", "0" * 40), ("release_version", None)]
+        "field,value",
+        [
+            ("release_version", "0.1.18.4-alpha"),
+            ("source_commit", "0" * 40),
+            ("release_version", None),
+            ("source_commit", "g" * 40),
+        ],
     )
-    def test_old_release_identity_rejects_identical_content(
+    def test_provenance_accepts_old_release_but_rejects_missing_or_invalid_identity(
         self, tmp_app_root: Path, field: str, value: str | None
     ) -> None:
-        """旧版本、旧源码或缺失身份均不能复用相同模型文件。"""
+        """合法旧来源复用相同内容，缺失或非法来源仍被拒绝。"""
         from blc_portable.engine_pack.installer import check_installed_models
 
         models_dir = tmp_app_root / "models"
@@ -594,7 +603,10 @@ class TestCheckInstalledModels:
             manifest[field] = value
         (models_dir / "engine-pack-installed.json").write_text(json.dumps(manifest), encoding="utf-8")
         ok1, errors = check_installed_models(models_dir)
-        assert not ok1 and errors
+        if value is None or value == "g" * 40:
+            assert not ok1 and errors
+        else:
+            assert ok1 and not errors
 
     def test_installed_and_valid(self, tmp_app_root: Path) -> None:
         """正确安装时返回 True。"""

@@ -162,7 +162,7 @@ def _create_or_reuse_client(provider: provs.LLMProvider) -> OpenAI:
             '未安装 openai SDK。源码安装请执行: pip install -e ".[llm]";'
             "Portable 请重新运行 Launcher 完成依赖修复,或升级到最新完整包。"
         ) from exc
-    client = OpenAI(api_key=provider.api_key, base_url=provider.base_url or None)
+    client = OpenAI(api_key=provider.api_key, base_url=provider.base_url or None, max_retries=0)
     for key in list(_client_cache):
         if key[0] == provider.id:
             old = _client_cache.pop(key)
@@ -296,6 +296,7 @@ def _create_completion(
         model=provider.model,
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
+        timeout=settings.llm_request_timeout_s,
         **({"extra_body": extra_body} if extra_body else {}),
     )
 

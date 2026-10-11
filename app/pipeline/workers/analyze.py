@@ -263,6 +263,8 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
 
     try:
         with get_session() as db:
+            if db.get_bind().dialect.name == "sqlite":
+                db.connection().exec_driver_sql("BEGIN IMMEDIATE")
             if not still_owns_lease(db, lease):
                 raise LeaseLostError()
 

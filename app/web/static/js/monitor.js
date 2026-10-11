@@ -9,7 +9,7 @@ async function loadMonitor() {
     $("#mon-raw").textContent = d.raw_size_gb;
     $("#mon-clips").textContent = d.clips_size_gb;
     $("#mon-cpu").textContent = d.cpu_percent != null ? d.cpu_percent.toFixed(0) : "--";
-    $("#mon-mem").textContent = d.memory.percent.toFixed(0);
+    $("#mon-mem").textContent = d.memory.percent != null ? d.memory.percent.toFixed(0) : "--";
     const safeEl = $("#mon-safe");
     safeEl.textContent = d.disk_safe ? "\u2705 \u78c1\u76d8\u5b89\u5168" : "\u26a0 \u78c1\u76d8\u4e0d\u8db3";
     safeEl.style.color = d.disk_safe ? "var(--green)" : "var(--red)";

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +27,7 @@ RELEASE_VERSION = get_version()
 SOURCE_COMMIT_SHORT = get_source_commit_short()
 SOURCE_COMMIT_FULL = get_source_commit_full()
 MANIFEST_FORMAT_VERSION = 5
+MANIFEST_FILENAME = "engine-pack-manifest.json"
 ARCHIVE_FILENAME = get_engine_pack_zip_name()
 
 _LICENSE_FIELDS = {
@@ -274,7 +276,7 @@ class EnginePackManifest:
             sha256 = file_info["sha256"]
             if not isinstance(size, int) or isinstance(size, bool) or size < 0:
                 raise ValueError(f"Manifest files[{rel_path}].size 无效")
-            if not isinstance(sha256, str) or len(sha256) != 64:
+            if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):
                 raise ValueError(f"Manifest files[{rel_path}].sha256 无效")
             files[rel_path] = dict(file_info)
         for field_name in (
@@ -360,29 +362,51 @@ def create_manifest(
     )
 
 
-def validate_manifest(manifest: EnginePackManifest) -> list[str]:
-    """严格校验当前内容清单。"""
+def validate_manifest(manifest: EnginePackManifest, *, require_current_release: bool = True) -> list[str]:
+    """始终校验格式和内容；发行构建额外要求当前版本来源。"""
     errors: list[str] = []
     if manifest.format_version != MANIFEST_FORMAT_VERSION:
         errors.append(f"format_version 不匹配: manifest={manifest.format_version} expected={MANIFEST_FORMAT_VERSION}")
-    if manifest.engine_pack_version != ENGINE_PACK_VERSION:
+    if require_current_release and manifest.engine_pack_version != ENGINE_PACK_VERSION:
         errors.append(
             f"engine_pack_version 不匹配: manifest={manifest.engine_pack_version} expected={ENGINE_PACK_VERSION}"
         )
-    if manifest.portable_release_version != RELEASE_VERSION:
+    if require_current_release and manifest.portable_release_version != RELEASE_VERSION:
         errors.append(
             f"portable_release_version 不匹配: manifest={manifest.portable_release_version} expected={RELEASE_VERSION}"
         )
-    if manifest.source_commit != SOURCE_COMMIT_FULL:
+    if require_current_release and manifest.source_commit != SOURCE_COMMIT_FULL:
         errors.append(f"source_commit 不匹配: manifest={manifest.source_commit} expected={SOURCE_COMMIT_FULL}")
-    if manifest.source_commit_short != SOURCE_COMMIT_SHORT:
+    if require_current_release and manifest.source_commit_short != SOURCE_COMMIT_SHORT:
         errors.append(
             f"source_commit_short 不匹配: manifest={manifest.source_commit_short} expected={SOURCE_COMMIT_SHORT}"
         )
-    if len(manifest.source_commit) != 40 or manifest.source_commit_short != manifest.source_commit[:7]:
+    if (
+        not re.fullmatch(r"[0-9a-f]{40}", manifest.source_commit)
+        or manifest.source_commit_short != manifest.source_commit[:7]
+    ):
         errors.append("source_commit/source_commit_short 无效")
-    if len(manifest.builder_commit) != 40:
+    if not re.fullmatch(r"[0-9a-f]{40}", manifest.builder_commit):
         errors.append("builder_commit 无效")
+    for version in (manifest.engine_pack_version, manifest.portable_release_version):
+        if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){2,3}(?:-[a-zA-Z0-9.]+)?", version):
+            errors.append(f"发行来源版本格式无效: {version}")
+    if len(manifest.engines) != len(set(manifest.get_engine_ids())):
+        errors.append("引擎定义重复")
+    from blc_portable.archive.safe_zip import normalized_member_name
+
+    seen: set[str] = set()
+    for path in [*manifest.files, *manifest.get_target_paths()]:
+        try:
+            canonical = normalized_member_name(path)
+            if canonical != path:
+                errors.append(f"Manifest 路径必须使用规范正斜线: {path}")
+            if path in manifest.files:
+                if canonical.casefold() in seen:
+                    errors.append(f"Manifest 重复路径: {path}")
+                seen.add(canonical.casefold())
+        except RuntimeError as exc:
+            errors.append(str(exc))
     if manifest.total_files != len(manifest.files):
         errors.append(f"文件数不一致: declared={manifest.total_files} actual={len(manifest.files)}")
     expected_ids = set(get_all_engine_ids())
@@ -397,13 +421,23 @@ def validate_manifest(manifest: EnginePackManifest) -> list[str]:
     return errors
 
 
-def load_manifest(path: Path) -> EnginePackManifest:
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """拒绝 JSON 重复键，避免清单在不同解析器中有不同含义。"""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"Manifest JSON 重复键: {key}")
+        result[key] = value
+    return result
+
+
+def load_manifest(path: Path, *, require_current_release: bool = True) -> EnginePackManifest:
     """加载且严格校验当前内容清单。"""
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
     if not isinstance(data, dict):
         raise ValueError("Manifest 根节点必须是对象")
     manifest = EnginePackManifest.from_dict(data)
-    errors = validate_manifest(manifest)
+    errors = validate_manifest(manifest, require_current_release=require_current_release)
     if errors:
         raise ValueError("Manifest 校验失败:\n" + "\n".join(f"  - {error}" for error in errors))
     return manifest

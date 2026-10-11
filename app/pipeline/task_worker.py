@@ -18,7 +18,9 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from typing import Any
+from collections.abc import Callable
+from functools import partial
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from loguru import logger
 from sqlmodel import select
@@ -27,13 +29,14 @@ from app.core.config import settings
 from app.core.sanitize import safe_exception_summary
 from app.db.entities import (
     RawSegment,
+    RecordingSession,
     SegmentTask,
     TaskStatus,
 )
 from app.db.session import get_session
 
 # ── 从子模块导入 ────────────────────────────────────────────────
-from app.pipeline.claiming import pop_and_claim
+from app.pipeline.claiming import pop_and_claim, release_unstarted_claim
 from app.pipeline.lifecycle import (
     _WORKER_ID,
     cleanup_subprocesses,
@@ -51,7 +54,9 @@ from app.pipeline.scheduler import (
 )
 from app.pipeline.stage_result import (
     active_stage,
+    can_transition,
     enqueue_next,
+    make_stage_key,
 )
 from app.pipeline.stale_recovery import (
     recover_orphans,
@@ -63,6 +68,30 @@ from app.pipeline.stale_recovery import (
 
 
 _logger = logger
+_T = TypeVar("_T")
+
+
+async def _thread_io(operation: Callable[[], _T], cancel_result: Callable[[_T], None] | None = None) -> _T:
+    """隔离有限时的同步 I/O；取消时先收尾并撤回尚未派发的领取结果。"""
+    pending = asyncio.create_task(asyncio.to_thread(operation))
+    cancelled = False
+    while True:
+        try:
+            result = await asyncio.shield(pending)
+            break
+        except asyncio.CancelledError:
+            if pending.cancelled():
+                raise
+            cancelled = True
+    if cancelled:
+        if cancel_result is not None:
+            await _thread_io(partial(cancel_result, result))
+        raise asyncio.CancelledError
+    return result
+
+
+if TYPE_CHECKING:
+    from app.analysis.session_summary import SessionSummaryClaim
 
 # ═══════════════════════════════════════════════════
 # 任务生命周期 API
@@ -120,6 +149,8 @@ def retry_task(task_id: int) -> bool:
     :returns: 是否成功。
     """
     with get_session() as db:
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         task = db.get(SegmentTask, task_id)
         if task is None:
             return False
@@ -127,6 +158,7 @@ def retry_task(task_id: int) -> bool:
             return False
         res = resume_stage(task.failed_stage or task.stage)
         task.stage = res
+        task.stage_key = make_stage_key(task.segment_id, res)
         task.attempts = 0
         task.last_error = None
         task.error_is_permanent = False
@@ -137,6 +169,10 @@ def retry_task(task_id: int) -> bool:
         task.lease_token = None
         task.completed_at = None
         db.add(task)
+        from app.analysis.session_summary import request_session_timeline_summary_in_session
+
+        if db.get(RecordingSession, task.session_id) is not None:
+            request_session_timeline_summary_in_session(db, task.session_id, reason="task_retry", force=True)
         return True
 
 
@@ -147,11 +183,19 @@ def cancel_task(task_id: int) -> bool:
     :returns: 是否成功。
     """
     with get_session() as db:
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         task = db.get(SegmentTask, task_id)
-        if task is None:
+        if task is None or not can_transition(task.stage, TaskStatus.CANCELLED):
             return False
+        if task.stage not in {TaskStatus.TRANSIENT_FAILED, TaskStatus.STALE}:
+            task.failed_stage = task.stage
         enqueue_next(task, TaskStatus.CANCELLED)
         db.add(task)
+        from app.analysis.session_summary import request_session_timeline_summary_in_session
+
+        if db.get(RecordingSession, task.session_id) is not None:
+            request_session_timeline_summary_in_session(db, task.session_id, reason="task_cancelled", force=True)
         return True
 
 
@@ -210,6 +254,16 @@ def _task_to_dict(t: SegmentTask) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════
 
 
+def _observe_execution(future: asyncio.Task[None]) -> None:
+    """读取每个后台 Future 的异常，持久化失败也不能成为未观察的线程错误。"""
+    if future.cancelled():
+        _logger.warning("worker_execution_cancelled task={}", future.get_name())
+    elif (exc := future.exception()) is not None:
+        _logger.opt(exception=exc).error(
+            "worker_execution_failed task={} error={}", future.get_name(), safe_exception_summary(exc)
+        )
+
+
 class TaskWorker:
     """持久化任务队列 Worker, 支持各阶段真正并发。
 
@@ -223,8 +277,11 @@ class TaskWorker:
         self._rendering: set[asyncio.Task[None]] = set()
         self._publishing: set[asyncio.Task[None]] = set()
         self._session_summaries: set[asyncio.Task[bool]] = set()
+        self._summary_claims: dict[asyncio.Task[bool], SessionSummaryClaim] = {}
         self._main_task: asyncio.Task[None] | None = None
         self._running: bool = False
+        self._next_summary_scan = 0.0
+        self._summary_scan_cursor = 0
         self._next_maintenance = time.monotonic() + 3600
         _logger.info("TaskWorker init worker_id={}", _WORKER_ID)
 
@@ -233,14 +290,17 @@ class TaskWorker:
         if self._running:
             return
         shutdown_event.clear()
+        from app.analysis.transcription.process_pool import reset_process_pool
+
+        reset_process_pool()
         self._running = True
         from app.pipeline.publish_recovery import recover_publish_state
 
         await asyncio.to_thread(recover_publish_state)
-        recover_orphans()
+        await _thread_io(recover_orphans)
         from app.analysis.session_summary import recover_running_session_summary_requests
 
-        recover_running_session_summary_requests()
+        await _thread_io(recover_running_session_summary_requests)
         self._main_task = asyncio.create_task(self._loop())
         if settings.asr_preload_on_start:
             self._preload_task = asyncio.create_task(self._preload_models())
@@ -252,10 +312,10 @@ class TaskWorker:
 
     async def _preload_models(self) -> None:
         """后台预加载失败只记录错误，正常转写仍使用已有回退机制。"""
-        from app.analysis.model_pool import preload_models
+        from app.analysis.transcription.isolated import preload_isolated_models
 
         try:
-            await asyncio.to_thread(preload_models)
+            await asyncio.to_thread(preload_isolated_models)
         except (RuntimeError, OSError, ValueError, ImportError) as exc:
             _logger.opt(exception=exc).error("ASR 预加载失败: {}", safe_exception_summary(exc))
 
@@ -272,9 +332,26 @@ class TaskWorker:
                 pass
 
         grace_period = settings.worker_shutdown_timeout_seconds
+        deadline = time.monotonic() + grace_period
+        from app.analysis.transcription.process_pool import get_process_pool
+
+        try:
+            await asyncio.to_thread(get_process_pool().shutdown, grace_period)
+        except (RuntimeError, OSError, asyncio.CancelledError):
+            # 进程终止异常也必须撤销迟到计算的写入权，但不能声称原生进程已退出。
+            from app.analysis.session_summary import interrupt_summary_execution
+            from app.pipeline.stale_recovery import release_stopped_computations
+
+            try:
+                await asyncio.to_thread(release_stopped_computations, _WORKER_ID)
+                for claim in self._summary_claims.values():
+                    await asyncio.to_thread(interrupt_summary_execution, claim)
+            finally:
+                cleanup_subprocesses()
+            raise
         preload = getattr(self, "_preload_task", None)
         if preload is not None and not preload.done():
-            _, pending = await asyncio.wait({preload}, timeout=grace_period)
+            _, pending = await asyncio.wait({preload}, timeout=max(0, deadline - time.monotonic()))
             for task in pending:
                 task.cancel()
         for coll_name, coll in [
@@ -288,14 +365,31 @@ class TaskWorker:
             if pending:
                 _logger.info("优雅关闭: 等待 {} 个 {} 任务完成 (最多 {}s)", len(pending), coll_name, grace_period)
                 try:
-                    done, _ = await asyncio.wait(pending, timeout=grace_period)
+                    done, _ = await asyncio.wait(pending, timeout=max(0, deadline - time.monotonic()))
                     _logger.info("优雅关闭: {} 任务正常完成", len(done))
                 except TimeoutError:
                     pass
                 still_running = {t for t in coll if not t.done()}
+                if still_running and coll_name in {"transcribing", "analyzing"}:
+                    from app.pipeline.stale_recovery import release_stopped_computations
+
+                    await asyncio.to_thread(release_stopped_computations, _WORKER_ID)
+                if still_running and coll_name == "session_summaries":
+                    from app.analysis.session_summary import interrupt_summary_execution
+
+                    for future in still_running:
+                        claim = self._summary_claims.get(future)
+                        if claim is not None:
+                            await asyncio.to_thread(interrupt_summary_execution, claim)
                 for t in still_running:
-                    _logger.warning("优雅关闭: 强制取消 {} 任务", coll_name)
+                    _logger.warning(
+                        "优雅关闭: 取消剩余等待 kind={} task={}；同步线程可能仍等待外部响应，计算租约已撤销",
+                        coll_name,
+                        t.get_name(),
+                    )
                     t.cancel()
+                if still_running:
+                    await asyncio.gather(*still_running, return_exceptions=True)
 
         _logger.info("TaskWorker stopped.")
         cleanup_subprocesses()
@@ -304,41 +398,52 @@ class TaskWorker:
         """主调度循环 — 每个 tick 执行阶段推进、stale 恢复、任务分发。"""
         while self._running and not shutdown_event.is_set():
             try:
-                from app.analysis.model_pool import model_pool
                 from app.analysis.reanalysis import process_pending_session_reanalyses
+                from app.analysis.transcription.process_pool import get_process_pool
                 from app.core.configuration import reload_configuration
                 from app.pipeline.publish_recovery import recover_publish_state
 
-                await asyncio.to_thread(reload_configuration)
-                await asyncio.to_thread(model_pool.cleanup_idle)
+                await _thread_io(reload_configuration)
+                await _thread_io(get_process_pool().cleanup_idle)
                 if time.monotonic() >= self._next_maintenance:
                     from app.core.settings_store import get_bool
                     from app.pipeline.storage_lifecycle import run_disk_maintenance
 
                     self._next_maintenance = time.monotonic() + 3600
-                    await asyncio.to_thread(run_disk_maintenance, cleanup=get_bool("storage_cleanup_enabled"))
-                await asyncio.to_thread(recover_publish_state)
-                process_pending_session_reanalyses()
-                retry_expired()
-                recover_stale()
-                advance_recorded()
-                advance_transcribed()
-                advance_candidate()
-                advance_awaiting_review()
-                advance_approved()
-                advance_rendered()
+                    cleanup = await _thread_io(partial(get_bool, "storage_cleanup_enabled"))
+                    await _thread_io(partial(run_disk_maintenance, cleanup=cleanup))
+                for maintenance in (
+                    recover_publish_state,
+                    process_pending_session_reanalyses,
+                    retry_expired,
+                    recover_stale,
+                    advance_recorded,
+                    advance_transcribed,
+                    advance_candidate,
+                    advance_awaiting_review,
+                    advance_approved,
+                    advance_rendered,
+                ):
+                    await _thread_io(maintenance)
+                if time.monotonic() >= self._next_summary_scan:
+                    from app.analysis.session_summary import compensate_session_summaries
+
+                    _, self._summary_scan_cursor = await _thread_io(
+                        partial(compensate_session_summaries, after_id=self._summary_scan_cursor)
+                    )
+                    self._next_summary_scan = time.monotonic() + 60
                 await self._dispatch_session_summaries()
                 # V0.1.13: Disk protection
                 from app.pipeline.storage_lifecycle import is_safe_for_new_tasks
 
-                disk_safe = is_safe_for_new_tasks()
+                disk_safe = await _thread_io(is_safe_for_new_tasks)
                 if disk_safe:
                     from app.core.settings_store import asr_task_max_concurrency
 
                     await self._dispatch(
                         TaskStatus.QUEUED_FOR_TRANS,
                         self._transcribing,
-                        asr_task_max_concurrency(),
+                        await _thread_io(asr_task_max_concurrency),
                     )
                     await self._dispatch(TaskStatus.QUEUED_FOR_ANALYSIS, self._analyzing, settings.max_analyzing)
                     await self._dispatch(TaskStatus.QUEUED_FOR_RENDER, self._rendering, settings.max_rendering)
@@ -349,7 +454,6 @@ class TaskWorker:
                 self._analyzing = {t for t in self._analyzing if not t.done()}
                 self._rendering = {t for t in self._rendering if not t.done()}
                 self._publishing = {t for t in self._publishing if not t.done()}
-                self._session_summaries = {t for t in self._session_summaries if not t.done()}
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -358,6 +462,28 @@ class TaskWorker:
 
     async def _dispatch_session_summaries(self) -> None:
         """串行领取整场总结，避免与分段分析争用 LLM 和数据库写入。"""
+        from app.analysis.session_summary import recover_failed_summary_execution
+
+        for future in list(self._session_summaries):
+            if not future.done():
+                continue
+            if future.cancelled():
+                error = "整场总结执行被取消"
+            else:
+                exc = future.exception()
+                error = safe_exception_summary(exc) if exc else None
+            if error:
+                claim = self._summary_claims[future]
+                _logger.error(
+                    "session_summary_execution_failed session={} request={} error={}",
+                    claim.session_id,
+                    claim.request_id,
+                    error,
+                )
+                # 数据库仍不可写时让 tick 重试恢复记录，不丢弃 claim 或重复执行 LLM。
+                await asyncio.to_thread(recover_failed_summary_execution, claim, error)
+            self._session_summaries.remove(future)
+            self._summary_claims.pop(future, None)
         if self._session_summaries:
             return
         from app.analysis.session_summary import (
@@ -365,11 +491,21 @@ class TaskWorker:
             execute_session_summary_claim,
         )
 
-        claim = claim_pending_session_summary()
+        def return_unstarted(claim: SessionSummaryClaim | None) -> None:
+            if claim is not None:
+                from app.analysis.session_summary import interrupt_summary_execution
+
+                interrupt_summary_execution(claim)
+
+        claim = await _thread_io(claim_pending_session_summary, return_unstarted)
         if claim is None:
             return
-        task = asyncio.create_task(asyncio.to_thread(execute_session_summary_claim, claim))
+        task = asyncio.create_task(
+            asyncio.to_thread(execute_session_summary_claim, claim),
+            name=f"summary:{claim.session_id}:{claim.request_id}",
+        )
         self._session_summaries.add(task)
+        self._summary_claims[task] = claim
 
     async def _dispatch(
         self,
@@ -396,7 +532,10 @@ class TaskWorker:
                 cost_spec = {}
                 acquired = True
             try:
-                task = pop_and_claim(queued_stage)
+                task = await _thread_io(
+                    partial(pop_and_claim, queued_stage),
+                    partial(release_unstarted_claim, queued_stage=queued_stage),
+                )
             except BaseException:
                 if acquired and cost_spec:
                     from app.core.resource_budget import release_resources
@@ -416,11 +555,15 @@ class TaskWorker:
                 if _task_resources_lock is None:
                     _task_resources_lock = threading.Lock()
                 with _task_resources_lock:
-                    _task_resources[task.id] = cost_spec
+                    _task_resources[(task.id, task.lease_token)] = cost_spec
 
             act_stage = active_stage(queued_stage)
             lease = task.lease_token
-            t = asyncio.create_task(asyncio.to_thread(execute_task, task.id, act_stage, lease))
+            t = asyncio.create_task(
+                asyncio.to_thread(execute_task, task.id, act_stage, lease),
+                name=f"task:{task.id}:segment:{task.segment_id}:{act_stage}:lease:{lease}",
+            )
+            t.add_done_callback(_observe_execution)
             running.add(t)
 
     @property
