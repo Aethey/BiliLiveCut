@@ -29,6 +29,10 @@ python tools/native/build_rust.py
 
 先执行改动对应的目标测试，再运行完整测试和质量检查。项目的 `pytest` 默认收集 `tests/` 与 `packaging/portable/tests/`：
 
+CI 使用 `pip install -e ".[dev,web]"` 安装依赖。`dev` 复用 `asr-whisper` extra，包含无语音分类与独立 ASR 子进程回归需要的真实音频解码、CPU Silero VAD 及其 SDK 依赖；这些测试不需要 GPU，也不下载转写模型。验证依赖变更时应新建隔离虚拟环境，避免开发机已安装的 ASR SDK 掩盖声明遗漏；CI 保持 `ASR_NO_MODEL_DOWNLOAD=1`。
+
+`asr-whisper` 显式要求 `av>=11,<19`。当前 faster-whisper 1.2.1 仍向 `av.open()` 传入 `metadata_errors`，而 PyAV 19 已移除此参数（见[上游兼容性问题](https://github.com/SYSTRAN/faster-whisper/issues/1492)）；无上限安装会在音频解码前抛出 `TypeError`。Portable 的两个 ABI 锁继续使用已验证的 `av==18.0.0`。将来放开上限前，应先验证真实解码、CPU VAD 及独立子进程回归。
+
 ```powershell
 python -m pytest
 python scripts/run_ruff.py check

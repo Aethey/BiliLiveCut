@@ -78,6 +78,8 @@ python -m app.cli serve
 - Bilibili：[_铃子](https://space.bilibili.com/95763745)
 - Bilibili：[爱莉希雅office](https://space.bilibili.com/11241685)
 - Bilibili：[七圣小伞](https://space.bilibili.com/330443150)
+- Bilibili：[溯园](https://space.bilibili.com/22335588)
+- Bilibili：[桜墨Moku](https://space.bilibili.com/6432607)
 
 ## 许可证
 
