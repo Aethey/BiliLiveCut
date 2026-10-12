@@ -30,6 +30,13 @@ class ClipOptions:
     :param remove_silence: 是否去除首尾静默。
     :param vertical: 是否竖屏重构。
     :param subtitle: 是否烧录字幕。
+    :param danmaku: 是否独立烧录场次普通弹幕。
+    :param danmaku_mode: 滚动、顶部或下方固定弹幕。
+    :param danmaku_font_size: 以 1080 高画面为基准的字号。
+    :param danmaku_color: 六位 RGB 十六进制颜色。
+    :param danmaku_opacity: 不透明度(0~1)。
+    :param danmaku_duration_s: 单条显示秒数。
+    :param danmaku_max_lines: 最大行数，实际行数受画面可用区域限制。
     :param max_duration_s: 最大时长(秒)。
     :param crf: x264 质量(0-51)。
     :param preset: x264 编码速度档。
@@ -48,6 +55,13 @@ class ClipOptions:
     video_encoder: Literal["cpu", "nvidia", "intel", "amd"] = "cpu"
     hardware_quality: int = 23
     hardware_preset: Literal["speed", "balanced", "quality"] = "balanced"
+    danmaku: bool = False
+    danmaku_mode: Literal["scroll", "top", "bottom"] = "scroll"
+    danmaku_font_size: int = 36
+    danmaku_color: str = "FFFFFF"
+    danmaku_opacity: float = 0.85
+    danmaku_duration_s: float = 6.0
+    danmaku_max_lines: int = 8
 
     def video_encoding_args(self) -> list[str]:
         """生成后端专用编码参数；显式选择硬件时不偷偷回退到 CPU。"""
@@ -103,6 +117,13 @@ class ClipOptions:
             remove_silence=settings.clip_remove_silence,
             vertical=settings.clip_vertical,
             subtitle=settings.clip_subtitle,
+            danmaku=settings.clip_danmaku,
+            danmaku_mode=settings.clip_danmaku_mode,
+            danmaku_font_size=settings.clip_danmaku_font_size,
+            danmaku_color=settings.clip_danmaku_color,
+            danmaku_opacity=settings.clip_danmaku_opacity,
+            danmaku_duration_s=settings.clip_danmaku_duration_s,
+            danmaku_max_lines=settings.clip_danmaku_max_lines,
             max_duration_s=settings.clip_max_duration_s,
             crf=settings.clip_video_crf,
             preset=settings.clip_preset,

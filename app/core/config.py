@@ -194,6 +194,21 @@ class Settings(BaseSettings):
     clip_remove_silence: bool = False  # 去除首尾静默
     clip_vertical: bool = False  # 竖屏重构(1080x1920,居中+黑边)
     clip_subtitle: bool = False  # 烧录字幕(从转写生成)
+    clip_danmaku: bool = Field(default=False, description="烧录已采集或导入的普通弹幕，与转写字幕独立。")
+    clip_danmaku_mode: Literal["scroll", "top", "bottom"] = Field(
+        default="scroll", description="滚动、顶部或下方固定弹幕。"
+    )
+    clip_danmaku_font_size: int = Field(default=36, ge=12, le=120, description="以 1080 高画面为基准的弹幕字号。")
+    clip_danmaku_color: str = Field(
+        default="FFFFFF", pattern=r"^[0-9A-Fa-f]{6}$", description="六位 RGB 十六进制颜色，不含 #。"
+    )
+    clip_danmaku_opacity: float = Field(
+        default=0.85, ge=0.0, le=1.0, description="弹幕不透明度，0 为透明，1 为不透明。"
+    )
+    clip_danmaku_duration_s: float = Field(default=6.0, ge=2.0, le=20.0, description="单条弹幕显示秒数。")
+    clip_danmaku_max_lines: int = Field(
+        default=8, ge=1, le=20, description="最大弹幕行数；满行时舍弃新弹幕，底部保留字幕区。"
+    )
     clip_max_duration_s: int = Field(default=180, ge=5, le=900)
     clip_video_crf: int = Field(default=20, ge=0, le=51)  # x264 质量,越小越好
     clip_video_encoder: Literal["cpu", "nvidia", "intel", "amd"] = Field(

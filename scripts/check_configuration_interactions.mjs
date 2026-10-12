@@ -62,6 +62,8 @@ element("configuration-group").value = "all";
 const fields = [
   { key: "clip_video_crf", label: "视频质量", group: "output", type: "integer", value: 20, baseline: 20, minimum: 0, maximum: 51 },
   { key: "clip_video_encoder", label: "视频编码设备", group: "output", type: "string", enum: ["cpu", "nvidia", "intel", "amd"], value: "cpu", baseline: "cpu" },
+  { key: "clip_danmaku_mode", label: "弹幕模式", group: "output", type: "string", enum: ["scroll", "top", "bottom"], value: "scroll", baseline: "scroll" },
+  { key: "clip_danmaku_opacity", label: "弹幕不透明度", group: "output", type: "number", value: 0.85, baseline: 0.85, minimum: 0, maximum: 1 },
   { key: "clip_hardware_quality", label: "硬件质量", group: "output", type: "integer", value: 23, baseline: 23, minimum: 1, maximum: 51 },
   { key: "smtp_password", label: "邮箱密码", group: "notifications", type: "string", value: null, baseline: null, secret: true, configured: false },
   { key: "stream_url", label: "文本参数", group: "recording", type: "string", value: "abcdef", baseline: "abcdef" },
@@ -182,5 +184,11 @@ console.error("configuration check: loading source modules");
   assert.match(element("configuration-fields").innerHTML, /value="nvidia" selected>NVIDIA 显卡/);
   await edit("clip_video_encoder", "cpu"); await form.emit("submit");
   assert.deepEqual(requests.at(-1).values, { clip_video_encoder: "cpu" });
-  console.log("PASS: configuration draft, delayed reload/caret, validation focus, save failure, concurrent submit, secret clearing, reset, readonly controls and hardware encoder selection");
+  assert.equal(element("field-clip_danmaku_mode").hidden, false);
+  await edit("clip_danmaku_mode", "bottom");
+  await edit("clip_danmaku_opacity", "0.5");
+  await form.emit("submit");
+  assert.deepEqual(requests.at(-1).values, { clip_danmaku_mode: "bottom", clip_danmaku_opacity: 0.5 });
+  assert.match(element("configuration-fields").innerHTML, /value="bottom" selected>下方固定/);
+  console.log("PASS: configuration draft, delayed reload/caret, validation focus, save failure, concurrent submit, secret clearing, reset, readonly controls hardware encoder selection and danmaku style settings");
 }

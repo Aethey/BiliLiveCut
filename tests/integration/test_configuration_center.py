@@ -371,3 +371,43 @@ def test_auto_upload_requires_all_three_switches(
             if global_enabled and biliup and room_enabled and score is not None and score >= 0.8
             else "awaiting_publish_confirmation"
         )
+
+
+def test_web_danmaku_settings_reach_next_task_and_invalid_change_is_atomic(temp_db: None) -> None:
+    from app.clipping.models import ClipOptions
+    from app.web.main import app
+
+    before = ClipOptions.from_settings()
+    client = TestClient(app)
+    response = client.patch(
+        "/api/settings/configuration",
+        json={
+            "values": {
+                "clip_danmaku": True,
+                "clip_danmaku_mode": "bottom",
+                "clip_danmaku_font_size": 48,
+                "clip_danmaku_color": "FF8000",
+                "clip_danmaku_opacity": 0.5,
+                "clip_danmaku_duration_s": 4.5,
+                "clip_danmaku_max_lines": 3,
+            }
+        },
+    )
+    assert response.status_code == 200, response.text
+    current = ClipOptions.from_settings()
+    assert current.danmaku is True and current.subtitle is False
+    assert current.danmaku_mode == "bottom" and current.danmaku_font_size == 48
+    assert current.danmaku_color == "FF8000" and current.danmaku_opacity == 0.5
+    assert current.danmaku_duration_s == 4.5 and current.danmaku_max_lines == 3
+    assert before.danmaku is False
+    rejected = client.patch(
+        "/api/settings/configuration",
+        json={
+            "values": {
+                "clip_danmaku": False,
+                "clip_danmaku_color": "FFFFFF\nStyle: injected",
+            }
+        },
+    )
+    assert rejected.status_code == 400
+    assert ClipOptions.from_settings() == current

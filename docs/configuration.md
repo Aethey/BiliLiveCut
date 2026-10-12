@@ -2,7 +2,7 @@
 
 通过 Web 左侧“设置中心”搜索中文名称或环境变量名，查看有效值、来源和生效时间。下表解释配置范围；实际注册定义位于 `app/core/configuration.py`，运行中的字段以设置中心返回为准。
 
-当前注册表共 151 项：141 项 Settings 与 10 项运行时配置；评分配置含 8 个权重和 6 个标量。表中默认值均来自代码/项目默认，不导出环境凭据。
+当前注册表共 158 项：148 项 Settings 与 10 项运行时配置；评分配置含 8 个权重和 6 个标量。表中默认值均来自代码/项目默认，不导出环境凭据。
 
 业务默认来自环境或项目配置；Web 覆盖以原键保存在 AppSetting。保存先整体校验，再在单一事务中提交；revision 防止旧表单覆盖。字段缺省保持原值，reset 删除覆盖并恢复环境/项目默认；凭据空白保持，clear 明确清空并阻止环境回退。
 
@@ -108,16 +108,23 @@
 | `near_live_asr_priority` | 实时转写优先级 | highlights/global | 50 | integer；0..1000 | database/next_task | `app/pipeline/scheduler.py:86`、`app/pipeline/workers/analyze.py:831`、`app/pipeline/workers/transcribe.py:589` |
 | `background_asr_priority` | 历史转写优先级 | highlights/global | 100 | integer；0..1000 | database/next_task | `app/pipeline/scheduler.py:95`、`app/pipeline/workers/analyze.py:832`、`app/pipeline/workers/transcribe.py:590` |
 | `auto_publish_threshold` | 自动发布分数阈值 | publishing/new_room_default | 0.8 | number；0.0..1.0 | database/new_room | `app/commands/record.py:60`、`app/pipeline/scheduler.py:65`、`app/pipeline/scheduler.py:308`、`app/web/services/dashboard.py:73`、`app/web/services/rooms.py:674`、`app/web/services/rooms.py:703` |
-| `clip_loudnorm` | 响度标准化 | output/global | True | boolean；不限..不限 | database/next_task | `app/clipping/models.py:102` |
-| `clip_remove_silence` | 去除首尾静音 | output/global | False | boolean；不限..不限 | database/next_task | `app/clipping/models.py:103` |
-| `clip_vertical` | 竖屏输出 | output/global | False | boolean；不限..不限 | database/next_task | `app/clipping/models.py:104` |
-| `clip_subtitle` | 烧录字幕 | output/global | False | boolean；不限..不限 | database/next_task | `app/clipping/models.py:105` |
-| `clip_max_duration_s` | 成片时长上限 | output/global | 180 | integer；5..900 | database/next_task | `app/analysis/clip_scorer.py:93`、`app/clipping/models.py:106`、`app/web/routers/review_router.py:268` |
-| `clip_video_crf` | 视频 CRF 质量（越小越清晰） | output/global | 20 | integer；0..51 | database/next_task | `app/clipping/models.py:107` |
-| `clip_preset` | 视频编码速度档 | output/global | veryfast | string；['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'] | database/next_task | `app/clipping/models.py:108` |
-| `clip_video_encoder` | 视频编码设备（CPU 关闭硬件加速） | output/global | cpu | cpu/nvidia/intel/amd | database/next_task | `app/clipping/models.py:109` |
-| `clip_hardware_quality` | 硬件编码质量值 | output/global | 23 | integer；1..51 | database/next_task | `app/clipping/models.py:110` |
-| `clip_hardware_preset` | 硬件编码速度档 | output/global | balanced | speed/balanced/quality | database/next_task | `app/clipping/models.py:111` |
+| `clip_loudnorm` | 响度标准化 | output/global | True | boolean；不限..不限 | database/next_task | `app/clipping/models.py:116` |
+| `clip_remove_silence` | 去除首尾静音 | output/global | False | boolean；不限..不限 | database/next_task | `app/clipping/models.py:117` |
+| `clip_vertical` | 竖屏输出 | output/global | False | boolean；不限..不限 | database/next_task | `app/clipping/models.py:118` |
+| `clip_subtitle` | 烧录字幕 | output/global | False | boolean；不限..不限 | database/next_task | `app/clipping/models.py:119` |
+| `clip_danmaku` | 烧录弹幕 | output/global | False | boolean | database/next_task | `app/clipping/models.py:120` |
+| `clip_danmaku_mode` | 弹幕显示模式 | output/global | scroll | scroll/top/bottom | database/next_task | `app/clipping/models.py:121` |
+| `clip_danmaku_font_size` | 弹幕字号（1080 高画面） | output/global | 36 | integer；12..120 | database/next_task | `app/clipping/models.py:122` |
+| `clip_danmaku_color` | 弹幕颜色 | output/global | FFFFFF | 六位 RGB 十六进制 | database/next_task | `app/clipping/models.py:123` |
+| `clip_danmaku_opacity` | 弹幕不透明度 | output/global | 0.85 | number；0..1 | database/next_task | `app/clipping/models.py:124` |
+| `clip_danmaku_duration_s` | 弹幕显示秒数 | output/global | 6.0 | number；2..20 | database/next_task | `app/clipping/models.py:125` |
+| `clip_danmaku_max_lines` | 弹幕最大行数 | output/global | 8 | integer；1..20 | database/next_task | `app/clipping/models.py:126` |
+| `clip_max_duration_s` | 成片时长上限 | output/global | 180 | integer；5..900 | database/next_task | `app/analysis/clip_scorer.py:93`、`app/clipping/models.py:127`、`app/web/routers/review_router.py:268` |
+| `clip_video_crf` | 视频 CRF 质量（越小越清晰） | output/global | 20 | integer；0..51 | database/next_task | `app/clipping/models.py:128` |
+| `clip_preset` | 视频编码速度档 | output/global | veryfast | string；['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'] | database/next_task | `app/clipping/models.py:129` |
+| `clip_video_encoder` | 视频编码设备（CPU 关闭硬件加速） | output/global | cpu | cpu/nvidia/intel/amd | database/next_task | `app/clipping/models.py:130` |
+| `clip_hardware_quality` | 硬件编码质量值 | output/global | 23 | integer；1..51 | database/next_task | `app/clipping/models.py:131` |
+| `clip_hardware_preset` | 硬件编码速度档 | output/global | balanced | speed/balanced/quality | database/next_task | `app/clipping/models.py:132` |
 | `threshold_learning_min_samples` | 阈值学习最少反馈 | highlights/global | 10 | integer；3..不限 | database/next_task | `app/analysis/threshold_learning.py:130`、`app/analysis/threshold_learning.py:192`、`app/analysis/threshold_learning.py:217`、`app/analysis/threshold_learning.py:224`、`app/analysis/threshold_learning.py:225` |
 | `threshold_learning_max_delta` | 阈值学习单次调整上限 | highlights/global | 0.1 | number；0.01..0.3 | database/next_task | `app/analysis/threshold_learning.py:159` |
 | `schedule_check_interval_s` | 预约检查间隔 | recording/global | 30 | integer；10..300 | database/next_poll | 经统一配置快照读取 |

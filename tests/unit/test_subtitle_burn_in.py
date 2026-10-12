@@ -7,6 +7,7 @@ import shutil
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from sqlmodel import select
@@ -125,7 +126,7 @@ def _make_black_ts(path: Path, duration: int = 3) -> None:
     )
 
 
-def _bright_pixels(path: Path, at_s: float) -> int:
+def _bright_pixels(path: Path, at_s: float, dimensions: tuple[int, int] = (320, 240)) -> int:
     pixels = subprocess.run(
         [
             settings.ffmpeg_path,
@@ -148,7 +149,7 @@ def _bright_pixels(path: Path, at_s: float) -> int:
         check=True,
         timeout=30,
     ).stdout
-    assert len(pixels) == 320 * 240
+    assert len(pixels) == dimensions[0] * dimensions[1]
     return sum(value > 150 for value in pixels)
 
 
@@ -311,3 +312,126 @@ def test_clean_main_and_subtitled_counterpart_share_covering_segments(
         assert result["duration_s"] == pytest.approx(3, abs=0.15)
         assert result["peak_rel"] == pytest.approx(2, abs=0.1)
         assert _bright_pixels(output, 1.4) > 20
+
+
+@pytest.mark.parametrize("with_intro,vertical", [(False, False), (True, False), (False, True)])
+def test_danmaku_and_asr_share_cross_segment_timeline_in_all_render_paths(
+    temp_db: None, tmp_path: Path, with_intro: bool, vertical: bool
+) -> None:
+    from app.db.entities import Danmaku
+
+    special = tmp_path / "弹幕 it's [safe],semi;"
+    special.mkdir()
+    base = datetime(2026, 10, 12, tzinfo=UTC)
+    with get_session() as db:
+        recording = RecordingSession(room_id=1, started_at=base)
+        db.add(recording)
+        db.flush()
+        assert recording.id is not None
+        for seq in range(2):
+            source = special / f"part{seq}.ts"
+            _make_black_ts(source)
+            segment = RawSegment(
+                session_id=recording.id,
+                seq=seq,
+                file_path=str(source),
+                duration_s=3,
+                start_ts=base + timedelta(seconds=3 * seq),
+                end_ts=base + timedelta(seconds=3 * (seq + 1)),
+            )
+            db.add(segment)
+            db.flush()
+            if seq == 1:
+                db.add(
+                    Transcript(
+                        segment_id=segment.id,
+                        final_text="ASR WORDS",
+                        words_json=json.dumps([{"w": "ASR WORDS", "start": 0.5, "end": 1.0}]),
+                    )
+                )
+        db.add(Danmaku(session_id=recording.id, room_id=1, ts=base + timedelta(seconds=2.2), content="DANMAKU"))
+        candidate = HighlightCandidate(
+            session_id=recording.id,
+            peak_ts=base + timedelta(seconds=3),
+            start_ts=base + timedelta(seconds=2),
+            end_ts=base + timedelta(seconds=5),
+            dedup_hash="danmaku-render-paths",
+        )
+        db.add(candidate)
+        db.flush()
+        candidate_id = candidate.id
+        db.add(HighlightEvent(candidate_id=candidate_id, session_id=recording.id))
+        if with_intro:
+            db.add(
+                IntroTemplate(
+                    name="intro", is_default=True, intro_text="INTRO", intro_duration_s=1, intro_font_name="Arial"
+                )
+            )
+    assert candidate_id is not None
+    options = ClipOptions(
+        vertical=vertical,
+        loudnorm=False,
+        subtitle=True,
+        danmaku=True,
+        danmaku_mode="top",
+        danmaku_font_size=96,
+        danmaku_duration_s=2,
+        danmaku_opacity=1,
+        preset="ultrafast",
+    )
+    clip = produce_clip(candidate_id, options)
+    offset = 1 if with_intro else 0
+    dimensions = (1080, 1920) if vertical else (320, 240)
+    assert (clip.width, clip.height) == dimensions
+    assert clip.duration_s == pytest.approx(3 + offset, abs=0.15)
+    ass = Path(clip.file_path).with_suffix(".ass")
+    assert "0:00:00.20,0:00:02.20" in ass.read_text(encoding="utf-8")
+    with get_session() as db:
+        variants = db.exec(select(ClipVariant).where(ClipVariant.file_path != None)).all()  # noqa: E711
+    assert {item.variant_type for item in variants} == {
+        ClipVariantType.SINGLE,
+        ClipVariantType.SUBTITLED,
+        ClipVariantType.ARCHIVE,
+        ClipVariantType.COMPRESSED,
+        ClipVariantType.NO_SUBTITLES,
+    }
+    assert len({item.file_path for item in variants}) == 4
+    for item in variants:
+        assert item.render_status == "done"
+        video = Path(item.file_path)
+        assert _bright_pixels(video, 0.7 + offset, dimensions) > 30
+        assert _bright_pixels(video, 2.7 + offset, dimensions) == 0
+        if item.variant_type == ClipVariantType.NO_SUBTITLES:
+            assert item.has_subtitles is False
+        else:
+            assert _bright_pixels(video, 1.7 + offset, dimensions) > _bright_pixels(video, 0.7 + offset, dimensions)
+    computed = special / "compute.mp4"
+    result = render_clip_to_file(candidate_id, computed, options)
+    assert result["duration_s"] == pytest.approx(3 + offset, abs=0.15)
+    assert _bright_pixels(computed, 0.7 + offset, dimensions) > 30
+    assert _bright_pixels(computed, 2.7 + offset, dimensions) == 0
+
+
+@pytest.mark.parametrize("mode", ["scroll", "top", "bottom"])
+def test_real_ass_filter_handles_modes_and_special_paths(
+    temp_db: None, tmp_path: Path, mode: Literal["scroll", "top", "bottom"]
+) -> None:
+    from app.clipping.danmaku import write_danmaku_ass
+    from app.db.entities import Danmaku
+
+    special = tmp_path / "中文 it's [clip],semi;"
+    special.mkdir()
+    source = special / "source.ts"
+    _make_black_ts(source)
+    concat = _write_concat_list([RawSegment(session_id=1, seq=0, file_path=str(source))], special)
+    base = datetime(2026, 10, 12, tzinfo=UTC)
+    with get_session() as db:
+        db.add(Danmaku(session_id=1, room_id=1, ts=base, content="HELLO"))
+    options = ClipOptions(loudnorm=False, danmaku=True, danmaku_font_size=96, danmaku_duration_s=2, preset="ultrafast")
+    options.danmaku_mode = mode
+    path = write_danmaku_ass(1, base, 3, 320, 240, options, special / "弹幕's.ass")
+    assert path is not None
+    output = special / "visible.mp4"
+    _run_ffmpeg_clip(concat, output, 0, 3, options, None, danmaku_path=path)
+    assert _bright_pixels(output, 1) > 30
+    assert _bright_pixels(output, 2.7) == 0
