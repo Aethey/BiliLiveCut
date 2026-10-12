@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess as _sp
 import sys
@@ -99,8 +100,15 @@ def test_install_dependencies_recognizes_strict_hash_lock_versions(
 
     def _fake_run(args, **kwargs):
         calls.append(args)
-        if args[-3:] == ["pip", "freeze", "--all"]:
-            return _sp.CompletedProcess(args, 0, stdout="pip==26.2\nPydantic_Settings==2.14.2\n", stderr="")
+        if args[-3:] == ["pip", "list", "--format=json"]:
+            return _sp.CompletedProcess(
+                args,
+                0,
+                stdout=json.dumps(
+                    [{"name": "pip", "version": "26.2"}, {"name": "Pydantic_Settings", "version": "2.14.2"}]
+                ),
+                stderr="",
+            )
         return _sp.CompletedProcess(args, 0, stdout="import OK\n", stderr="")
 
     monkeypatch.setattr(main, "_find_lock_file", lambda _python: lock_file)
@@ -109,7 +117,7 @@ def test_install_dependencies_recognizes_strict_hash_lock_versions(
     main.install_dependencies(Path(sys.executable), tmp_path)
 
     assert not any("install" in args for args in calls)
-    assert any(args[-3:] == ["pip", "freeze", "--all"] for args in calls)
+    assert any(args[-3:] == ["pip", "list", "--format=json"] for args in calls)
     assert any("import playwright" in arg for args in calls for arg in args)
     assert any("import openai" in arg for args in calls for arg in args)
 
@@ -127,9 +135,9 @@ def test_install_dependencies_auto_uses_full_bundle_wheelhouse(tmp_path: Path, m
 
     def _fake_run(args: list[str], **_kwargs: object) -> _sp.CompletedProcess[str]:
         calls.append(args)
-        if args[-3:] == ["pip", "freeze", "--all"]:
-            return _sp.CompletedProcess(args, 0, stdout="", stderr="")
-        return _sp.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[-3:] == ["pip", "list", "--format=json"]:
+            return _sp.CompletedProcess(args, 0, stdout="[]", stderr="")
+        return _sp.CompletedProcess(args, 0, stdout="[]", stderr="")
 
     monkeypatch.delenv("PIP_NO_INDEX", raising=False)
     monkeypatch.setattr(main, "_find_lock_file", lambda _python: lock_file)
@@ -159,7 +167,7 @@ def test_lite_online_install_uses_embedded_bootstrap_wheels(tmp_path: Path, monk
 
     def _fake_run(args: list[str], **_kwargs: object) -> _sp.CompletedProcess[str]:
         calls.append(args)
-        return _sp.CompletedProcess(args, 0, stdout="", stderr="")
+        return _sp.CompletedProcess(args, 0, stdout="[]", stderr="")
 
     monkeypatch.delenv("PIP_NO_INDEX", raising=False)
     monkeypatch.setattr(main, "_find_lock_file", lambda _python: lock_file)
@@ -183,8 +191,8 @@ def test_lite_online_install_rejects_missing_bootstrap_wheels(tmp_path: Path, mo
     lock_file.write_text("demo==1.0 --hash=sha256:" + "0" * 64 + "  # demo-1.0-py3-none-any.whl\n")
 
     def _fake_run(args: list[str], **_kwargs: object) -> _sp.CompletedProcess[str]:
-        assert args[-3:] == ["pip", "freeze", "--all"]
-        return _sp.CompletedProcess(args, 0, stdout="", stderr="")
+        assert args[-3:] == ["pip", "list", "--format=json"]
+        return _sp.CompletedProcess(args, 0, stdout="[]", stderr="")
 
     monkeypatch.delenv("PIP_NO_INDEX", raising=False)
     monkeypatch.setattr(main, "_find_lock_file", lambda _python: lock_file)
@@ -263,7 +271,7 @@ def test_dependency_processes_isolate_python_but_preserve_install_settings(
         assert env["PIP_NO_INDEX"] == "1"
         assert env["PIP_INDEX_URL"] == "https://mirror.example/simple"
         assert env["BLC_OFFLINE"] == "1"
-        return _sp.CompletedProcess(args, 0, stdout="", stderr="")
+        return _sp.CompletedProcess(args, 0, stdout="[]", stderr="")
 
     for name in ("PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE"):
         monkeypatch.setenv(name, "ambient-root")
@@ -275,7 +283,7 @@ def test_dependency_processes_isolate_python_but_preserve_install_settings(
 
     main.install_dependencies(Path(sys.executable), tmp_path)
     main._run_dependency_preflight(Path(sys.executable))
-    assert any(args[-3:] == ["pip", "freeze", "--all"] for args in calls)
+    assert any(args[-3:] == ["pip", "list", "--format=json"] for args in calls)
     assert any("install" in args for args in calls)
     assert any("import huggingface_hub" in args[-1] for args in calls)
 
@@ -399,8 +407,8 @@ def test_install_dependencies_rejects_full_bundle_without_wheelhouse(
     portable_python.write_bytes(b"fixture")
 
     def _fake_run(args: list[str], **_kwargs: object) -> _sp.CompletedProcess[str]:
-        assert args[-3:] == ["pip", "freeze", "--all"]
-        return _sp.CompletedProcess(args, 0, stdout="", stderr="")
+        assert args[-3:] == ["pip", "list", "--format=json"]
+        return _sp.CompletedProcess(args, 0, stdout="[]", stderr="")
 
     monkeypatch.delenv("PIP_NO_INDEX", raising=False)
     monkeypatch.setattr(main, "_find_lock_file", lambda _python: lock_file)

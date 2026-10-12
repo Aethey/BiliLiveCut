@@ -4,6 +4,8 @@
 
 ## 开发环境
 
+Windows CUDA 运行时额外使用 `packaging/portable/locks/requirements-torch-{cu126|cu130}-{py311|py312}-win-x64.lock`，只替换 Torch/TorchAudio。更新基础锁中的这两个版本时，必须从 PyTorch 官方索引同步 CUDA URL、SHA-256 和 ABI，核对 wheel 元数据依赖，并运行 `packaging/portable/tests/test_torch_runtime.py`；不放宽哈希检查或自动接受未登记的 CUDA 版本。源码环境应用 CUDA 锁后，以现有虚拟环境的 Python 运行，安装说明见[使用指南](usage.md#cuda-安装与实际设备确认)。
+
 使用 Python 3.11/3.12，准备 FFmpeg 和 Node.js 22 或更新版本。uv 和传统 venv + pip 均受支持，共用 `pyproject.toml` 中的依赖与 extras。
 
 ### uv

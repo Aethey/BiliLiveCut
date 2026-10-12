@@ -22,6 +22,9 @@ _portable_dir = Path(__file__).resolve().parent.parent  # portable/
 _src_dir = _portable_dir / "src"
 if str(_src_dir) not in sys.path:
     sys.path.insert(0, str(_src_dir))
+_tests_dir = Path(__file__).resolve().parent
+if str(_tests_dir) not in sys.path:
+    sys.path.insert(0, str(_tests_dir))
 
 
 def test_launcher_exports_callable_main() -> None:

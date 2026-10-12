@@ -51,6 +51,8 @@ Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装�
 
 ## 系统要求
 
+Full 默认随附 CPU 版依赖。使用 NVIDIA GPU 转写前，可运行 `BiliLiveCut-Portable.exe --torch-runtime cu126`（或 `cu130`）安装官方哈希锁定的 CUDA 配套包，完成后退出；选择持久化并在后续启动、虚拟环境修复时保留。完全离线需把对应 ABI 的 CUDA wheel 放入 `vendor/wheels/` 并加 `--offline`，恢复 CPU 使用 `--torch-runtime cpu`。实际显卡、驱动、Torch 与 CTranslate2 能力分别诊断，详见[CUDA 使用说明](../../docs/usage.md#cuda-安装与实际设备确认)。
+
 | 项目 | 最低 | 推荐 |
 |------|------|------|
 | 操作系统 | Windows 10/11 x64 | Windows 11 |

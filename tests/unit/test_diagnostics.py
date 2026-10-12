@@ -378,6 +378,45 @@ def test_doctor_uses_current_settings_and_preserves_existing_files(
     assert existing.read_text(encoding="utf-8") == "user asset"
 
 
+def test_doctor_fails_explicit_cuda_and_caches_identical_backend_probes(
+    temp_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+    import typer
+    from rich.console import Console
+
+    from app.commands import doctor
+    from app.core import asr_detection, asr_devices
+    from app.core.config import settings
+
+    Path(settings.storage_root).mkdir(parents=True, exist_ok=True)
+    output = io.StringIO()
+    monkeypatch.setattr(doctor, "console", Console(file=output, width=240, color_system=None))
+    monkeypatch.setattr(asr_detection, "detect_resources", lambda: asr_detection.ResourceInfo())
+    monkeypatch.setattr(httpx, "get", lambda *args, **kwargs: httpx.Response(200))
+    monkeypatch.setattr(settings, "asr_primary", "paraformer")
+    monkeypatch.setattr(settings, "asr_sensevoice_enabled", True)
+    monkeypatch.setattr(settings, "asr_sensevoice", True)
+    monkeypatch.setattr(settings, "asr_funasr_review", True)
+    monkeypatch.setattr(settings, "asr_fallback_whisper", False)
+    for field in ("asr_primary_device", "asr_auxiliary_device", "asr_review_device"):
+        monkeypatch.setattr(settings, field, "cuda")
+    calls: list[tuple[str, str]] = []
+
+    def probe(backend: str, device: str) -> dict[str, str | bool | None]:
+        calls.append((backend, device))
+        return {"ok": False, "version": "2.13.0+cpu", "cuda_build": None, "error": "CPU 版"}
+
+    monkeypatch.setattr(asr_devices, "probe_device", probe)
+    with pytest.raises(typer.Exit) as caught:
+        doctor.cmd_doctor(yes=True)
+    assert caught.value.exit_code == 1
+    assert calls == [("torch", "cuda")]
+    text = output.getvalue()
+    assert all(f"ASR 设备 {role}" in text for role in ("primary", "auxiliary", "review"))
+    assert "2.13.0+cpu" in text and "CPU 版" in text
+
+
 def test_cli_failure_is_safe_and_nonzero() -> None:
     import typer
     from typer.testing import CliRunner

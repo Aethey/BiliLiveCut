@@ -1,0 +1,4 @@
+# Official Windows x64 CUDA wheels; keep all other dependencies from the runtime lock.
+# Sources: https://download.pytorch.org/whl/torch/ and https://download.pytorch.org/whl/torchaudio/
+torch @ https://download-r2.pytorch.org/whl/cu126/torch-2.13.0%2Bcu126-cp311-cp311-win_amd64.whl --hash=sha256:8095729db14e7fd5178a39676fdd679208eff4041407ea34e3d898336c90f5c5
+torchaudio @ https://download-r2.pytorch.org/whl/cu126/torchaudio-2.11.0%2Bcu126-cp311-cp311-win_amd64.whl --hash=sha256:bb5f58154b78c618006716d1eebbe38a161149e6b46f88a0b1b12ce6ede0acd3

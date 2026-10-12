@@ -23,7 +23,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Protocol, Self, cast
+from typing import TYPE_CHECKING, Protocol, Self, cast
 
 from loguru import logger
 
@@ -35,8 +35,12 @@ from app.analysis.transcription.models import (  # single source of truth — no
     EmotionEvent,
     Word,
 )
+from app.core.asr_devices import confirm_torch_model_device, require_torch_device, require_whisper_device
 from app.core.config import settings
 from app.core.sanitize import safe_exception_summary
+
+if TYPE_CHECKING:
+    from faster_whisper import WhisperModel
 
 # ═══════════════════════════════════════════════════════════
 # 工具函数
@@ -203,11 +207,12 @@ class FunASRBackend:
 
         Uses the per-engine self._REVISION_PRIMARY.
         """
+        device = settings.asr_primary_device or settings.whisper_device
+        require_torch_device(device, role="primary")
         try:
             from funasr import AutoModel
         except ImportError as exc:
             raise RuntimeError("Need funasr installed. Run: pip install funasr modelscope") from exc
-        device = settings.asr_primary_device or settings.whisper_device
         revision = self._REVISION_PRIMARY or None
 
         if self._use_local_models:
@@ -242,12 +247,15 @@ class FunASRBackend:
                 disable_update=True,
             )
         self._prepare_vad_precision(model)
+        confirm_torch_model_device(model, device, role="primary")
         asr_metrics.record_backend_call("paraformer", 0, success=True)
         logger.info("Paraformer loaded: device={} local={}", device, self._use_local_models)
         return model
 
     def _load_sensevoice(self) -> object:
         """加载 SenseVoice-Small (情感/笑声/音乐/事件检测)。 Uses per-engine revision."""
+        device = settings.asr_auxiliary_device or settings.whisper_device
+        require_torch_device(device, role="auxiliary")
         try:
             from funasr import AutoModel
         except ImportError as exc:
@@ -257,18 +265,19 @@ class FunASRBackend:
             logger.info("Loading SenseVoice-Small from local path: {}", sensevoice_path)
             model = AutoModel(
                 model=sensevoice_path,
-                device=settings.asr_auxiliary_device or settings.whisper_device,
+                device=device,
                 hub="ms",
                 disable_update=True,
             )
         else:
             model = AutoModel(
                 model=self.MODEL_ID_SENSEVOICE,
-                device=settings.asr_auxiliary_device or settings.whisper_device,
+                device=device,
                 hub="ms",
                 model_revision=self._REVISION_SENSEVOICE or None,
                 disable_update=True,
             )
+        confirm_torch_model_device(model, device, role="auxiliary")
         return model
 
     def _load_funasr(self, *, for_primary: bool = False) -> object:
@@ -278,11 +287,13 @@ class FunASRBackend:
             局部复核时使用 ``ASR_REVIEW_DEVICE``。
         :returns: 缓存的 FunASR ``AutoModel`` 实例。
         """
+        device = (settings.asr_primary_device if for_primary else settings.asr_review_device) or settings.whisper_device
+        role = "primary" if for_primary else "review"
+        require_torch_device(device, role=role)
         try:
             from funasr import AutoModel
         except ImportError as exc:
             raise RuntimeError("Need funasr. Run: pip install funasr modelscope") from exc
-        device = (settings.asr_primary_device if for_primary else settings.asr_review_device) or settings.whisper_device
         vad_kwargs = {
             "max_single_segment_time": settings.asr_vad_max_segment_s * 1000,
             "fp16": False,
@@ -321,6 +332,7 @@ class FunASRBackend:
                 disable_update=True,
             )
         self._prepare_vad_precision(model)
+        confirm_torch_model_device(model, device, role=role)
         return model
 
     # ---- 转写 (V0.1.12.2: 返回 ASRTranscriptResult) ----
@@ -859,11 +871,12 @@ class FasterWhisperBackend:
         return self.transcribe(audio_path)
 
 
-def _load_whisper_model(model_size: str, device: str, compute_type: str):  # noqa: ANN202
+def _load_whisper_model(model_size: str, device: str, compute_type: str) -> WhisperModel:
     """创建 WhisperModel；实例由推理模型池独占管理。
 
     V0.1.13: 加载前检查系统资源, 不足时根据 asr_resource_policy 决定抛异常或仅警告。
     """
+    cuda_index = require_whisper_device(device)
     # V0.1.13: ASR resource detection before model loading
     from app.core.asr_detection import check_resources_sufficient
 
@@ -890,6 +903,8 @@ def _load_whisper_model(model_size: str, device: str, compute_type: str):  # noq
         compute_type,
     )
     try:
+        if cuda_index is not None:
+            return WhisperModel(model_size, device="cuda", device_index=cuda_index, compute_type=compute_type)
         return WhisperModel(model_size, device=device, compute_type=compute_type)
     except ValueError as exc:
         if not _is_unsupported_compute_type_error(exc, compute_type):
@@ -901,6 +916,8 @@ def _load_whisper_model(model_size: str, device: str, compute_type: str):  # noq
             device,
             exc,
         )
+        if cuda_index is not None:
+            return WhisperModel(model_size, device="cuda", device_index=cuda_index, compute_type="auto")
         return WhisperModel(model_size, device=device, compute_type="auto")
 
 

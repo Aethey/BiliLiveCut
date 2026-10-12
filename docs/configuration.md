@@ -4,6 +4,8 @@
 
 当前注册表共 165 项：155 项 Settings 与 10 项运行时配置；评分配置含 8 个权重和 6 个标量。表中默认值均来自代码/项目默认，不导出环境凭据。
 
+ASR 设备值只选择推理设备，不安装 GPU 依赖；CPU 版 Torch 无法因填写 `cuda` 而使用 GPU。Portable 的 `--torch-runtime` 为独立安装操作，选择保存在 `config/torch-runtime.json`，不增加业务注册表字段。安装、离线 wheel 和实际设备诊断见[CUDA 使用说明](usage.md#cuda-安装与实际设备确认)。
+
 业务默认来自环境或项目配置；Web 覆盖以原键保存在 AppSetting。保存先整体校验，再在单一事务中提交；revision 防止旧表单覆盖。字段缺省保持原值，reset 删除覆盖并恢复环境/项目默认；凭据空白保持，clear 明确清空并阻止环境回退。
 
 生效标记：new_room 为新建房间默认（已有房间不变）；next_recording 为下一场；next_task 为下一次操作或流水线阶段；next_poll 为下一次调度/保护检查；immediate 为下一次读取；restart 为下一次启动；deployment 为启动配置，界面只读并解释原因。正在执行的任务和多窗口转写保留开始时的完整快照。

@@ -16,7 +16,8 @@ def test_unsupported_compute_type_retries_with_auto(monkeypatch: pytest.MonkeyPa
     calls: list[tuple[str, str, str]] = []
     loaded_model = object()
 
-    def fake_whisper_model(model_size: str, *, device: str, compute_type: str) -> object:
+    def fake_whisper_model(model_size: str, *, device: str, device_index: int, compute_type: str) -> object:
+        assert device_index == 0
         calls.append((model_size, device, compute_type))
         if compute_type == "int16":
             raise ValueError(
@@ -42,7 +43,8 @@ def test_unrelated_value_error_is_not_retried(monkeypatch: pytest.MonkeyPatch) -
     """非计算类型错误必须保留原异常，不得被 auto 重试掩盖。"""
     calls: list[str] = []
 
-    def fake_whisper_model(_model_size: str, *, device: str, compute_type: str) -> object:
+    def fake_whisper_model(_model_size: str, *, device: str, device_index: int, compute_type: str) -> object:
+        assert device_index == 0
         calls.append(f"{device}:{compute_type}")
         raise ValueError("broken model metadata")
 
@@ -54,3 +56,18 @@ def test_unrelated_value_error_is_not_retried(monkeypatch: pytest.MonkeyPatch) -
     with pytest.raises(ValueError, match="broken model metadata"):
         backends._load_whisper_model("whisper-model", "cuda", "int16")
     assert calls == ["cuda:int16"]
+
+
+@pytest.fixture(autouse=True)
+def cuda_runtime_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model constructor tests use an available CUDA library boundary."""
+    from types import SimpleNamespace
+
+    monkeypatch.setitem(
+        sys.modules,
+        "ctranslate2",
+        SimpleNamespace(
+            get_cuda_device_count=lambda: 1,
+            get_supported_compute_types=lambda device, index: {"float32", "int8_float32"},
+        ),
+    )

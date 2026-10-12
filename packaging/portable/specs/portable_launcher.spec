@@ -40,6 +40,8 @@ _lock_dir = str(_here / "locks")
 _lock_files = []
 for _lf in sorted(Path(_lock_dir).glob("requirements-runtime-*-win-x64.lock")):
     _lock_files.append((str(_lf), "locks"))
+for _lf in sorted(Path(_lock_dir).glob("requirements-torch-*-win-x64.lock")):
+    _lock_files.append((str(_lf), "locks"))
 
 _bootstrap_wheels = []
 for _wheel in sorted(_bootstrap_wheels_dir.glob("*.whl")):

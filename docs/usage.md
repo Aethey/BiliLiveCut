@@ -145,6 +145,36 @@ Event-first 热点层会先按 10 秒信号桶、90 秒直播自身滚动基线�
 
 > **大模型选型（境内）**：系统采用 **OpenAI 兼容协议**，可在 Web「设置中心 → 大模型服务商」同时配置 DeepSeek / 通义千问 / Kimi / 智谱 GLM，并按优先级执行运行时故障切换。
 
+### CUDA 安装与实际设备确认
+
+`ASR_*_DEVICE=cuda` 只选择设备，不会把 CPU 版 PyTorch 变成 CUDA 版。Windows 默认依赖和 Portable Full 的随附 wheelhouse 使用 CPU 包；`torch.__version__` 带 `+cpu` 或 `torch.version.cuda is None` 表示当前 Torch 没有 CUDA 支持。NVIDIA 显卡和 `nvidia-smi` 可用也不能替代这项检查。
+
+Portable 用户先停止服务，在程序目录执行以下命令之一。安装器只改变依赖运行时，成功后保存到 `config/torch-runtime.json` 并退出；再次启动会保留选择，不会被 CPU 基础锁覆盖。支持的配套 CUDA wheel 来自 [PyTorch 官方索引](https://download.pytorch.org/whl/torch/)，全部固定 URL、版本、Python ABI 和 SHA-256。
+
+```powershell
+# 按显卡和驱动对 PyTorch 官方发行的支持选择一种；不是本机 nvcc 的版本开关。
+.\BiliLiveCut-Portable.exe --torch-runtime cu126
+# 或使用 cu130；恢复默认 CPU 依赖使用 --torch-runtime cpu。
+```
+
+Lite EXE 使用其实际文件名替换示例。CUDA wheel 体积较大，此操作默认允许从官方地址获取这两个文件，Full 的其余依赖仍使用随附离线包。完全离线时，把当前 Python ABI 对应锁文件中的 Torch 与 TorchAudio wheel 放入 `vendor/wheels/`，再加 `--offline`；缺少文件或哈希不匹配会失败，不会转为联网安装。两套支持的锁为 `packaging/portable/locks/requirements-torch-{cu126|cu130}-{py311|py312}-win-x64.lock`。升级或修复虚拟环境仍读取持久化选择；现有手工安装且完全匹配这两套锁的 CUDA 配套包会被识别和保留，不配套或未知版本明确拒绝自动覆盖。
+
+源码用户先按项目说明安装基础依赖，然后在已停止服务的目标虚拟环境中应用对应 ABI 的 CUDA 锁。例如 Python 3.12：
+
+```powershell
+uv pip install --python .venv/Scripts/python.exe --no-deps --require-hashes -r packaging/portable/locks/requirements-torch-cu126-py312-win-x64.lock
+.venv/Scripts/python.exe -m pip check
+.venv/Scripts/python.exe -m app.cli doctor --yes
+```
+
+源码默认 `uv.lock` 仍是基础依赖环境；重新执行 `uv sync` 后应重新应用 CUDA 锁。使用目标环境的 Python 启动服务，避免启动时再次自动同步回基础环境。程序不下载模型来检测 GPU，也不在安装依赖时自动改写业务设备配置。
+
+随后在「设置中心 → ASR」选择设备；已保存的 Web 配置优先于 `.env`，正在运行的任务仍使用开始时的快照。Fun-ASR-Nano/Paraformer 使用主设备，SenseVoice 使用辅助设备，Paraformer 的局部复核使用复核设备。Whisper 包括直接选择为主引擎时，均使用 `ASR_FALLBACK_DEVICE`。CPU 任务、媒体解码、调度及部分音频预处理仍会使用 CPU；增加并发前应确认显存余量。
+
+FunASR 在加载前检查 Torch 构建、可见 GPU 和实际 CUDA 运算，加载后核对主模型、VAD 与标点模型参数设备；CUDA 不可用时明确失败，保留原有可选后端回退记录。Whisper 使用 CTranslate2，单独检查其 CUDA 能力，不以 Torch 的 CPU/GPU 版本代替判断；它需要对应的 CUDA/cuDNN 动态库，缺失时按诊断修复。远程转写主引擎的 device 配置不决定服务端设备。
+
+`BiliLiveCut-Portable.exe --doctor` 显示实际解释器、Torch 构建、CUDA 可用性和 CTranslate2 可见 GPU 数；源码 `doctor` 另按当前有效角色设备检查，并在显式 CUDA 不可用时返回失败。成功安装 CUDA wheel 与本机可以执行 CUDA 推理是分别核验的两个结果。
+
 ### OpenAI 兼容远程转写
 
 在「设置中心 → ASR」同时填写远程转写基础地址、模型 ID、服务要求的密钥，并将主引擎切换为 `openai_compatible` 后保存；默认继续使用本地 Fun-ASR-Nano。基础地址包含服务需要的 `/v1` 等前缀，程序追加 `/audio/transcriptions`；不接受 URL 凭据、查询参数和重定向。本机 HTTP 服务可不填密钥，公网服务使用 HTTPS。模型 ID 由服务提供方确定，程序不替换或猜测模型名称。

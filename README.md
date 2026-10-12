@@ -23,6 +23,8 @@
 
 ### Windows Portable
 
+需要 NVIDIA GPU 转写时，先按 [CUDA 安装与实际设备确认](docs/usage.md#cuda-安装与实际设备确认)安装匹配的运行时，再选择 ASR 设备；只修改 `.env` 为 `cuda` 不会安装 CUDA 版 PyTorch。
+
 1. 从 [Releases](https://github.com/StarGazerQQD/BiliLiveCut/releases) 下载 Portable **Full** 或 **Lite**。Full 自带 Python、依赖和 FFmpeg；Lite 需要准备 Python 3.11/3.12、FFmpeg，并在首次安装时下载依赖。
 2. 按 [Portable 小白使用说明](packaging/portable/USER_GUIDE_ZH.md) 完成启动和模型准备。两种发行包均不含 ASR 模型，可在线下载，或使用单独的 Engine Pack。
 3. 在 Web 控制台添加已获授权的直播间，开始录制；需要无人值守时开启“开播后自动录制并分析”。
