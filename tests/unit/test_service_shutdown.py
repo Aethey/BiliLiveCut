@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 import sys
 from pathlib import Path
 from threading import Event
@@ -208,8 +209,12 @@ if psutil.pid_exists(pid):
     assert psutil.Process(pid).status()==psutil.STATUS_ZOMBIE, f'descendant still alive: {pid}'
 print('EXIT_PROBE_COMPLETE')
 """
-    result = run_cancellable(
-        [sys.executable, "-c", script, str(pid_file)], env=env, capture_output=True, text=True, timeout=35
-    )
+    try:
+        result = run_cancellable(
+            [sys.executable, "-c", script, str(pid_file)], env=env, capture_output=True, text=True, timeout=35
+        )
+    except subprocess.TimeoutExpired as exc:
+        exc.add_note(f"Uvicorn stdout: {exc.stdout!r}\nUvicorn stderr: {exc.stderr!r}")
+        raise
     assert result.returncode == 0, result.stderr
     assert "EXIT_PROBE_COMPLETE" in str(result.stdout)

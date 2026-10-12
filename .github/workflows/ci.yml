@@ -6,7 +6,7 @@
 #   audit      — Portable Windows runtime lock pip-audit (阻断式)
 #   test       — Linux/Windows 多 Python → pytest + coverage (≥50%)
 #   uv-test    — Linux/Windows 锁文件、源码安装和原生扩展验证
-#   test-macos — main 推送时运行 macOS py3.12
+#   test-macos — main 推送或手动验收时运行 macOS py3.12
 #   portable   — Payload 构建 + Portable 全部测试
 #   coverage   — 汇总多矩阵覆盖率报告
 
@@ -226,13 +226,13 @@ jobs:
         run: |
           uv run --locked python -m pytest tests/unit/test_native_parity.py tests/unit/test_accelerator_fallback_parity.py tests/unit/test_quality_gate.py --timeout=120 --fail-on-skip
 
-# macOS runner 明显慢于 Linux/Windows，仅在 main 分支推送时执行。
+# macOS runner 明显慢于 Linux/Windows，在 main 推送或手动验收时执行。
 # 全量覆盖测试曾在 99% 进度触及 45 分钟上限；步骤预算扩为 90 分钟。
 # job 总预算 120 分钟，为依赖安装及覆盖率上传额外保留 30 分钟。
 # 独立 job 可使用真正的 job-level if；matrix.include 中的 if 只是普通数据字段。
   test-macos:
     name: "macos-latest / py3.12"
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     needs: lint
     runs-on: macos-latest
     timeout-minutes: 120
@@ -278,6 +278,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev,web]"
+
+      - name: Verify process cleanup and service shutdown
+        shell: bash
+        env:
+          ASR_NO_MODEL_DOWNLOAD: "1"
+        run: python -m pytest tests/unit/test_process_tree.py tests/unit/test_process_control.py tests/unit/test_service_shutdown.py --timeout=120 --fail-on-skip
+        timeout-minutes: 10
 
       - name: Run pytest with coverage (>=50%)
         shell: bash
@@ -404,7 +411,7 @@ jobs:
               exit 1
             fi
           done
-          if [ "$EVENT_NAME" = "push" ]; then
+          if [ "$EVENT_NAME" = "push" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             test "$MACOS_RESULT" = "success"
           else
             test "$MACOS_RESULT" = "skipped"
