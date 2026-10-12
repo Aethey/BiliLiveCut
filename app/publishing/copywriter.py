@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from loguru import logger
 from sqlmodel import select
@@ -35,6 +36,9 @@ from app.db.entities import (
     Transcript,
 )
 from app.db.session import get_session
+
+if TYPE_CHECKING:
+    from app.pipeline.lease import TaskLease
 
 
 @dataclass(slots=True)
@@ -224,14 +228,19 @@ def _fallback_copy(text: str, reason: str) -> Copy:
 
 
 @configured_task
-def generate_copy(clip_id: int) -> FinalClip:
+def generate_copy(clip_id: int, *, task_lease: TaskLease | None = None) -> FinalClip:
     """为成品切片生成文案并按审核模式决定状态。
 
     :param clip_id: ``final_clips`` 主键。
+    :param task_lease: 可选的人工出片租约，文案提交前原子复验。
     :returns: 更新后的 :class:`FinalClip`。
     :raises ValueError: 切片不存在时。
     """
     with get_session() as db:
+        if task_lease is not None:
+            from app.pipeline.lease import require_current_lease
+
+            require_current_lease(db, task_lease)
         clip = db.get(FinalClip, clip_id)
         if clip is None:
             raise ValueError(f"切片不存在: id={clip_id}")
@@ -250,6 +259,10 @@ def generate_copy(clip_id: int) -> FinalClip:
     status = _decide_status(auto_approve, auto_approve_threshold, score, copy.worth_publishing)
 
     with get_session() as db:
+        if task_lease is not None:
+            from app.pipeline.lease import require_current_lease
+
+            require_current_lease(db, task_lease)
         clip = db.get(FinalClip, clip_id)
         clip.title = copy.title
         clip.description = copy.description

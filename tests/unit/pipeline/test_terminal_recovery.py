@@ -6,16 +6,20 @@ import asyncio
 import json
 import threading
 import time
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from loguru import logger
 from sqlmodel import select
 
 from app.analysis import session_summary
 from app.db.entities import AppSetting, LiveRoom, RawSegment, RecordingSession, SegmentTask, TaskStatus, Transcript
 from app.db.session import get_session
-from app.pipeline import stale_recovery, task_worker
+from app.pipeline import heartbeat, scheduler, stale_recovery, task_worker
+from app.pipeline.lease import TaskLease
 from app.pipeline.stage_result import mark_failed
 
 
@@ -78,6 +82,11 @@ def test_cancel_then_retry_uses_current_stage_not_old_failure(temp_db: None, sta
         task.failed_stage = TaskStatus.TRANSCRIBING
         db.add(task)
     assert task_worker.cancel_task(task_id)
+    if stage in {TaskStatus.ANALYZING, TaskStatus.RENDERING}:
+        with get_session() as db:
+            assert db.get(SegmentTask, task_id).stage == TaskStatus.CANCELLING
+        assert not task_worker.retry_task(task_id)
+        scheduler.settle_cancellation(TaskLease(task_id, "worker", "old", stage))
     with get_session() as db:
         old_request = json.loads(db.get(AppSetting, f"session_timeline_summary_request:{session_id}").value)
     assert task_worker.retry_task(task_id)
@@ -88,6 +97,226 @@ def test_cancel_then_retry_uses_current_stage_not_old_failure(temp_db: None, sta
         assert task.lease_token is task.claimed_by is task.completed_at is None
         new_request = json.loads(db.get(AppSetting, f"session_timeline_summary_request:{session_id}").value)
         assert new_request["request_id"] != old_request["request_id"]
+
+
+@pytest.mark.parametrize("expired", [True, False])
+def test_abandoned_cancellation_never_requeues(temp_db: None, monkeypatch: pytest.MonkeyPatch, expired: bool) -> None:
+    task_id, _, _ = seed()
+    assert task_worker.cancel_task(task_id)
+    now = datetime.now(UTC)
+    monkeypatch.setattr(stale_recovery, "now_utc", lambda: now)
+    monkeypatch.setattr(stale_recovery.settings, "stale_timeout_s", 120)
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        task.claimed_at = now - timedelta(seconds=180 if expired else 10)
+        db.add(task)
+    stale_recovery.recover_stale()
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        assert task.stage == (TaskStatus.CANCELLED if expired else TaskStatus.CANCELLING)
+        assert task.failed_stage == TaskStatus.TRANSCRIBING
+        assert (task.completed_at is not None) == expired
+
+
+def test_old_cancellation_completion_cannot_clear_new_lease(temp_db: None) -> None:
+    task_id, _, _ = seed(TaskStatus.RENDERING)
+    assert task_worker.cancel_task(task_id)
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        task.claimed_by, task.lease_token = "new-worker", "new-lease"
+        db.add(task)
+    scheduler.settle_cancellation(TaskLease(task_id, "worker", "old", TaskStatus.RENDERING))
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        assert task.stage == TaskStatus.CANCELLING
+        assert (task.claimed_by, task.lease_token) == ("new-worker", "new-lease")
+
+
+def test_publishing_cannot_be_falsely_cancelled(temp_db: None) -> None:
+    task_id, _, _ = seed(TaskStatus.PUBLISHING)
+    assert not task_worker.cancel_task(task_id)
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        assert task.stage == TaskStatus.PUBLISHING
+        assert task.lease_token == "old"
+
+
+def test_heartbeat_without_lease_cannot_modify_another_owner(temp_db: None) -> None:
+    task_id, _, _ = seed()
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        task.heartbeat_at = datetime.now(UTC)
+        db.add(task)
+    with get_session() as db:
+        before = db.get(SegmentTask, task_id).heartbeat_at
+    with pytest.raises(ValueError, match="租约"):
+        heartbeat.start_heartbeat_thread(task_id)
+    heartbeat.clear_heartbeat_if_own(task_id)
+    with get_session() as db:
+        assert db.get(SegmentTask, task_id).heartbeat_at == before
+
+
+def test_repeated_cancel_does_not_create_another_summary_generation(temp_db: None) -> None:
+    task_id, _, session_id = seed(TaskStatus.RENDERING)
+    assert task_worker.cancel_task(task_id)
+    with get_session() as db:
+        before = db.get(AppSetting, f"session_timeline_summary_request:{session_id}").value
+    assert task_worker.cancel_task(task_id)
+    with get_session() as db:
+        assert db.get(AppSetting, f"session_timeline_summary_request:{session_id}").value == before
+
+
+@pytest.mark.parametrize("job_cancel", [False, True])
+def test_manual_render_cancel_settles_without_automatic_retry(
+    temp_db: None, monkeypatch: pytest.MonkeyPatch, job_cancel: bool
+) -> None:
+    from app.core.process_control import ProcessCancelledError
+    from app.db.entities import FinalClip, HighlightCandidate, HighlightEvent
+    from app.pipeline import orchestrator
+    from app.pipeline.lifecycle import execution_active
+    from app.web.services.candidates import approve_candidate_sync
+
+    task_id, segment_id, session_id = seed(TaskStatus.APPROVED_WAITING_RENDER)
+    now = datetime.now(UTC)
+    with get_session() as db:
+        candidate = HighlightCandidate(
+            session_id=session_id,
+            peak_ts=now,
+            start_ts=now,
+            end_ts=now + timedelta(seconds=8),
+            dedup_hash="manual-cancel",
+        )
+        db.add(candidate)
+        db.flush()
+        event = HighlightEvent(candidate_id=candidate.id, session_id=session_id, segment_id=segment_id)
+        db.add(event)
+        db.flush()
+        task = db.get(SegmentTask, task_id)
+        task.candidate_id, task.event_id = candidate.id, event.id
+        db.add(task)
+        candidate_id = candidate.id
+    cancelled = threading.Event()
+    used_lease: list[TaskLease] = []
+
+    def renderer(
+        candidate_id: int, *, task_lease: TaskLease | None, cancel_check: Callable[[], bool], **kwargs: object
+    ) -> FinalClip | None:
+        assert task_lease is not None
+        used_lease.append(task_lease)
+        assert execution_active(task_lease.task_id, task_lease.lease_token)
+        assert not cancel_check()
+        if job_cancel:
+            cancelled.set()
+        else:
+            assert task_worker.cancel_task(task_lease.task_id)
+        assert cancel_check()
+        raise ProcessCancelledError("cancelled at media boundary")
+
+    monkeypatch.setattr(orchestrator, "produce_clip", renderer)
+    with pytest.raises(ProcessCancelledError):
+        approve_candidate_sync(candidate_id, cancel_check=cancelled.is_set)
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        assert task.stage == TaskStatus.CANCELLED
+        assert task.failed_stage == TaskStatus.RENDERING
+        assert task.next_retry_at is task.claimed_by is task.lease_token is None
+    assert not execution_active(task_id, used_lease[0].lease_token)
+
+
+def test_cancel_during_copywriting_rejects_late_metadata(temp_db: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.db.entities import FinalClip, HighlightCandidate, HighlightEvent
+    from app.pipeline.lease import LeaseLostError
+    from app.publishing import copywriter
+
+    task_id, segment_id, session_id = seed(TaskStatus.RENDERING)
+    now = datetime.now(UTC)
+    with get_session() as db:
+        candidate = HighlightCandidate(
+            session_id=session_id,
+            peak_ts=now,
+            start_ts=now,
+            end_ts=now + timedelta(seconds=8),
+            dedup_hash="copy-cancel",
+            highlight_score=0.9,
+        )
+        db.add(candidate)
+        db.flush()
+        db.add(HighlightEvent(candidate_id=candidate.id, session_id=session_id, segment_id=segment_id))
+        clip = FinalClip(candidate_id=candidate.id, file_path="owned.mp4", title="kept title", status="generated")
+        db.add(clip)
+        db.flush()
+        clip_id = clip.id
+
+    def late_llm(text: str, reason: str) -> copywriter.Copy:
+        assert task_worker.cancel_task(task_id)
+        return copywriter._fallback_copy(text, reason)
+
+    monkeypatch.setattr(copywriter, "_llm_copy", late_llm)
+    with pytest.raises(LeaseLostError):
+        copywriter.generate_copy(clip_id, task_lease=TaskLease(task_id, "worker", "old", TaskStatus.RENDERING))
+    with get_session() as db:
+        clip = db.get(FinalClip, clip_id)
+        assert clip.title == "kept title" and clip.status == "generated"
+
+
+def test_stale_cancel_waits_for_local_synchronous_call_to_return(
+    temp_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task_id, _, _ = seed(TaskStatus.ANALYZING)
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        task.claimed_by = scheduler._WORKER_ID
+        db.add(task)
+    started, response = threading.Event(), threading.Event()
+
+    def external_call(lease: TaskLease) -> None:
+        started.set()
+        assert response.wait(10)
+
+    monkeypatch.setattr(scheduler, "run_analyze", external_call)
+    recovery_time = datetime.now(UTC) + timedelta(seconds=stale_recovery.settings.stale_timeout_s + 60)
+    monkeypatch.setattr(stale_recovery, "now_utc", lambda: recovery_time)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(scheduler.execute_task, task_id, TaskStatus.ANALYZING, "old")
+        try:
+            assert started.wait(5)
+            assert task_worker.cancel_task(task_id)
+            stale_recovery.recover_stale()
+            with get_session() as db:
+                task = db.get(SegmentTask, task_id)
+                assert task.stage == TaskStatus.CANCELLING and task.completed_at is None
+        finally:
+            response.set()
+        future.result(timeout=5)
+    with get_session() as db:
+        assert db.get(SegmentTask, task_id).stage == TaskStatus.CANCELLED
+
+
+@pytest.mark.parametrize("stage", [TaskStatus.CANCELLING, TaskStatus.CANCELLED, TaskStatus.TRANSCRIBED])
+def test_heartbeat_state_change_is_not_reported_as_takeover(temp_db: None, stage: str) -> None:
+    task_id, _, _ = seed(stage)
+    messages: list[str] = []
+    seen = threading.Event()
+
+    def collect(message: str) -> None:
+        text = str(message)
+        messages.append(text)
+        if "heartbeat_stopped" in text:
+            seen.set()
+
+    sink = logger.add(collect, level="INFO")
+    stop = heartbeat.start_heartbeat_thread(task_id, "old", TaskStatus.TRANSCRIBING)
+    try:
+        assert seen.wait(5)
+    finally:
+        stop.set()
+        for thread in threading.enumerate():
+            if thread.name == f"hb-{task_id}":
+                thread.join(5)
+                assert not thread.is_alive()
+        logger.remove(sink)
+    assert not any("lease_lost" in text for text in messages)
+    assert any(f"stage={stage}" in text for text in messages)
 
 
 @pytest.mark.parametrize("expired", [True, False])
@@ -274,22 +503,33 @@ async def test_shutdown_failure_still_fences_computation_and_summary(
     assert session_summary._commit_summary_result(claim, result) is False
 
 
-def test_shutdown_does_not_consume_task_retry_budget(temp_db: None, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("stage", [TaskStatus.TRANSCRIBING, TaskStatus.RENDERING])
+@pytest.mark.parametrize("attempts", [0, 2])
+def test_shutdown_does_not_consume_task_retry_budget(
+    temp_db: None, monkeypatch: pytest.MonkeyPatch, stage: str, attempts: int
+) -> None:
     from app.analysis.transcription.process_pool import ASRShutdownError
+    from app.core.process_control import ProcessShutdownError
     from app.pipeline import scheduler
 
-    task_id, _, _ = seed()
+    task_id, _, _ = seed(stage)
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        assert task is not None
+        task.attempts = attempts
+        db.add(task)
     monkeypatch.setattr(scheduler, "_WORKER_ID", "worker")
     monkeypatch.setattr(scheduler, "start_heartbeat_thread", lambda *args: threading.Event())
 
     def interrupted(lease: object) -> None:
-        raise ASRShutdownError("shutdown deadline")
+        error = ASRShutdownError if stage == TaskStatus.TRANSCRIBING else ProcessShutdownError
+        raise error("shutdown deadline")
 
-    monkeypatch.setattr(scheduler, "run_transcribe", interrupted)
-    scheduler.execute_task(task_id, TaskStatus.TRANSCRIBING, "old")
+    monkeypatch.setattr(scheduler, "run_transcribe" if stage == TaskStatus.TRANSCRIBING else "run_render", interrupted)
+    scheduler.execute_task(task_id, stage, "old")
     with get_session() as db:
         task = db.get(SegmentTask, task_id)
-        assert task.stage == TaskStatus.QUEUED_FOR_TRANS and task.attempts == 0
+        assert task.stage == stale_recovery.resume_stage(stage) and task.attempts == attempts
         assert task.lease_token is None
 
 

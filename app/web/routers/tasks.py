@@ -46,11 +46,17 @@ def retry_task(task_id: int) -> dict[str, Any]:
 
 
 @router.post("/tasks/{task_id}/cancel")
-def cancel_task(task_id: int) -> dict[str, Any]:
-    """取消一个未完成的任务。"""
+def cancel_task(task_id: int) -> dict[str, str]:
+    """请求取消；返回取消中或已经取消的真实阶段。"""
+    from app.db.entities import SegmentTask
+    from app.db.session import get_session
     from app.pipeline.task_worker import cancel_task as _cancel
 
     ok = _cancel(task_id)
     if not ok:
-        raise HTTPException(status_code=400, detail="任务不存在或已完成/失败/取消")
-    return {"status": "cancelled"}
+        raise HTTPException(status_code=400, detail="任务不存在、已终结或正在发布；发布结果必须完成或核对")
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="任务已不存在，请刷新任务列表")
+        return {"status": task.stage}

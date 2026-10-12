@@ -17,10 +17,11 @@ from sqlmodel import Session, select
 
 from app.accelerators.dispatcher import danmaku_text_features, robust_relative_uplift
 from app.analysis.keywords import match_keywords
+from app.analysis.room_config import room_highlight_keywords
 from app.analysis.timeline import datetime_epoch
 from app.analysis.transcription.quality import assess_transcript_quality
 from app.core.config import settings
-from app.db.entities import Danmaku, DanmakuType, RawSegment, Transcript
+from app.db.entities import Danmaku, DanmakuType, LiveRoom, RawSegment, RecordingSession, Transcript
 from app.db.session import get_session
 
 if TYPE_CHECKING:
@@ -373,6 +374,9 @@ def build_segment_signal_buckets(
         if segment.start_ts is None or segment.end_ts is None:
             return [], segment.session_id
         transcript = db.exec(select(Transcript).where(Transcript.segment_id == segment_id)).first()
+        recording = db.get(RecordingSession, segment.session_id)
+        room = db.get(LiveRoom, recording.room_id) if recording is not None else None
+        keywords = room_highlight_keywords(room)
         from app.analysis.source_policy import session_danmaku_lag_s, session_has_danmaku
 
         lag_s = session_danmaku_lag_s(segment.session_id)
@@ -409,6 +413,7 @@ def build_segment_signal_buckets(
             start_ts=bucket_start,
             end_ts=bucket_end,
             previous_audio_mean=previous_audio_mean,
+            keywords=keywords,
         )
         previous_audio_mean = bucket.audio_rms_mean
         buckets.append(bucket)
@@ -454,6 +459,7 @@ class _BucketBuilder:
         start_ts: datetime,
         end_ts: datetime,
         previous_audio_mean: float | None,
+        keywords: Sequence[str] = (),
     ) -> SignalBucket:
         """冻结为只读信号桶并计算桶内派生特征。"""
         count = self.danmaku_total
@@ -481,7 +487,7 @@ class _BucketBuilder:
             else (0.0 if audio_mean is not None else None)
         )
         asr_text = "".join(self.asr_words) if self.asr_available else None
-        keyword_score = match_keywords(asr_text)[0] if asr_text else (0.0 if self.asr_available else None)
+        keyword_score = match_keywords(asr_text, keywords)[0] if asr_text else (0.0 if self.asr_available else None)
         duration_s = max(1e-6, datetime_epoch(end_ts) - datetime_epoch(start_ts))
         speech_rate = len(self.asr_words) / duration_s if self.asr_available else None
         sensevoice_intensity = (

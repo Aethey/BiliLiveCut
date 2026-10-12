@@ -39,7 +39,7 @@ class ClipVariant(SQLModel, table=True):
     - 完整上下文版(full_context)
     - 合集章节(collection_chapter)
     - 带字幕版(subtitled)
-    - 无字幕净版(no_subtitles)
+    - 无 ASR 字幕版（弹幕独立）(no_subtitles)
     - 投稿压制版(compressed)
     - 高码率归档版(archive)
     """

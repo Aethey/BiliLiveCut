@@ -186,7 +186,7 @@ def test_llm_reason_is_limited_to_candidate_time_window(
     )
     captured: dict[str, object] = {}
 
-    def fake_match_keywords(text: str) -> tuple[float, list[str]]:
+    def fake_match_keywords(text: str, extra_keywords: tuple[str, ...] = ()) -> tuple[float, list[str]]:
         captured["keyword_text"] = text
         return 0.0, []
 

@@ -1,0 +1,215 @@
+from __future__ import annotations
+
+import asyncio
+import os
+import sys
+from pathlib import Path
+from threading import Event
+from types import SimpleNamespace
+
+import pytest
+
+from app.core import metrics
+from app.core.process_control import run_cancellable
+from app.pipeline.lifecycle import shutdown_event
+
+
+def _prepare_lifespan(
+    monkeypatch: pytest.MonkeyPatch, *, fail_start: str | None = None, fail_stop: str | None = None
+) -> list[str]:
+    from app.pipeline import live_monitor, task_worker
+    from app.plugins import manager as plugins
+    from app.trends import scheduler
+    from app.web import main
+    from app.web.services import background_jobs, rooms
+
+    stopped: list[str] = []
+
+    def service(name: str) -> SimpleNamespace:
+        async def start() -> None:
+            if name == fail_start:
+                raise RuntimeError(f"start {name} failed")
+
+        async def stop() -> None:
+            assert shutdown_event.is_set()
+            stopped.append(name)
+            if name == fail_stop:
+                raise RuntimeError(f"stop {name} failed")
+
+        return SimpleNamespace(start=start, stop=stop)
+
+    monkeypatch.setattr(main, "setup_logging", lambda: None)
+    monkeypatch.setattr(main, "_setup_proxy_env", lambda: None)
+    monkeypatch.setattr(metrics, "start_metrics_collector", lambda **kwargs: None)
+    monkeypatch.setattr(metrics, "stop_metrics_collector", lambda: stopped.append("metrics"))
+    trends = service("trends")
+    trends.start = lambda **kwargs: None
+    monkeypatch.setattr(scheduler, "trend_scheduler", trends)
+    monkeypatch.setattr(plugins, "plugin_manager", service("plugins"))
+    worker = service("worker")
+    monkeypatch.setattr(task_worker, "get_worker", lambda: worker)
+    monkeypatch.setattr(background_jobs, "web_job_manager", service("web_jobs"))
+    monkeypatch.setattr(live_monitor, "live_monitor", service("live_monitor"))
+    recorder = service("recorders")
+    recorder.stop_all = recorder.stop
+    recorder.running_ids = lambda: []
+    monkeypatch.setattr(rooms, "recorder_manager", recorder)
+
+    async def recover() -> int:
+        return 0
+
+    monkeypatch.setattr(rooms, "auto_recover_interrupted_sessions", recover)
+    return stopped
+
+
+@pytest.mark.parametrize("failed_service", ["trends", "plugins", "worker", "web_jobs", "recorders", "live_monitor"])
+async def test_lifespan_cleanup_failure_still_stops_every_service(
+    temp_db: None, monkeypatch: pytest.MonkeyPatch, failed_service: str
+) -> None:
+    from app.web.main import app, lifespan
+
+    stopped = _prepare_lifespan(monkeypatch, fail_stop=failed_service)
+    with pytest.raises(RuntimeError, match=f"stop {failed_service} failed"):
+        async with lifespan(app):
+            pass
+    assert stopped == ["live_monitor", "recorders", "web_jobs", "worker", "plugins", "trends", "metrics"]
+
+
+@pytest.mark.parametrize(
+    ("failed_service", "expected"),
+    [
+        ("plugins", ["plugins", "trends", "metrics"]),
+        ("worker", ["worker", "plugins", "trends", "metrics"]),
+        ("web_jobs", ["web_jobs", "worker", "plugins", "trends", "metrics"]),
+        ("live_monitor", ["live_monitor", "recorders", "web_jobs", "worker", "plugins", "trends", "metrics"]),
+    ],
+)
+async def test_partial_startup_failure_releases_registered_services(
+    temp_db: None, monkeypatch: pytest.MonkeyPatch, failed_service: str, expected: list[str]
+) -> None:
+    from app.web.main import app, lifespan
+
+    stopped = _prepare_lifespan(monkeypatch, fail_start=failed_service)
+    with pytest.raises(RuntimeError, match=f"start {failed_service} failed"):
+        async with lifespan(app):
+            pytest.fail("startup failure cannot reach serving state")
+    assert stopped == expected
+
+
+def test_metrics_collector_reuses_thread_and_joins_before_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    sampled = Event()
+    monkeypatch.setattr(metrics, "snapshot", lambda: sampled.set())
+    metrics.stop_metrics_collector()
+    try:
+        metrics.start_metrics_collector(interval_s=60)
+        first = metrics._collector_thread
+        assert first is not None and sampled.wait(2)
+        metrics.start_metrics_collector(interval_s=60)
+        assert metrics._collector_thread is first
+        metrics.stop_metrics_collector()
+        assert not first.is_alive()
+        metrics.start_metrics_collector(interval_s=60)
+        assert metrics._collector_thread is not first
+    finally:
+        metrics.stop_metrics_collector()
+
+
+def test_metrics_shutdown_failure_preserves_live_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    entered = Event()
+    release = Event()
+
+    def snapshot() -> None:
+        entered.set()
+        assert release.wait(5)
+
+    monkeypatch.setattr(metrics, "snapshot", snapshot)
+    metrics.stop_metrics_collector()
+    try:
+        metrics.start_metrics_collector()
+        assert entered.wait(2)
+        first = metrics._collector_thread
+        with pytest.raises(RuntimeError, match="未在关闭期限内退出"):
+            metrics.stop_metrics_collector(timeout_s=0.01)
+        metrics.start_metrics_collector()
+        assert metrics._collector_thread is first
+    finally:
+        release.set()
+        metrics.stop_metrics_collector()
+
+
+async def test_worker_loop_failure_still_releases_resources(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.analysis.transcription import process_pool
+    from app.pipeline import task_worker
+
+    cleaned = Event()
+    pool_stopped = Event()
+    monkeypatch.setattr(
+        process_pool, "get_process_pool", lambda: SimpleNamespace(shutdown=lambda grace: pool_stopped.set())
+    )
+    monkeypatch.setattr(task_worker, "cleanup_subprocesses", cleaned.set)
+
+    async def failed() -> None:
+        raise OSError("loop failed")
+
+    worker = task_worker.TaskWorker()
+    worker._main_task = asyncio.create_task(failed())
+    await asyncio.sleep(0)
+    with pytest.raises(ExceptionGroup, match="Worker 关闭期间发现异常"):
+        await worker.stop()
+    assert cleaned.is_set() and pool_stopped.is_set()
+
+
+def test_real_uvicorn_sigint_exits_with_active_media_job(tmp_path: Path) -> None:
+    pid_file = tmp_path / "descendant.pid"
+    env = dict(os.environ)
+    env.update(
+        DATABASE_URL=f"sqlite:///{(tmp_path / 'probe.db').as_posix()}",
+        STORAGE_ROOT=str(tmp_path / "storage"),
+        ASR_PRELOAD_ON_START="false",
+        PYTHONUTF8="1",
+    )
+    script = r"""
+import asyncio,signal,sys,time
+from pathlib import Path
+import psutil,uvicorn
+from app.core.process_control import run_cancellable
+from app.web.main import app
+from app.web.services.background_jobs import web_job_manager
+pid_file=Path(sys.argv[1])
+child_code=(
+    "import subprocess,sys,time;from pathlib import Path;"
+    "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(300)']);"
+    f"Path({str(pid_file)!r}).write_text(str(child.pid));time.sleep(300)"
+)
+def handler(context,payload):
+    run_cancellable([sys.executable,'-c',child_code],capture_output=True,
+                    timeout=30,cancel_check=context.cancelled)
+web_job_manager.register('exit_probe',handler)
+async def main():
+    server=uvicorn.Server(uvicorn.Config(app,host='127.0.0.1',port=0,log_level='warning'))
+    async def request_shutdown():
+        deadline=time.monotonic()+15
+        while not server.started:
+            if time.monotonic()>deadline: raise RuntimeError('server did not start')
+            await asyncio.sleep(.02)
+        await web_job_manager.enqueue('exit_probe',{},label='exit probe',owner='test')
+        while not pid_file.exists():
+            if time.monotonic()>deadline: raise RuntimeError('media job did not start')
+            await asyncio.sleep(.02)
+        signal.raise_signal(signal.SIGINT)
+    await asyncio.gather(server.serve(),request_shutdown())
+try:
+    asyncio.run(main())
+except KeyboardInterrupt:
+    pass
+assert pid_file.is_file()
+pid=int(pid_file.read_text())
+if psutil.pid_exists(pid):
+    assert psutil.Process(pid).status()==psutil.STATUS_ZOMBIE, f'descendant still alive: {pid}'
+print('EXIT_PROBE_COMPLETE')
+"""
+    result = run_cancellable(
+        [sys.executable, "-c", script, str(pid_file)], env=env, capture_output=True, text=True, timeout=35
+    )
+    assert result.returncode == 0, result.stderr
+    assert "EXIT_PROBE_COMPLETE" in str(result.stdout)

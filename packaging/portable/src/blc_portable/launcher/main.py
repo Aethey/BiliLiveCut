@@ -33,7 +33,7 @@ from config.launcher_settings import APP_ROOT_ENV, WEB_PORT_ENV, load_launcher_c
 APP_NAME = "BiliLiveCut"
 VERSION = "V0.1.18.8 Alpha"
 RELEASE_VERSION = "0.1.18.8-alpha"
-SOURCE_COMMIT_SHORT = "3cede1c"
+SOURCE_COMMIT_SHORT = "ca6d83f"
 # NOTE: RELEASE_ID 将在获得 Payload SHA-256 后动态生成 (内容寻址)
 SUPPORTED_PYTHON_VERSIONS = frozenset({(3, 11), (3, 12)})
 
@@ -647,6 +647,7 @@ def install_dependencies(
     app_root: Path,
     *,
     source_dir: Path | None = None,
+    torch_runtime: str | None = None,
 ) -> None:
     """Install Python dependencies from ABI-specific lock file.
 
@@ -654,26 +655,48 @@ def install_dependencies(
     :param app_root: app root dir.
     :param source_dir: Installed Runtime source used for the ``app.cli`` smoke check.
     """
-    lock_file = _find_lock_file(venv_python)
-    needs_install = True
+    from blc_portable.launcher.torch_runtime import (
+        choose_torch_runtime,
+        cuda_wheels,
+        install_lock,
+        load_torch_runtime,
+        save_torch_runtime,
+        verify_torch_runtime,
+    )
 
-    # Check if pip freeze output matches lock (skip full hash comparison, do version check).
-    # ``--all`` is required because pip otherwise omits bootstrap tools, including itself.
+    lock_file = _find_lock_file(venv_python)
+    saved_runtime = load_torch_runtime(app_root)
+    needs_install = True
+    installed: dict[str, str] = {}
+
+    # Read installed metadata: pip freeze records direct wheel URLs instead of versions.
+    # pip list includes bootstrap tools and preserves CUDA local-version suffixes.
     try:
-        raw_freeze = subprocess.run(
-            [str(venv_python), "-m", "pip", "freeze", "--all"],
+        raw_inventory = subprocess.run(
+            [str(venv_python), "-m", "pip", "list", "--format=json"],
             capture_output=True,
             text=True,
             timeout=30,
             check=True,
             env=_python_environment(),
         ).stdout
-        installed = {}
-        for line in raw_freeze.strip().split("\n"):
-            if "==" in line:
-                pkg_ver = line.strip().split("==", 1)
-                pkg = re.sub(r"[-_.]+", "-", pkg_ver[0]).lower()
-                installed[pkg] = pkg_ver[1]
+        inventory = json.loads(raw_inventory)
+        if not isinstance(inventory, list):
+            raise ValueError("dependency inventory must be a list")
+        for package in inventory:
+            if (
+                not isinstance(package, dict)
+                or not isinstance(package.get("name"), str)
+                or not isinstance(package.get("version"), str)
+            ):
+                raise ValueError("dependency inventory entry invalid")
+            installed[re.sub(r"[-_.]+", "-", package["name"]).lower()] = package["version"]
+        selected_runtime = choose_torch_runtime(lock_file, installed, saved=saved_runtime, requested=torch_runtime)
+        torch_versions = (
+            {wheel.package: wheel.version for wheel in cuda_wheels(lock_file, selected_runtime)}
+            if selected_runtime != "cpu"
+            else {}
+        )
         missing = []
         with open(lock_file, encoding="utf-8") as lf:
             for line in lf:
@@ -686,6 +709,7 @@ def install_dependencies(
                 # Strip extras like [standard] from package name
                 pkg = re.sub(r"[-_.]+", "-", raw_pkg.split("[")[0])
                 raw_ver = line.split("==", 1)[1].split(";", 1)[0].split("\\", 1)[0].strip().split()[0]
+                raw_ver = torch_versions.get(pkg, raw_ver)
                 actual_ver = installed.get(pkg)
                 if actual_ver is None or actual_ver != raw_ver:
                     missing.append(f"{raw_pkg}: expected {raw_ver}, got {actual_ver}")
@@ -694,8 +718,13 @@ def install_dependencies(
             needs_install = False
         else:
             print(f"  dependencies outdated or missing ({len(missing)}), re-installing...")
-    except (subprocess.SubprocessError, OSError) as exc:
-        print(f"  dependency inventory failed; reinstalling from verified lock: {exception_summary(exc)}")
+    except (subprocess.SubprocessError, OSError, ValueError) as exc:
+        raise RuntimeError(
+            f"dependency inventory failed; refusing to overwrite an unknown Torch runtime: {exception_summary(exc)}"
+        ) from exc
+
+    selected_runtime = choose_torch_runtime(lock_file, installed, saved=saved_runtime, requested=torch_runtime)
+    print(f"  Torch runtime: {selected_runtime} (setting device=cuda alone does not install CUDA wheels)")
 
     if needs_install:
         # Install from lock file with mandatory hash verification
@@ -720,24 +749,28 @@ def install_dependencies(
                 )
             print(f"  embedded Lite bootstrap wheels: {bootstrap_wheelhouse}")
             install_source_flags = ["--find-links", str(bootstrap_wheelhouse)]
-        subprocess.run(
-            [
-                str(venv_python),
-                "-m",
-                "pip",
-                "install",
-                "-r",
-                str(lock_file),
-                "--require-hashes",
-                "--only-binary=:all:",
-            ]
-            + install_source_flags,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=600,
-            env=_python_environment(),
-        )
+        offline = os.environ.get("BLC_OFFLINE") == "1" or os.environ.get("PIP_NO_INDEX") == "1"
+        if selected_runtime != "cpu" and not offline:
+            print("  CUDA wheels: official hash-locked URLs; other Full dependencies remain in the local wheelhouse")
+        with install_lock(lock_file, selected_runtime, app_root, offline=offline) as requirements:
+            subprocess.run(
+                [
+                    str(venv_python),
+                    "-m",
+                    "pip",
+                    "install",
+                    "-r",
+                    str(requirements),
+                    "--require-hashes",
+                    "--only-binary=:all:",
+                ]
+                + install_source_flags,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=1800 if selected_runtime != "cpu" else 600,
+                env=_python_environment(),
+            )
 
     # Always run one import/ABI preflight, including on subsequent launches
     # where package versions already match.  Provisioning dependencies are
@@ -746,6 +779,9 @@ def install_dependencies(
     _run_dependency_preflight(venv_python)
     if source_dir is not None:
         _run_import_smoke(venv_python, "app.cli", source_dir)
+    if torch_runtime is not None or selected_runtime != "cpu":
+        verify_torch_runtime(venv_python, lock_file, selected_runtime, _python_environment())
+        save_torch_runtime(app_root, selected_runtime)
     print("  deps install complete")
 
 
@@ -1038,6 +1074,33 @@ def _run_doctor(app_root: Path) -> int:
         str(compatible_python) if compatible_python else "not found",
     )
 
+    venv_python = app_root / ".venv" / "Scripts" / "python.exe"
+    if venv_python.is_file():
+        try:
+            probe = subprocess.run(
+                [
+                    str(venv_python),
+                    "-c",
+                    "import json, sys, torch, ctranslate2; "
+                    "print(json.dumps({'python':sys.executable,'torch':str(torch.__version__),"
+                    "'torch_cuda_build':torch.version.cuda,'torch_cuda_available':torch.cuda.is_available(),"
+                    "'ctranslate2_cuda_devices':ctranslate2.get_cuda_device_count()}))",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=True,
+                env=_python_environment(),
+            )
+            _check("ASR actual runtime", True, probe.stdout.strip())
+        except (OSError, subprocess.SubprocessError) as exc:
+            _check(
+                "ASR actual runtime",
+                False,
+                exception_summary(exc),
+                suggestion="检查 .venv 依赖；device=cuda 不会自动安装 CUDA 版 PyTorch",
+            )
+
     # 5. Models
     models_dir = app_root / "models"
     from blc_portable.engine_pack.installer import check_installed_models
@@ -1113,6 +1176,8 @@ def build_parser() -> argparse.ArgumentParser:
     """
     import argparse
 
+    from blc_portable.launcher.torch_runtime import RUNTIMES
+
     parser = argparse.ArgumentParser(
         description=f"BiliLiveCut {VERSION} — Portable Launcher",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1144,6 +1209,11 @@ Examples:
     )
     parser.add_argument("--repair", action="store_true", help="Repair mode: reinstall Runtime and models")
     parser.add_argument("--doctor", action="store_true", help="Run System Diagnostics check")
+    parser.add_argument(
+        "--torch-runtime",
+        choices=RUNTIMES,
+        help="安装并记住 Torch 运行时后退出；CUDA 大文件仅从官方锁定地址获取，--offline 时必须已有对应 wheel",
+    )
     parser.add_argument("--version", action="store_true", help="Show version info and exit")
     return parser
 
@@ -1243,6 +1313,11 @@ def run_launcher(args: argparse.Namespace) -> int:
 
         # 5. Dependency install (from ABI-specific lock file)
         print("[4/6] Dependency install...")
+        requested_torch = getattr(args, "torch_runtime", None)
+        if requested_torch is not None:
+            install_dependencies(venv_python, app_root, source_dir=source_dir, torch_runtime=requested_torch)
+            print("Torch 运行时已安装并保存；请在设置中心选择 ASR 设备，再启动服务。")
+            return 0
         install_dependencies(venv_python, app_root, source_dir=source_dir)
         print()
 

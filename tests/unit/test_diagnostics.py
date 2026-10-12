@@ -235,20 +235,29 @@ def test_cancel_error_keeps_cleanup_failure_note_without_credentials(monkeypatch
     from unittest.mock import Mock
 
     from app.core import process_control
+    from app.pipeline import lifecycle
 
     process = Mock(spec=subprocess.Popen)
+    process.pid = -1
     process.poll.return_value = None
     process.terminate.side_effect = PermissionError("terminate denied token=private-cleanup")
     monkeypatch.setattr(process_control.subprocess, "Popen", lambda *args, **kwargs: process)
+    tree = Mock(spec=process_control.ProcessTree)
+    monkeypatch.setattr(process_control, "ProcessTree", lambda pid: tree)
 
     def failed_cancel() -> bool:
         raise ValueError("cancel state unavailable")
 
-    with pytest.raises(ValueError) as caught:
-        run_cancellable(["fake-process"], cancel_check=failed_cancel)
-    summary = safe_exception_summary(caught.value)
-    assert "cancel state unavailable" in summary and "PermissionError: terminate denied" in summary
-    assert "private-cleanup" not in summary
+    try:
+        with pytest.raises(ValueError) as caught:
+            run_cancellable(["fake-process"], cancel_check=failed_cancel)
+        summary = safe_exception_summary(caught.value)
+        assert "cancel state unavailable" in summary and "PermissionError: terminate denied" in summary
+        assert "private-cleanup" not in summary
+        assert process in lifecycle._subprocesses
+    finally:
+        process.poll.return_value = 0
+        lifecycle.cleanup_subprocesses()
 
 
 def test_multi_gpu_resource_probe_uses_first_device(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -367,6 +376,45 @@ def test_doctor_uses_current_settings_and_preserves_existing_files(
     assert "尚未创建" not in text and "8.0 GB VRAM" in text and "funasr_nano" in text
     assert "FFmpeg" in text and "数据库完整性" in text
     assert existing.read_text(encoding="utf-8") == "user asset"
+
+
+def test_doctor_fails_explicit_cuda_and_caches_identical_backend_probes(
+    temp_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+    import typer
+    from rich.console import Console
+
+    from app.commands import doctor
+    from app.core import asr_detection, asr_devices
+    from app.core.config import settings
+
+    Path(settings.storage_root).mkdir(parents=True, exist_ok=True)
+    output = io.StringIO()
+    monkeypatch.setattr(doctor, "console", Console(file=output, width=240, color_system=None))
+    monkeypatch.setattr(asr_detection, "detect_resources", lambda: asr_detection.ResourceInfo())
+    monkeypatch.setattr(httpx, "get", lambda *args, **kwargs: httpx.Response(200))
+    monkeypatch.setattr(settings, "asr_primary", "paraformer")
+    monkeypatch.setattr(settings, "asr_sensevoice_enabled", True)
+    monkeypatch.setattr(settings, "asr_sensevoice", True)
+    monkeypatch.setattr(settings, "asr_funasr_review", True)
+    monkeypatch.setattr(settings, "asr_fallback_whisper", False)
+    for field in ("asr_primary_device", "asr_auxiliary_device", "asr_review_device"):
+        monkeypatch.setattr(settings, field, "cuda")
+    calls: list[tuple[str, str]] = []
+
+    def probe(backend: str, device: str) -> dict[str, str | bool | None]:
+        calls.append((backend, device))
+        return {"ok": False, "version": "2.13.0+cpu", "cuda_build": None, "error": "CPU 版"}
+
+    monkeypatch.setattr(asr_devices, "probe_device", probe)
+    with pytest.raises(typer.Exit) as caught:
+        doctor.cmd_doctor(yes=True)
+    assert caught.value.exit_code == 1
+    assert calls == [("torch", "cuda")]
+    text = output.getvalue()
+    assert all(f"ASR 设备 {role}" in text for role in ("primary", "auxiliary", "review"))
+    assert "2.13.0+cpu" in text and "CPU 版" in text
 
 
 def test_cli_failure_is_safe_and_nonzero() -> None:

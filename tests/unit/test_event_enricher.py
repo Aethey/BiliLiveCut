@@ -497,3 +497,28 @@ def test_stale_bundle_is_rejected_before_commit(temp_db: None, monkeypatch: Monk
         event = db.exec(select(HotspotEvent).where(HotspotEvent.id == event_id)).one()
     assert event.title is None
     assert event.summary is None
+
+
+def test_number_without_evidence_keeps_conservative_fallback(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    from app.analysis import event_enricher
+
+    event_id = _seed_event(evidence=[_evidence_item("evidence:asr:price", "asr", excerpt="主播正在讨论本轮奖励。")])
+    monkeypatch.setattr(
+        event_enricher.llm,
+        "call_text",
+        lambda *_args, **_kwargs: json.dumps(
+            {
+                "title": "主播正在讨论本轮奖励",
+                "summary": "主播正在讨论本轮奖励，金额为 1650.86 元。",
+                "category": "discussion",
+                "entities": [],
+                "semantic_confidence": 0.8,
+                "evidence_ids": ["evidence:asr:price"],
+            },
+            ensure_ascii=False,
+        ),
+    )
+    result = enrich_hotspot_event(event_id)
+    assert result is not None and result.source == "fallback"
+    assert any("数字不在引用证据中" in warning for warning in result.warnings)
+    assert "1650.86" not in result.title + result.summary

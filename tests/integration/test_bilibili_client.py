@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import httpx
 import pytest
 
@@ -9,6 +11,7 @@ from app.sources.bilibili.client import (
     BilibiliError,
     BilibiliLiveClient,
     BilibiliRateLimitError,
+    BilibiliStreamUnavailable,
     HttpErrorType,
     StreamInfo,
     parse_room_id,
@@ -27,6 +30,202 @@ _WBI_RESPONSE = {
         },
     },
 }
+
+
+def _play_data(qn: int | None, *, usable: bool = True, advertised: list[int] | None = None) -> dict[str, object]:
+    codec: dict[str, object] = {
+        "codec_name": "avc",
+        "base_url": "/live/stream.m3u8",
+        "url_info": [{"host": "https://cdn.example.com", "extra": "?token=private-stream"}],
+        "accept_qn": advertised or [],
+    }
+    if qn is not None:
+        codec["current_qn"] = qn
+    return {
+        "live_status": 1,
+        "playurl_info": {
+            "playurl": {
+                "g_qn_desc": [{"qn": item} for item in advertised or []],
+                "stream": [{"protocol_name": "http_hls", "format": [{"format_name": "ts", "codec": [codec]}]}]
+                if usable
+                else [],
+            }
+        },
+    }
+
+
+async def _stream_client(handler: Callable[[httpx.Request], httpx.Response]) -> BilibiliLiveClient:
+    client = BilibiliLiveClient()
+    headers = dict(client._client.headers)
+    await client._client.aclose()
+    client._client = httpx.AsyncClient(headers=headers, transport=httpx.MockTransport(handler))
+    return client
+
+
+@pytest.mark.parametrize(
+    ("available_qn", "expected_requests"),
+    [(10000, [10000]), (400, [10000, 400]), (250, [10000, 400, 250]), (80, [10000, 400, 250, 150, 80])],
+)
+async def test_play_info_tries_quality_in_descending_order(available_qn: int, expected_requests: list[int]) -> None:
+    requested: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        qn = int(request.url.params["qn"])
+        requested.append(qn)
+        return httpx.Response(200, json={"code": 0, "data": _play_data(qn, usable=qn == available_qn)}, request=request)
+
+    async with await _stream_client(handler) as client:
+        result = await client.get_streams(123)
+    assert requested == expected_requests
+    assert [stream.quality for stream in result] == [available_qn]
+
+
+async def test_play_info_uses_advertised_intermediate_quality() -> None:
+    requested: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        qn = int(request.url.params["qn"])
+        requested.append(qn)
+        data = _play_data(qn, usable=qn == 600, advertised=[10000, 600, 400, 250, 150, 80])
+        return httpx.Response(200, json={"code": 0, "data": data}, request=request)
+
+    async with await _stream_client(handler) as client:
+        result = await client.get_streams(123)
+    assert requested == [10000, 600]
+    assert result[0].quality == 600
+
+
+async def test_play_info_respects_configured_ceiling_and_server_actual_quality() -> None:
+    requested: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(int(request.url.params["qn"]))
+        return httpx.Response(200, json={"code": 0, "data": _play_data(150)}, request=request)
+
+    async with await _stream_client(handler) as client:
+        result = await client.get_streams(123, quality=250)
+    assert requested == [250]
+    assert result[0].quality == 150
+
+
+async def test_play_info_does_not_accept_quality_above_ceiling() -> None:
+    requested: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(int(request.url.params["qn"]))
+        return httpx.Response(200, json={"code": 0, "data": _play_data(10000)}, request=request)
+
+    async with await _stream_client(handler) as client:
+        with pytest.raises(BilibiliStreamUnavailable):
+            await client.get_streams(123, quality=250)
+    assert requested == [250, 150, 80]
+
+
+async def test_quality_metadata_cannot_starve_low_tiers_or_create_unbounded_requests() -> None:
+    requested: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        qn = int(request.url.params["qn"])
+        requested.append(qn)
+        data = _play_data(qn, usable=False, advertised=list(range(9000, 20000)))
+        return httpx.Response(200, json={"code": 0, "data": data}, request=request)
+
+    async with await _stream_client(handler) as client:
+        with pytest.raises(BilibiliStreamUnavailable):
+            await client.get_streams(123)
+    assert len(requested) == 8
+    assert requested == sorted(set(requested), reverse=True)
+    assert all(qn in requested for qn in [10000, 400, 250, 150, 80])
+
+
+@pytest.mark.parametrize("status", [0, 2])
+async def test_offline_play_info_stops_quality_negotiation(status: int) -> None:
+    requested: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(int(request.url.params["qn"]))
+        return httpx.Response(200, json={"code": 0, "data": {"live_status": status}}, request=request)
+
+    async with await _stream_client(handler) as client:
+        assert await client.get_streams(123) == []
+    assert requested == [10000]
+
+
+@pytest.mark.parametrize("status", [None, False, 42])
+async def test_unknown_play_info_status_is_error_not_offline(status: object) -> None:
+    requested: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(int(request.url.params["qn"]))
+        return httpx.Response(200, json={"code": 0, "data": {"live_status": status}}, request=request)
+
+    async with await _stream_client(handler) as client:
+        with pytest.raises(BilibiliError, match="直播状态缺失或无效"):
+            await client.get_streams(123)
+    assert requested == [10000]
+
+
+@pytest.mark.parametrize("code", [-101, -352])
+async def test_quality_negotiation_keeps_authentication_and_risk_errors(code: int) -> None:
+    requested: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(int(request.url.params["qn"]))
+        return httpx.Response(200, json={"code": code, "message": "denied"}, request=request)
+
+    async with await _stream_client(handler) as client:
+        with pytest.raises(BilibiliRateLimitError):
+            await client.get_streams(123)
+    assert requested == [10000]
+
+
+def test_missing_qn_stays_unknown_and_known_quality_wins_selection() -> None:
+    unknown = BilibiliLiveClient._parse_play_info(_play_data(None))
+    assert unknown[0].quality is None
+    known = StreamInfo("https://cdn.example.com/high.flv", "flv", "flv", "avc", 10000)
+    assert pick_best_stream([*unknown, known], preferred_protocol="hls") is known
+
+
+def test_known_quality_precedes_protocol_and_protocol_breaks_ties() -> None:
+    high = StreamInfo("https://cdn.example.com/high.flv", "flv", "flv", "avc", 10000)
+    low = StreamInfo("https://cdn.example.com/low.m3u8", "hls", "ts", "avc", 250)
+    assert pick_best_stream([low, high], "hls") is high
+    same = StreamInfo("https://cdn.example.com/high.m3u8", "hls", "ts", "avc", 10000)
+    assert pick_best_stream([high, same], "hls") is same
+
+
+@pytest.mark.parametrize("status", [429, 500])
+async def test_quality_negotiation_does_not_hide_http_failure(status: int) -> None:
+    requested: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(int(request.url.params["qn"]))
+        return httpx.Response(status, headers={"Retry-After": "60"}, request=request)
+
+    async with await _stream_client(handler) as client:
+        with pytest.raises(BilibiliError):
+            await client.get_streams(123)
+    assert requested == [10000]
+
+
+async def test_malformed_stream_response_keeps_error_chain() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        data = {"live_status": 1, "playurl_info": {"playurl": {"stream": None}}}
+        return httpx.Response(200, json={"code": 0, "data": data}, request=request)
+
+    async with await _stream_client(handler) as client:
+        with pytest.raises(BilibiliError, match="流结构无效") as error:
+            await client.get_streams(123)
+    assert isinstance(error.value.__cause__, TypeError)
+
+
+def test_quality_settings_reject_nonpositive_qn() -> None:
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, stream_quality=0)
 
 
 @pytest.mark.parametrize(

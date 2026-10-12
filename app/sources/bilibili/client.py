@@ -43,6 +43,8 @@ _PLAY_INFO_URL = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomP
 _DANMU_INFO_URL = "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo"
 _WBI_NAV_URL = "https://api.bilibili.com/x/web-interface/nav"
 _LIVE_WEB_LOCATION = "444.8"
+_QUALITY_FALLBACKS = (10000, 400, 250, 150, 80)
+_MAX_QUALITY_ATTEMPTS = 8
 
 # 从形如 https://live.bilibili.com/123?xxx 的 URL 中提取房间号。
 _ROOM_ID_RE = re.compile(r"live\.bilibili\.com/(?:h5/)?(\d+)")
@@ -50,6 +52,10 @@ _ROOM_ID_RE = re.compile(r"live\.bilibili\.com/(?:h5/)?(\d+)")
 
 class BilibiliError(Exception):
     """Bilibili 接口调用相关错误。"""
+
+
+class BilibiliStreamUnavailable(BilibiliError):
+    """接口确认直播中，但画质协商未取得可用播放地址。"""
 
 
 class HttpErrorType(Enum):
@@ -175,14 +181,14 @@ class StreamInfo:
     :param protocol: 协议名,``hls`` 或 ``flv``。
     :param format_name: 容器格式,如 ``ts`` / ``fmp4`` / ``flv``。
     :param codec_name: 编码,如 ``avc`` / ``hevc``。
-    :param quality: 实际清晰度码(qn)。
+    :param quality: 实际清晰度码(qn)，接口未提供时为 None。
     """
 
     url: str
     protocol: str
     format_name: str
     codec_name: str
-    quality: int
+    quality: int | None
 
 
 def parse_uid_from_cookie(cookie: str) -> int:
@@ -402,16 +408,18 @@ class BilibiliLiveClient:
         room_id: int,
         quality: int = 10000,
     ) -> list[StreamInfo]:
-        """获取直播间所有可用的流地址。
+        """从画质上限向下逐级获取首个有可用地址的画质。
 
         调用 ``getRoomPlayInfo``,请求 HLS 与 FLV 两种协议、ts/fmp4/flv 三种格式。
 
         :param room_id: 真实房间号。
-        :param quality: 期望清晰度码 qn(10000=原画)。
+        :param quality: 清晰度上限 qn(10000=原画)，不足时依次尝试更低档。
         :returns: 解析出的 :class:`StreamInfo` 列表(可能为空,如未开播)。
         :raises BilibiliError: 接口调用失败时。
         """
-        params = {
+        if quality <= 0:
+            raise ValueError("Bilibili 清晰度编号必须大于 0")
+        params: dict[str, object] = {
             "room_id": room_id,
             "protocol": "0,1",  # 0=http_stream(flv), 1=http_hls
             "format": "0,1,2",  # 0=flv, 1=ts, 2=fmp4
@@ -420,15 +428,62 @@ class BilibiliLiveClient:
             "platform": "web",
             "ptype": 8,
         }
-        data = await self._get_json(_PLAY_INFO_URL, params)
+        pending = sorted({quality, *(qn for qn in _QUALITY_FALLBACKS if qn < quality)}, reverse=True)
+        for attempt in range(_MAX_QUALITY_ATTEMPTS):
+            if not pending:
+                break
+            requested = pending.pop(0)
+            params["qn"] = requested
+            # 登录态、风控、网络及业务错误仍抛给来源预算，不伪装为画质不可用。
+            data = await self._get_json(_PLAY_INFO_URL, params)
+            live_status = data.get("live_status")
+            if not isinstance(live_status, bool) and live_status in (0, 2, "0", "2"):
+                logger.info("房间 {} 当前未开播，无可用流。", room_id)
+                return []
+            if live_status not in (1, "1") or isinstance(live_status, bool):
+                raise BilibiliError("播放接口直播状态缺失或无效")
+            try:
+                streams = [
+                    item for item in self._parse_play_info(data) if item.quality is None or item.quality <= quality
+                ]
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise BilibiliError("播放接口流结构无效") from exc
+            if streams:
+                logger.info("房间 {} 取流成功 requested_qn={} candidates={}", room_id, requested, len(streams))
+                return streams
+            lower_defaults = {qn for qn in _QUALITY_FALLBACKS if qn < requested}
+            additional = sorted(
+                {qn for qn in (*pending, *self._available_qualities(data)) if qn < requested} - lower_defaults,
+                reverse=True,
+            )
+            remaining = _MAX_QUALITY_ATTEMPTS - attempt - 1
+            # 保留标准低档，避免异常元数据挤占全部预算后永远试不到低画质。
+            pending = sorted(lower_defaults | set(additional[: max(0, remaining - len(lower_defaults))]), reverse=True)
+            logger.info("房间 {} 画质无可用地址 qn={}，继续尝试更低画质", room_id, requested)
+        logger.warning("房间 {} 画质序列无可用地址，交给录制重连预算处理", room_id)
+        raise BilibiliStreamUnavailable("直播中，但画质序列没有可用播放地址")
 
-        if int(data.get("live_status", 0)) != 1:
-            logger.warning("房间 {} 当前未开播,无可用流。", room_id)
+    @staticmethod
+    def _available_qualities(data: dict[str, object]) -> list[int]:
+        """提取接口声明的画质编号，异常元数据不能扩大请求次数或改变顺序。"""
+        info = data.get("playurl_info")
+        playurl = info.get("playurl") if isinstance(info, dict) else None
+        if not isinstance(playurl, dict):
             return []
-
-        streams = self._parse_play_info(data)
-        logger.info("房间 {} 解析到 {} 条可用流。", room_id, len(streams))
-        return streams
+        values: list[object] = []
+        descriptions = playurl.get("g_qn_desc", [])
+        if isinstance(descriptions, list):
+            values.extend(item.get("qn") for item in descriptions if isinstance(item, dict))
+        for stream in playurl.get("stream", []):
+            if not isinstance(stream, dict):
+                continue
+            for fmt in stream.get("format", []):
+                if not isinstance(fmt, dict):
+                    continue
+                for codec in fmt.get("codec", []):
+                    if isinstance(codec, dict) and isinstance(codec.get("accept_qn"), list):
+                        values.extend(codec["accept_qn"])
+        return sorted({item for item in values if isinstance(item, int) and not isinstance(item, bool) and item > 0})
 
     async def get_danmaku_server(self, room_id: int) -> DanmakuServer:
         """按直播网页请求格式获取弹幕服务器与鉴权 token。
@@ -456,7 +511,7 @@ class BilibiliLiveClient:
         )
 
     @staticmethod
-    def _parse_play_info(data: dict) -> list[StreamInfo]:
+    def _parse_play_info(data: dict[str, object]) -> list[StreamInfo]:
         """解析 ``getRoomPlayInfo`` 的 ``playurl_info`` 结构为流列表。
 
         结构层级: stream[] -> format[] -> codec[] -> url_info[]。
@@ -474,7 +529,10 @@ class BilibiliLiveClient:
                 format_name = fmt.get("format_name", "")
                 for codec in fmt.get("codec", []):
                     base_url = codec.get("base_url", "")
-                    current_qn = int(codec.get("current_qn", 0))
+                    qn = codec.get("current_qn")
+                    if isinstance(qn, str) and qn.isascii() and qn.isdecimal():
+                        qn = int(qn)
+                    current_qn = qn if isinstance(qn, int) and not isinstance(qn, bool) and qn > 0 else None
                     codec_name = codec.get("codec_name", "")
                     for url_info in codec.get("url_info", []):
                         host = url_info.get("host", "")
@@ -499,7 +557,7 @@ def pick_best_stream(
 ) -> StreamInfo | None:
     """从候选流中按偏好挑选最佳流。
 
-    优先级:首选协议 + 最高清晰度;若首选协议无结果,则回退到另一协议。
+    优先级:实际清晰度从高到低，同画质优先首选协议；未知画质排在已知画质后。
 
     :param streams: 候选流列表。
     :param preferred_protocol: 首选协议,``hls`` 或 ``flv``。
@@ -509,7 +567,7 @@ def pick_best_stream(
         return None
 
     def sort_key(s: StreamInfo) -> tuple[int, int]:
-        # 首选协议优先(1),再按清晰度降序。
-        return (1 if s.protocol == preferred_protocol else 0, s.quality)
+        # 按实际画质排序，协议偏好只用于同档候选。
+        return (s.quality if s.quality is not None else -1, 1 if s.protocol == preferred_protocol else 0)
 
     return max(streams, key=sort_key)

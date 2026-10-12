@@ -9,6 +9,7 @@ V0.1.9: 使用 Aho-Corasick 加速多模式匹配(20-50× 提速),C 扩展不可
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from functools import lru_cache
 from pathlib import Path
 
@@ -39,17 +40,19 @@ def load_keywords() -> tuple[str, ...]:
     return tuple(words)
 
 
-def match_keywords(text: str) -> tuple[float, list[str]]:
+def match_keywords(text: str, extra_keywords: Sequence[str] = ()) -> tuple[float, list[str]]:
     """统计文本中的关键词命中并给出得分。
 
     V0.1.9: 使用 Aho-Corasick 一次扫描完成多模式匹配,
     比逐词 O(k*n) 遍历快 20-50 倍。
 
     :param text: 转写文本。
+    :param extra_keywords: 当前房间的额外关键词，与全局词表合并去重，不影响其他房间。
     :returns: ``(score, hits)``,``score`` 为 0-1,``hits`` 为命中的关键词列表。
     """
     if not text:
         return 0.0, []
-    hits = fast_match_keywords(text.lower(), load_keywords())
+    words = tuple(dict.fromkeys(word.strip().lower() for word in (*load_keywords(), *extra_keywords) if word.strip()))
+    hits = fast_match_keywords(text.lower(), words)
     score = min(len(hits) / _HIT_CAP, 1.0)
     return score, hits

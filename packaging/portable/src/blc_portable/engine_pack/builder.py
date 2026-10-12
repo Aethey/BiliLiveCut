@@ -348,7 +348,7 @@ def download_real_models(staging: Path) -> None:
 
 
 def build_fixture(staging: Path) -> None:
-    """生成测试用小型 Fixture (每个引擎一个占位文件)。
+    """按模型目录生成满足安装契约的小型 Fixture，不包含可推理权重。
 
     :param staging: staging 根目录。
     """
@@ -367,6 +367,15 @@ def build_fixture(staging: Path) -> None:
             f"Fixture placeholder for {engine['engine_name']}\n",
             encoding="utf-8",
         )
+        for relative in engine["required_files"]:
+            required = (target / relative).resolve()
+            if not required.is_relative_to(target.resolve()):
+                raise ValueError(f"Fixture required file escapes model directory: {relative}")
+            required.parent.mkdir(parents=True, exist_ok=True)
+            if required.suffix == ".json":
+                required.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+            else:
+                required.write_bytes(f"Fixture only: {engine['engine_id']}/{relative}\n".encode())
         # Paraformer 子模型占位
         for sub in engine.get("sub_models", []):
             sub_id = str(sub["model_id"])

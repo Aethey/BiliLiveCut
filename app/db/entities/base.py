@@ -102,7 +102,7 @@ class ClipVariantType:
     FULL_CONTEXT = "full_context"  # 完整上下文版
     COLLECTION_CHAPTER = "collection_chapter"  # 同主题合集章节
     SUBTITLED = "subtitled"  # 带字幕版
-    NO_SUBTITLES = "no_subtitles"  # 无字幕净版
+    NO_SUBTITLES = "no_subtitles"  # 无 ASR 字幕版（弹幕独立）
     COMPRESSED = "compressed"  # 投稿压制版
     ARCHIVE = "archive"  # 高码率归档版
 
@@ -138,6 +138,7 @@ class TaskStatus:
     PUBLISHING = "publishing"  # 正在发布
     COMPLETED = "completed"  # 最终完成
     FAILED = "failed"  # 永久失败(不可重试)
+    CANCELLING = "cancelling"  # 已请求取消,等待执行与资源收尾
     CANCELLED = "cancelled"  # 已取消
     STALE = "stale"  # 心跳超时,待恢复
 

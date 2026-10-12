@@ -32,6 +32,7 @@ SECRETS = {
     "reviewer_accounts_json",
     "bilibili_cookie",
     "trend_api_key",
+    "asr_remote_api_key",
     "dingtalk_webhook",
     "dingtalk_secret",
     "wecom_webhook",

@@ -2,7 +2,7 @@
 """PyInstaller spec for BiliLiveCut Portable Launcher.
 
 内嵌资源:
-- source_payload.zip (3cede1c 业务源码)
+- source_payload.zip (ca6d83f 业务源码)
 - payload_manifest.json
 - engine_pack_info.json (四引擎模型包信息, 含 CRC32)
 - LICENSE (BiliLiveCut 项目 MIT License)
@@ -39,6 +39,8 @@ _engine_pack_info = str(_here / "resources" / "engine_pack_info.json")
 _lock_dir = str(_here / "locks")
 _lock_files = []
 for _lf in sorted(Path(_lock_dir).glob("requirements-runtime-*-win-x64.lock")):
+    _lock_files.append((str(_lf), "locks"))
+for _lf in sorted(Path(_lock_dir).glob("requirements-torch-*-win-x64.lock")):
     _lock_files.append((str(_lf), "locks"))
 
 _bootstrap_wheels = []

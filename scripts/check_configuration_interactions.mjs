@@ -60,7 +60,14 @@ globalThis.document = {
 };
 element("configuration-group").value = "all";
 const fields = [
+  { key: "asr_primary", label: "ASR 主引擎", group: "asr", type: "string", enum: ["funasr_nano", "paraformer", "whisper", "openai_compatible"], value: "funasr_nano", baseline: "funasr_nano" },
+  { key: "asr_remote_base_url", label: "远程地址", group: "asr", type: "string", value: "", baseline: "" },
+  { key: "asr_remote_model", label: "远程模型", group: "asr", type: "string", value: "", baseline: "" },
   { key: "clip_video_crf", label: "视频质量", group: "output", type: "integer", value: 20, baseline: 20, minimum: 0, maximum: 51 },
+  { key: "clip_video_encoder", label: "视频编码设备", group: "output", type: "string", enum: ["cpu", "nvidia", "intel", "amd"], value: "cpu", baseline: "cpu" },
+  { key: "clip_danmaku_mode", label: "弹幕模式", group: "output", type: "string", enum: ["scroll", "top", "bottom"], value: "scroll", baseline: "scroll" },
+  { key: "clip_danmaku_opacity", label: "弹幕不透明度", group: "output", type: "number", value: 0.85, baseline: 0.85, minimum: 0, maximum: 1 },
+  { key: "clip_hardware_quality", label: "硬件质量", group: "output", type: "integer", value: 23, baseline: 23, minimum: 1, maximum: 51 },
   { key: "smtp_password", label: "邮箱密码", group: "notifications", type: "string", value: null, baseline: null, secret: true, configured: false },
   { key: "stream_url", label: "文本参数", group: "recording", type: "string", value: "abcdef", baseline: "abcdef" },
   { key: "database_url", label: "数据库", group: "system", type: "string", value: null, secret: true, editable: false, reason: "启动前确定" },
@@ -117,6 +124,7 @@ console.error("configuration check: loading source modules");
   const edit = async (key, value) => { const control = element(`configuration-${key}`); control.value = value; await form.emit("input", control); };
   const action = async (key, name) => form.emit("click", { closest: () => ({ dataset: { key, configAction: name } }) });
   assert.equal(element("configuration-database_url").disabled, true);
+  assert.equal(element("field-clip_video_encoder").hidden, false, "encoder must be visible without advanced settings");
 
   await edit("clip_video_crf", "27");
   assert.equal(module.hasConfigurationDraft(), true);
@@ -172,5 +180,25 @@ console.error("configuration check: loading source modules");
   assert.deepEqual(requests.at(-1).reset, ["clip_video_crf"]);
   assert.equal(element("configuration-clip_video_crf").value, "20");
   assert.equal(element("configuration-database_url").disabled, true);
-  console.log("PASS: configuration draft, delayed reload/caret, validation focus, save failure, concurrent submit, secret clearing, reset and readonly controls");
+  await edit("clip_video_encoder", "nvidia");
+  await edit("clip_hardware_quality", "18");
+  await form.emit("submit");
+  assert.deepEqual(requests.at(-1).values, { clip_video_encoder: "nvidia", clip_hardware_quality: 18 });
+  assert.match(element("configuration-fields").innerHTML, /value="nvidia" selected>NVIDIA 显卡/);
+  await edit("clip_video_encoder", "cpu"); await form.emit("submit");
+  assert.deepEqual(requests.at(-1).values, { clip_video_encoder: "cpu" });
+  assert.equal(element("field-clip_danmaku_mode").hidden, false);
+  await edit("clip_danmaku_mode", "bottom");
+  await edit("clip_danmaku_opacity", "0.5");
+  await form.emit("submit");
+  assert.deepEqual(requests.at(-1).values, { clip_danmaku_mode: "bottom", clip_danmaku_opacity: 0.5 });
+  assert.match(element("configuration-fields").innerHTML, /value="bottom" selected>下方固定/);
+  await edit("asr_primary", "openai_compatible");
+  await edit("asr_remote_base_url", "https://asr.example.invalid/v1");
+  await edit("asr_remote_model", "user-selected-model");
+  await form.emit("submit");
+  assert.deepEqual(requests.at(-1).values, { asr_primary: "openai_compatible", asr_remote_base_url: "https://asr.example.invalid/v1", asr_remote_model: "user-selected-model" });
+  assert.equal(element("field-asr_remote_base_url").hidden, false);
+  assert.match(element("configuration-fields").innerHTML, /value="openai_compatible" selected>远程转写/);
+  console.log("PASS: configuration draft, delayed reload/caret, validation focus, save failure, concurrent submit, secret clearing, reset, readonly controls hardware encoder selection and danmaku style settings and remote ASR configuration");
 }

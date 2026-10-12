@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
+from app.core.ffmpeg_errors import FfmpegErrorType, classify_ffmpeg_error
+
 
 def test_settings_has_sensible_defaults() -> None:
     """All ASR and core settings have reasonable default values."""
@@ -19,7 +23,7 @@ def test_settings_has_sensible_defaults() -> None:
     assert s.asr_resource_policy in ("strict", "warn")
 
 
-def test_cookie_module_returns_str() -> None:
+def test_cookie_module_returns_str(temp_db: None) -> None:
     """get_bilibili_cookie returns empty string in test environment."""
     from app.core.cookie import get_bilibili_cookie
 
@@ -55,3 +59,21 @@ def test_ffmpeg_errors_module_imports() -> None:
     # Unknown error returns UNKNOWN type
     result = classify_ffmpeg_error(1, "random unknown error text")
     assert result is FfmpegErrorType.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected"),
+    [
+        ("[https @ 000001] End of file", FfmpegErrorType.TRANSIENT_NETWORK),
+        ("[tls @ 000001] Error in the pull function", FfmpegErrorType.TRANSIENT_NETWORK),
+        ("[tcp @ 000001] Unexpected EOF", FfmpegErrorType.TRANSIENT_NETWORK),
+        ("End of file", FfmpegErrorType.UNKNOWN),
+        ("[mov @ 000001] End of file", FfmpegErrorType.UNKNOWN),
+        ("[https @ 000001] Opening input\n[mov @ 000002] End of file", FfmpegErrorType.UNKNOWN),
+        ("[https @ 000001] Permission denied; End of file", FfmpegErrorType.PERMISSION_DENIED),
+    ],
+)
+def test_transport_eof_has_network_evidence_without_claiming_local_corruption(
+    stderr: str, expected: FfmpegErrorType
+) -> None:
+    assert classify_ffmpeg_error(255, stderr) is expected

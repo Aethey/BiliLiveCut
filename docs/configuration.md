@@ -2,7 +2,9 @@
 
 通过 Web 左侧“设置中心”搜索中文名称或环境变量名，查看有效值、来源和生效时间。下表解释配置范围；实际注册定义位于 `app/core/configuration.py`，运行中的字段以设置中心返回为准。
 
-当前注册表共 151 项：141 项 Settings 与 10 项运行时配置；评分配置含 8 个权重和 6 个标量。表中默认值均来自代码/项目默认，不导出环境凭据。
+当前注册表共 165 项：155 项 Settings 与 10 项运行时配置；评分配置含 8 个权重和 6 个标量。表中默认值均来自代码/项目默认，不导出环境凭据。
+
+ASR 设备值只选择推理设备，不安装 GPU 依赖；CPU 版 Torch 无法因填写 `cuda` 而使用 GPU。Portable 的 `--torch-runtime` 为独立安装操作，选择保存在 `config/torch-runtime.json`，不增加业务注册表字段。安装、离线 wheel 和实际设备诊断见[CUDA 使用说明](usage.md#cuda-安装与实际设备确认)。
 
 业务默认来自环境或项目配置；Web 覆盖以原键保存在 AppSetting。保存先整体校验，再在单一事务中提交；revision 防止旧表单覆盖。字段缺省保持原值，reset 删除覆盖并恢复环境/项目默认；凭据空白保持，clear 明确清空并阻止环境回退。
 
@@ -22,8 +24,8 @@
 | `ffmpeg_path` | FFmpeg 程序路径 | system/global | ffmpeg | string；不限..不限 | database/immediate | `app/analysis/audio.py:158`、`app/clipping/core.py:371`、`app/clipping/core.py:959`、`app/clipping/core.py:1011`、`app/clipping/core.py:1206`、`app/clipping/cover.py:64`、`app/pipeline/collection.py:242`、`app/pipeline/collection.py:286`、`app/pipeline/collection.py:435`、`app/recording/recorder.py:482`、`app/analysis/transcription/audio_normalization.py:40`、`app/analysis/transcription/audio_normalization.py:109`、`app/analysis/transcription/backends.py:913`、`app/web/services/transcripts.py:240` |
 | `ffprobe_path` | FFprobe 程序路径 | system/global | ffprobe | string；不限..不限 | database/immediate | `app/clipping/core.py:155`、`app/clipping/cover.py:132`、`app/pipeline/collection.py:340`、`app/analysis/transcription/backends.py:78`、`app/web/services/transcripts.py:288` |
 | `segment_duration_s` | 录制分段目标时长 | recording/global | 300 | integer；5..600 | database/next_recording | `app/clipping/core.py:458`、`app/recording/recorder.py:497`、`app/recording/recorder.py:576`、`app/pipeline/workers/analyze.py:788`、`app/pipeline/workers/analyze.py:1136`、`app/pipeline/workers/analyze.py:1229` |
-| `preferred_stream_protocol` | 首选直播流协议 | recording/global | hls | string；['hls', 'flv'] | database/next_recording | `app/commands/record.py:121`、`app/recording/recorder.py:388` |
-| `stream_quality` | 直播流画质编号 | recording/global | 10000 | integer；不限..不限 | database/next_recording | `app/commands/record.py:120`、`app/recording/recorder.py:383` |
+| `preferred_stream_protocol` | 同画质首选直播流协议 | recording/global | hls | string；['hls', 'flv'] | database/next_recording | `app/recording/recorder.py:520` |
+| `stream_quality` | 直播流画质上限编号 | recording/global | 10000 | integer；1..不限 | database/next_recording | `app/sources/bilibili/source.py:83` |
 | `reconnect_max_backoff_s` | 重连最长退避 | recording/global | 30 | integer；1..不限 | database/next_recording | `app/recording/recorder.py:340`、`app/sources/bilibili/danmaku.py:309` |
 | `live_poll_interval_s` | 直播状态检查间隔 | recording/global | 15 | integer；5..不限 | database/next_poll | `app/pipeline/live_monitor.py:118`、`app/recording/recorder.py:266` |
 | `room_metadata_refresh_interval_s` | 直播标题刷新间隔 | recording/global | 30 | integer；5..3600 | database/next_recording | `app/recording/metadata.py:84`、`app/recording/recorder.py:219` |
@@ -39,17 +41,24 @@
 | `recording_pipeline_enabled` | 录制后自动转写与分析 | recording/global | True | boolean；不限..不限 | database/next_recording | `app/core/settings_store.py:127`、`app/core/settings_store.py:133`、`app/web/services/settings.py:27`、`app/web/services/settings.py:33` |
 | `require_authorization` | 要求直播间授权 | system/global | True | boolean；不限..不限 | database/immediate | `app/commands/record.py:44`、`app/commands/record.py:163`、`app/web/services/rooms.py:207`、`app/web/services/rooms.py:274`、`app/web/services/rooms.py:286`、`app/web/services/rooms.py:648`、`app/web/services/schedules.py:62` |
 | `bilibili_cookie` | Bilibili Cookie | system/global | 不回显 | string；不限..不限 | database/immediate | `app/core/cookie.py:5`、`app/core/cookie.py:19`、`app/web/login_handler.py:133`、`app/web/routers/auth.py:71` |
-| `whisper_model` | Whisper 模型 | asr/global | small | string；不限..不限 | database/next_task | `app/analysis/model_pool.py:32`、`app/analysis/transcription/backends.py:735`、`app/analysis/transcription/backends.py:737` |
-| `whisper_device` | Whisper 默认设备 | asr/global | cpu | string；不限..不限 | database/next_task | `app/analysis/model_pool.py:34`、`app/analysis/transcription/backends.py:188`、`app/analysis/transcription/backends.py:234`、`app/analysis/transcription/backends.py:241`、`app/analysis/transcription/backends.py:258`、`app/analysis/transcription/backends.py:738` |
-| `whisper_compute_type` | Whisper 计算精度 | asr/global | int8 | string；不限..不限 | database/next_task | `app/analysis/model_pool.py:33`、`app/analysis/transcription/backends.py:739` |
+| `whisper_model` | Whisper 模型 | asr/global | small | string；不限..不限 | database/next_task | `app/analysis/model_pool.py`、`app/analysis/transcription/backends.py:735`、`app/analysis/transcription/backends.py:737` |
+| `whisper_device` | Whisper 默认设备 | asr/global | cpu | string；不限..不限 | database/next_task | `app/analysis/model_pool.py`、`app/analysis/transcription/backends.py:188`、`app/analysis/transcription/backends.py:234`、`app/analysis/transcription/backends.py:241`、`app/analysis/transcription/backends.py:258`、`app/analysis/transcription/backends.py:738` |
+| `whisper_compute_type` | Whisper 计算精度 | asr/global | int8 | string；不限..不限 | database/next_task | `app/analysis/model_pool.py`、`app/analysis/transcription/backends.py:739` |
 | `asr_resource_policy` | 模型资源不足处理 | asr/global | warn | string；['strict', 'warn'] | database/next_task | `app/analysis/transcription/backends.py:829` |
-| `asr_primary` | ASR 主引擎 | asr/global | funasr_nano | string；['funasr_nano', 'paraformer', 'whisper'] | database/next_task | `app/analysis/model_pool.py:36`、`app/analysis/model_pool.py:162`、`app/analysis/model_pool.py:166`、`app/analysis/model_pool.py:173`、`app/analysis/transcription/pipeline.py:140`、`app/analysis/transcription/pipeline.py:280` |
-| `asr_sensevoice` | 加载 SenseVoice 辅助模型 | asr/global | True | boolean；不限..不限 | database/next_task | `app/analysis/model_pool.py:37`、`app/analysis/model_pool.py:171`、`app/analysis/transcription/backends.py:139`、`app/pipeline/workers/analyze.py:1325` |
-| `asr_funasr_review` | FunASR 低质量复核 | asr/global | True | boolean；不限..不限 | database/next_task | `app/analysis/model_pool.py:39`、`app/analysis/model_pool.py:173`、`app/analysis/transcription/backends.py:140`、`app/analysis/transcription/pipeline.py:243` |
-| `asr_fallback_whisper` | Whisper 兜底 | asr/global | True | boolean；不限..不限 | database/next_task | `app/analysis/model_pool.py:40`、`app/analysis/model_pool.py:175`、`app/analysis/transcription/pipeline.py:88` |
-| `asr_review_risk_threshold` | 复核风险阈值 | asr/global | 0.65 | number；不限..不限 | database/next_task | `app/analysis/transcription/pipeline.py:91` |
-| `asr_sensevoice_enabled` | 使用 SenseVoice 辅助特征 | asr/global | True | boolean；不限..不限 | database/next_task | `app/analysis/model_pool.py:38`、`app/analysis/model_pool.py:171`、`app/pipeline/workers/analyze.py:1325` |
-| `asr_vad_max_segment_s` | 语音活动切句上限 | asr/global | 30 | integer；5..120 | database/next_task | `app/analysis/model_pool.py:35`、`app/analysis/transcription/backends.py:259`、`app/analysis/transcription/backends.py:267`、`app/analysis/transcription/backends.py:281` |
+| `asr_primary` | ASR 主引擎 | asr/global | funasr_nano | string；['funasr_nano', 'paraformer', 'whisper', 'openai_compatible'] | database/next_task | `app/analysis/model_pool.py`、`app/analysis/model_pool.py`、`app/analysis/model_pool.py`、`app/analysis/model_pool.py`、`app/analysis/transcription/pipeline.py`、`app/analysis/transcription/pipeline.py` |
+| `asr_remote_base_url` | 远程转写基础地址 | asr/global | 空 | HTTP(S)，无查询参数、凭据和片段 | database/next_task | `app/analysis/transcription/remote.py` |
+| `asr_remote_api_key` | 远程转写密钥 | asr/global | 空 | 敏感字段，不回显 | database/next_task | `app/analysis/transcription/remote.py` |
+| `asr_remote_model` | 远程模型 ID | asr/global | 空 | 启用远程时必填 | database/next_task | `app/analysis/transcription/remote.py` |
+| `asr_remote_language` | 远程语言 | asr/global | 空 | ISO 639 语言码；空为自动 | database/next_task | `app/analysis/transcription/remote.py` |
+| `asr_remote_response_format` | 远程响应格式 | asr/global | json | json/verbose_json | database/next_task | `app/analysis/transcription/remote.py` |
+| `asr_remote_timeout_s` | 远程请求超时 | asr/global | 120.0 | number；1..600 | database/next_task | `app/analysis/transcription/remote.py` |
+| `asr_remote_chunk_s` | 远程分块秒数 | asr/global | 300 | integer；1..600 | database/next_task | `app/analysis/transcription/remote.py` |
+| `asr_sensevoice` | 加载 SenseVoice 辅助模型 | asr/global | True | boolean；不限..不限 | database/next_task | `app/analysis/model_pool.py`、`app/analysis/model_pool.py`、`app/analysis/transcription/backends.py:139`、`app/pipeline/workers/analyze.py:1325` |
+| `asr_funasr_review` | FunASR 低质量复核 | asr/global | True | boolean；不限..不限 | database/next_task | `app/analysis/model_pool.py`、`app/analysis/model_pool.py`、`app/analysis/transcription/backends.py:140`、`app/analysis/transcription/pipeline.py` |
+| `asr_fallback_whisper` | Whisper 兜底 | asr/global | True | boolean；不限..不限 | database/next_task | `app/analysis/model_pool.py`、`app/analysis/model_pool.py`、`app/analysis/transcription/pipeline.py` |
+| `asr_review_risk_threshold` | 复核风险阈值 | asr/global | 0.65 | number；不限..不限 | database/next_task | `app/analysis/transcription/pipeline.py` |
+| `asr_sensevoice_enabled` | 使用 SenseVoice 辅助特征 | asr/global | True | boolean；不限..不限 | database/next_task | `app/analysis/model_pool.py`、`app/analysis/model_pool.py`、`app/pipeline/workers/analyze.py:1325` |
+| `asr_vad_max_segment_s` | 语音活动切句上限 | asr/global | 30 | integer；5..120 | database/next_task | `app/analysis/model_pool.py`、`app/analysis/transcription/backends.py:259`、`app/analysis/transcription/backends.py:267`、`app/analysis/transcription/backends.py:281` |
 | `asr_task_max_concurrency` | 同时转写任务数 | asr/global | 1 | integer；1..8 | database/next_poll | `app/core/settings_store.py:155`、`app/core/settings_store.py:164`、`app/web/services/settings.py:29`、`app/web/services/settings.py:39`、`app/analysis/model_pool.py`（按角色动态读取） |
 | `asr_primary_device` | 主引擎设备 | asr/global | cpu | string；不限..不限 | database/next_task | `app/analysis/transcription/backends.py:188`、`app/analysis/transcription/backends.py:258`、`app/analysis/model_pool.py`（按角色动态读取） |
 | `asr_auxiliary_device` | 辅助引擎设备 | asr/global | cpu | string；不限..不限 | database/next_task | `app/analysis/transcription/backends.py:234`、`app/analysis/transcription/backends.py:241`、`app/analysis/model_pool.py`（按角色动态读取） |
@@ -63,7 +72,7 @@
 | `asr_auxiliary_keep_loaded` | 辅助引擎模型常驻 | asr/global | False | boolean；不限..不限 | database/next_poll | `app/analysis/model_pool.py`（按角色动态读取） |
 | `asr_review_keep_loaded` | 复核引擎模型常驻 | asr/global | False | boolean；不限..不限 | database/next_poll | `app/analysis/model_pool.py`（按角色动态读取） |
 | `asr_fallback_keep_loaded` | 兜底引擎模型常驻 | asr/global | False | boolean；不限..不限 | database/next_poll | `app/analysis/model_pool.py`（按角色动态读取） |
-| `asr_model_idle_unload_seconds` | 非驻留模型空闲卸载时间（0 关闭） | asr/global | 900 | integer；0..86400 | database/next_poll | `app/analysis/model_pool.py:109` |
+| `asr_model_idle_unload_seconds` | 非驻留模型空闲卸载时间（0 关闭） | asr/global | 900 | integer；0..86400 | database/next_poll | `app/analysis/model_pool.py` |
 | `asr_preload_on_start` | 启动预加载模型 | asr/global | False | boolean；不限..不限 | database/restart | `app/pipeline/task_worker.py:244` |
 | `asr_inference_base_timeout_s` | ASR 加载及推理基础超时（秒） | asr/global | 600 | integer；30..7200 | database/next_task | `app/analysis/transcription/isolated.py` |
 | `asr_inference_timeout_rtf` | 每秒音频追加预算（秒） | asr/global | 10 | number；1..100 | database/next_task | `app/analysis/transcription/isolated.py` |
@@ -108,13 +117,23 @@
 | `near_live_asr_priority` | 实时转写优先级 | highlights/global | 50 | integer；0..1000 | database/next_task | `app/pipeline/scheduler.py:86`、`app/pipeline/workers/analyze.py:831`、`app/pipeline/workers/transcribe.py:589` |
 | `background_asr_priority` | 历史转写优先级 | highlights/global | 100 | integer；0..1000 | database/next_task | `app/pipeline/scheduler.py:95`、`app/pipeline/workers/analyze.py:832`、`app/pipeline/workers/transcribe.py:590` |
 | `auto_publish_threshold` | 自动发布分数阈值 | publishing/new_room_default | 0.8 | number；0.0..1.0 | database/new_room | `app/commands/record.py:60`、`app/pipeline/scheduler.py:65`、`app/pipeline/scheduler.py:308`、`app/web/services/dashboard.py:73`、`app/web/services/rooms.py:674`、`app/web/services/rooms.py:703` |
-| `clip_loudnorm` | 响度标准化 | output/global | True | boolean；不限..不限 | database/next_task | `app/clipping/models.py:52` |
-| `clip_remove_silence` | 去除首尾静音 | output/global | False | boolean；不限..不限 | database/next_task | `app/clipping/models.py:53` |
-| `clip_vertical` | 竖屏输出 | output/global | False | boolean；不限..不限 | database/next_task | `app/clipping/models.py:54` |
-| `clip_subtitle` | 烧录字幕 | output/global | False | boolean；不限..不限 | database/next_task | `app/clipping/models.py:55` |
-| `clip_max_duration_s` | 成片时长上限 | output/global | 180 | integer；5..900 | database/next_task | `app/analysis/clip_scorer.py:93`、`app/clipping/models.py:56`、`app/web/routers/review_router.py:268` |
-| `clip_video_crf` | 视频 CRF 质量（越小越清晰） | output/global | 20 | integer；0..51 | database/next_task | `app/clipping/models.py:57` |
-| `clip_preset` | 视频编码速度档 | output/global | veryfast | string；['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'] | database/next_task | `app/clipping/models.py:58` |
+| `clip_loudnorm` | 响度标准化 | output/global | True | boolean；不限..不限 | database/next_task | `app/clipping/models.py:116` |
+| `clip_remove_silence` | 去除首尾静音 | output/global | False | boolean；不限..不限 | database/next_task | `app/clipping/models.py:117` |
+| `clip_vertical` | 竖屏输出 | output/global | False | boolean；不限..不限 | database/next_task | `app/clipping/models.py:118` |
+| `clip_subtitle` | 烧录字幕 | output/global | False | boolean；不限..不限 | database/next_task | `app/clipping/models.py:119` |
+| `clip_danmaku` | 烧录弹幕 | output/global | False | boolean | database/next_task | `app/clipping/models.py:120` |
+| `clip_danmaku_mode` | 弹幕显示模式 | output/global | scroll | scroll/top/bottom | database/next_task | `app/clipping/models.py:121` |
+| `clip_danmaku_font_size` | 弹幕字号（1080 高画面） | output/global | 36 | integer；12..120 | database/next_task | `app/clipping/models.py:122` |
+| `clip_danmaku_color` | 弹幕颜色 | output/global | FFFFFF | 六位 RGB 十六进制 | database/next_task | `app/clipping/models.py:123` |
+| `clip_danmaku_opacity` | 弹幕不透明度 | output/global | 0.85 | number；0..1 | database/next_task | `app/clipping/models.py:124` |
+| `clip_danmaku_duration_s` | 弹幕显示秒数 | output/global | 6.0 | number；2..20 | database/next_task | `app/clipping/models.py:125` |
+| `clip_danmaku_max_lines` | 弹幕最大行数 | output/global | 8 | integer；1..20 | database/next_task | `app/clipping/models.py:126` |
+| `clip_max_duration_s` | 成片时长上限 | output/global | 180 | integer；5..900 | database/next_task | `app/analysis/clip_scorer.py:93`、`app/clipping/models.py:127`、`app/web/routers/review_router.py:268` |
+| `clip_video_crf` | 视频 CRF 质量（越小越清晰） | output/global | 20 | integer；0..51 | database/next_task | `app/clipping/models.py:128` |
+| `clip_preset` | 视频编码速度档 | output/global | veryfast | string；['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'] | database/next_task | `app/clipping/models.py:129` |
+| `clip_video_encoder` | 视频编码设备（CPU 关闭硬件加速） | output/global | cpu | cpu/nvidia/intel/amd | database/next_task | `app/clipping/models.py:130` |
+| `clip_hardware_quality` | 硬件编码质量值 | output/global | 23 | integer；1..51 | database/next_task | `app/clipping/models.py:131` |
+| `clip_hardware_preset` | 硬件编码速度档 | output/global | balanced | speed/balanced/quality | database/next_task | `app/clipping/models.py:132` |
 | `threshold_learning_min_samples` | 阈值学习最少反馈 | highlights/global | 10 | integer；3..不限 | database/next_task | `app/analysis/threshold_learning.py:130`、`app/analysis/threshold_learning.py:192`、`app/analysis/threshold_learning.py:217`、`app/analysis/threshold_learning.py:224`、`app/analysis/threshold_learning.py:225` |
 | `threshold_learning_max_delta` | 阈值学习单次调整上限 | highlights/global | 0.1 | number；0.01..0.3 | database/next_task | `app/analysis/threshold_learning.py:159` |
 | `schedule_check_interval_s` | 预约检查间隔 | recording/global | 30 | integer；10..300 | database/next_poll | 经统一配置快照读取 |

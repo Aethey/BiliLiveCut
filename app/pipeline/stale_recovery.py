@@ -21,7 +21,7 @@ from app.db.entities import (
 from app.db.entities import SegmentStatus as OldStatus
 from app.db.session import get_session
 from app.pipeline.lifecycle import now_utc
-from app.pipeline.stage_result import make_stage_key, release_lease
+from app.pipeline.stage_result import enqueue_next, make_stage_key, release_lease
 
 
 def resume_stage(failed_stage: str | None) -> str:
@@ -73,6 +73,7 @@ def recover_stale() -> None:
                         TaskStatus.ANALYZING,
                         TaskStatus.RENDERING,
                         TaskStatus.PUBLISHING,
+                        TaskStatus.CANCELLING,
                     ]
                 ),
             )
@@ -87,7 +88,26 @@ def recover_stale() -> None:
         ]
 
         published_skipped = 0
+        cleanup_pending = 0
         for task in stale:
+            if task.stage == TaskStatus.CANCELLING:
+                from app.analysis.transcription.process_pool import get_process_pool
+                from app.pipeline.lifecycle import _WORKER_ID, execution_active
+
+                if (
+                    task.claimed_by == _WORKER_ID
+                    and task.lease_token
+                    and (
+                        execution_active(task.id, task.lease_token)
+                        or get_process_pool().has_active_task(task.id, task.lease_token)
+                    )
+                ):
+                    cleanup_pending += 1
+                    continue
+                enqueue_next(task, TaskStatus.CANCELLED)
+                db.add(task)
+                logger.info("stale_cancellation_settled task={} session={}", task.id, task.session_id)
+                continue
             # 发布任务特殊处理: 检查 UploadAttempt
             if task.stage == TaskStatus.PUBLISHING and task.clip_id is not None:
                 last_attempt = db.exec(
@@ -151,7 +171,12 @@ def recover_stale() -> None:
                 db.add(task)
         if stale:
             skipped_msg = f" (跳过 {published_skipped} 个发布任务)" if published_skipped else ""
-            logger.warning("recover_stale: 回退 {} 个心跳超时任务。{}", len(stale) - published_skipped, skipped_msg)
+            logger.warning(
+                "recover_stale: 回退或结算 {} 个心跳超时任务。{} 等待取消资源收尾={}",
+                len(stale) - published_skipped - cleanup_pending,
+                skipped_msg,
+                cleanup_pending,
+            )
         db.commit()
 
 

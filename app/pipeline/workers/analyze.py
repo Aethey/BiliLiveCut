@@ -21,6 +21,7 @@ from sqlmodel import Session, select
 
 from app.analysis import audio as audio_mod
 from app.analysis.keywords import match_keywords
+from app.analysis.room_config import room_highlight_keywords
 from app.analysis.source_policy import session_danmaku_lag_s
 from app.analysis.transcription.content import refined_transcript_text
 from app.core.config import settings
@@ -453,8 +454,7 @@ def commit_highlight(lease: TaskLease, compute_result: dict[str, Any], ms: int) 
 
 def _commit_event_analysis(lease: TaskLease, raw_results: list[object], ms: int) -> None:
     """在同一租约下重算过期证据，候选与任务承接原子提交。"""
-    from app.analysis.clip_scorer import compute_hotspot_clip_draft, pending_hotspot_event_ids
-    from app.analysis.event_enricher import compute_event_enrichment
+    from app.analysis.clip_scorer import pending_hotspot_event_ids
 
     results = raw_results
     for attempt in range(2):
@@ -499,9 +499,44 @@ def _commit_event_analysis(lease: TaskLease, raw_results: list[object], ms: int)
         # 计算必须在事务之外；最多立即重算一次，持续变化交给原有有界重试。
         results = []
         for event_id in pending_hotspot_event_ids(session_id):
+            result = _compute_event_clip_result(event_id)
+            if result is not None:
+                results.append(result)
+
+
+def _compute_event_clip_result(
+    event_id: int,
+    *,
+    audio_features: audio_mod.AudioFeatures | None = None,
+    audio_segment_id: int | None = None,
+) -> dict[str, object] | None:
+    """在事务外补全并评分；证据变化最多立即重算一次，持续变化交给任务重试。"""
+    from app.analysis.clip_scorer import compute_hotspot_clip_draft
+    from app.analysis.event_enricher import (
+        EventEvidenceChangedError,
+        EventTargetUnavailableError,
+        compute_event_enrichment,
+    )
+
+    for attempt in range(2):
+        try:
             enrichment = compute_event_enrichment(event_id)
-            draft = compute_hotspot_clip_draft(event_id, enrichment=enrichment)
-            results.append({"event_id": event_id, "enrichment": enrichment, "clip_draft": draft})
+            draft = compute_hotspot_clip_draft(
+                event_id,
+                enrichment=enrichment,
+                audio_features=audio_features,
+                audio_segment_id=audio_segment_id,
+            )
+        except EventTargetUnavailableError as exc:
+            _logger.info("event_analysis_target_changed: event_id=%s error=%s", event_id, exc)
+            return None
+        except EventEvidenceChangedError:
+            if attempt == 1:
+                raise
+            _logger.info("event_analysis_recompute: event_id=%s", event_id)
+        else:
+            return {"event_id": event_id, "enrichment": enrichment, "clip_draft": draft}
+    raise RuntimeError("事件重算循环未返回结果")
 
 
 def _score_pending_hotspot_events(
@@ -511,25 +546,17 @@ def _score_pending_hotspot_events(
     audio_segment_id: int,
 ) -> list[dict[str, object]]:
     """在事务外依次补全并评分当前场次全部待处理的 confirmed 事件。"""
-    from app.analysis.clip_scorer import compute_hotspot_clip_draft, pending_hotspot_event_ids
-    from app.analysis.event_enricher import compute_event_enrichment
+    from app.analysis.clip_scorer import pending_hotspot_event_ids
 
     results: list[dict[str, object]] = []
     for event_id in pending_hotspot_event_ids(session_id):
-        enrichment = compute_event_enrichment(event_id)
-        clip_draft = compute_hotspot_clip_draft(
+        result = _compute_event_clip_result(
             event_id,
-            enrichment=enrichment,
             audio_features=audio_features,
             audio_segment_id=audio_segment_id,
         )
-        results.append(
-            {
-                "event_id": event_id,
-                "enrichment": enrichment,
-                "clip_draft": clip_draft,
-            }
-        )
+        if result is not None:
+            results.append(result)
     return results
 
 
@@ -564,6 +591,14 @@ def _commit_event_clip_results(
             raise ValueError("event_clip_results 包含无效 EventEnrichmentDraft")
         if clip_draft.session_id != task.session_id:
             raise ValueError("event_clip_results 与任务场次不一致")
+        if enrichment is not None and (
+            enrichment.event_id != clip_draft.hotspot_event_id
+            or enrichment.bundle_fingerprint != clip_draft.bundle_fingerprint
+        ):
+            raise ValueError("事件补全与成片评分必须来自同一事件和证据快照")
+        current = db.get(HotspotEvent, clip_draft.hotspot_event_id)
+        if current is None or current.status != HotspotStatus.CONFIRMED or current.candidate_id is not None:
+            continue
         if enrichment is not None and not commit_event_enrichment(db, enrichment):
             continue
         event = validate_event_clip_draft(db, clip_draft)
@@ -650,8 +685,7 @@ def _unscored_confirmed_event_ids(
 
 def score_hotspot_event(event_id: int) -> HighlightCandidate | None:
     """同步补全并评分一个 confirmed 热点，达到房间阈值时创建候选。"""
-    from app.analysis.clip_scorer import compute_hotspot_clip_draft, event_clip_score_is_current
-    from app.analysis.event_enricher import compute_event_enrichment
+    from app.analysis.clip_scorer import EventClipDraft, event_clip_score_is_current
 
     with get_session() as db:
         current = db.get(HotspotEvent, event_id)
@@ -661,9 +695,16 @@ def score_hotspot_event(event_id: int) -> HighlightCandidate | None:
             return db.get(HighlightCandidate, current.candidate_id)
         if event_clip_score_is_current(db, current):
             return None
-    enrichment = compute_event_enrichment(event_id)
-    clip_draft = compute_hotspot_clip_draft(event_id, enrichment=enrichment)
+    result = _compute_event_clip_result(event_id)
+    if result is None:
+        return None
+    clip_draft = result["clip_draft"]
+    if not isinstance(clip_draft, EventClipDraft):
+        raise TypeError("事件评分结果缺少 EventClipDraft")
     with get_session() as db:
+        connection = db.connection()
+        if connection.dialect.name == "sqlite":
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
         event = db.get(HotspotEvent, event_id)
         if event is None:
             raise ValueError(f"HotspotEvent 不存在: event_id={event_id}")
@@ -675,7 +716,7 @@ def score_hotspot_event(event_id: int) -> HighlightCandidate | None:
         created, _processed = _commit_event_clip_results(
             db,
             synthetic_task,
-            [{"event_id": event_id, "enrichment": enrichment, "clip_draft": clip_draft}],
+            [result],
         )
         if not created:
             return None
@@ -1332,7 +1373,9 @@ def _score_segment_draft(
     lag_s = session_danmaku_lag_s(session_id)
     danmaku_start_ts, danmaku_end_ts = align_danmaku_window(analysis_start_ts, analysis_end_ts, lag_s=lag_s)
     semantic_text_available = bool(judgement_text.strip())
-    kw_score, kw_hits = match_keywords(judgement_text) if semantic_text_available else (0.0, [])
+    kw_score, kw_hits = (
+        match_keywords(judgement_text, room_highlight_keywords(room)) if semantic_text_available else (0.0, [])
+    )
     from app.analysis.source_policy import session_has_danmaku
 
     has_danmaku = session_has_danmaku(session_id, danmaku_start_ts, danmaku_end_ts)

@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -20,6 +21,10 @@ from dataclasses import dataclass, field
 from loguru import logger
 
 from app.core.sanitize import safe_exception_summary
+
+_collector_lock = threading.Lock()
+_collector_thread: threading.Thread | None = None
+_collector_stop = threading.Event()
 
 
 @dataclass
@@ -211,23 +216,43 @@ def snapshot() -> MetricsSnapshot:
 def start_metrics_collector(interval_s: float = 60.0) -> None:
     """启动后台指标采集线程,周期性调用 ``snapshot()`` 填充历史记录。
 
-    在应用启动时调用一次即可。守护线程随进程退出自动终止。
+    重复启动复用同一线程，应用关闭时通过 stop_metrics_collector 确认收尾。
 
     :param interval_s: 采集间隔 (秒),默认 60 秒。
     """
-    import threading
+    global _collector_thread, _collector_stop
+    if interval_s <= 0:
+        raise ValueError("指标采集间隔必须大于 0")
+    with _collector_lock:
+        if _collector_thread is not None and _collector_thread.is_alive():
+            return
+        _collector_stop = threading.Event()
+        stop = _collector_stop
 
-    def _collect_loop() -> None:
-        while True:
-            try:
-                snapshot()
-            except Exception as exc:  # noqa: BLE001 — 采集线程隔离边界
-                logger.opt(exception=exc).error("运行指标采集失败")
-            time.sleep(interval_s)
+        def _collect_loop() -> None:
+            while not stop.is_set():
+                try:
+                    snapshot()
+                except Exception as exc:  # noqa: BLE001 — 采集线程隔离边界
+                    logger.opt(exception=exc).error("运行指标采集失败")
+                stop.wait(interval_s)
 
-    t = threading.Thread(target=_collect_loop, daemon=True, name="metrics-collector")
-    t.start()
-    logger.info("metrics collector started, interval={}s", interval_s)
+        _collector_thread = threading.Thread(target=_collect_loop, daemon=True, name="metrics-collector")
+        _collector_thread.start()
+        logger.info("metrics collector started, interval={}s", interval_s)
+
+
+def stop_metrics_collector(timeout_s: float = 5.0) -> None:
+    """停止指标采样并确认线程退出；超时保留线程身份并明确报错。"""
+    global _collector_thread
+    with _collector_lock:
+        if _collector_thread is None:
+            return
+        _collector_stop.set()
+        _collector_thread.join(timeout=timeout_s)
+        if _collector_thread.is_alive():
+            raise RuntimeError("指标采集线程未在关闭期限内退出")
+        _collector_thread = None
 
 
 def get_history(limit: int = 60) -> list[dict]:

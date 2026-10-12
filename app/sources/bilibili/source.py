@@ -27,6 +27,7 @@ from app.sources.bilibili.client import (
     BilibiliError,
     BilibiliLiveClient,
     BilibiliRateLimitError,
+    BilibiliStreamUnavailable,
     HttpErrorType,
     parse_room_id,
 )
@@ -49,6 +50,8 @@ class BilibiliSource:
             if exc.error_type in {HttpErrorType.COOKIE_EXPIRED, HttpErrorType.ACCOUNT_BANNED}:
                 raise SourceAuthenticationError("Bilibili 登录态失效或账号访问被拒绝，请更新平台凭据") from exc
             raise SourceRateLimited("Bilibili 风控或限流", retry_after=max(0.0, exc.retry_after_seconds)) from exc
+        except BilibiliStreamUnavailable as exc:
+            raise SourceTemporaryError("直播中但画质序列没有可用地址") from exc
         except BilibiliError as exc:
             raise SourceTemporaryError("Bilibili 接口暂时不可用") from exc
 
@@ -76,17 +79,25 @@ class BilibiliSource:
         return RoomSnapshot(status=status, title=info.title, uploader_name=info.uploader_name)
 
     async def get_streams(self, room: SourceRoom, preference: StreamPreference) -> list[StreamSpec]:
-        """Bilibili qn 仍取宿主既有设置；其数字只在此平台内排序。"""
+        """按宿主画质上限逐级取流；只在 Bilibili 内按 qn、同档协议偏好排序。"""
+        quality = settings.stream_quality
         async with self._client() as client:
-            streams = await client.get_streams(int(room.source_id), quality=settings.stream_quality)
-        streams.sort(key=lambda item: (item.protocol == preference.preferred_transport, item.quality), reverse=True)
+            streams = await client.get_streams(int(room.source_id), quality=quality)
+        streams = [item for item in streams if item.quality is None or item.quality <= quality]
+        streams.sort(
+            key=lambda item: (
+                item.quality if item.quality is not None else -1,
+                item.protocol == preference.preferred_transport,
+            ),
+            reverse=True,
+        )
         return [
             StreamSpec(
                 url=item.url,
                 transport=item.protocol,
                 container=item.format_name,
                 codec=item.codec_name or None,
-                quality_id=str(item.quality),
+                quality_id=str(item.quality) if item.quality is not None else None,
                 headers={
                     "Referer": "https://live.bilibili.com/",
                     "User-Agent": "Mozilla/5.0",

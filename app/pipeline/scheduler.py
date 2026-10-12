@@ -10,6 +10,7 @@ from sqlmodel import select
 
 from app.analysis.transcription.process_pool import ASRShutdownError
 from app.core.config import settings
+from app.core.process_control import ProcessShutdownError
 from app.core.runtime_settings import configured_entry
 from app.core.sanitize import safe_exception_summary
 from app.db.entities import (
@@ -25,7 +26,7 @@ from app.db.entities import SegmentStatus as OldStatus
 from app.db.session import get_session
 from app.pipeline.heartbeat import clear_heartbeat_if_own, start_heartbeat_thread
 from app.pipeline.lease import LeaseLostError, TaskLease, still_owns_lease
-from app.pipeline.lifecycle import _WORKER_ID, now_utc
+from app.pipeline.lifecycle import _WORKER_ID, finish_execution, now_utc, register_execution
 from app.pipeline.stage_result import (
     enqueue_next,
     mark_failed,
@@ -393,6 +394,7 @@ def execute_task(task_id: int, active_stage_val: str, lease_token: str | None = 
         lease = TaskLease(
             task_id=task_id, worker_id=_WORKER_ID, lease_token=lease_token, expected_stage=active_stage_val
         )
+        register_execution(lease.task_id, lease.lease_token)
 
         if active_stage_val == TaskStatus.TRANSCRIBING:
             run_transcribe(lease)
@@ -402,13 +404,16 @@ def execute_task(task_id: int, active_stage_val: str, lease_token: str | None = 
             run_render(lease)
         elif active_stage_val == TaskStatus.PUBLISHING:
             run_publish(lease)
-    except ASRShutdownError:
+    except (ASRShutdownError, ProcessShutdownError):
         with get_session() as db:
             if db.get_bind().dialect.name == "sqlite":
                 db.connection().exec_driver_sql("BEGIN IMMEDIATE")
             task = db.get(SegmentTask, task_id)
             if task is not None and lease is not None and still_owns_lease(db, lease):
+                attempts = task.attempts
                 enqueue_next(task, resume_stage(active_stage_val))
+                # 服务关闭不增加失败次数，也不能清零先前已有的重试计数。
+                task.attempts = attempts
                 db.add(task)
         _logger.info(
             "execution_shutdown_requeued task=%s stage=%s worker=%s lease=%s",
@@ -418,8 +423,18 @@ def execute_task(task_id: int, active_stage_val: str, lease_token: str | None = 
             lease_token,
         )
     except LeaseLostError:
-        _logger.warning(
-            "lease_lost_during_execution: task=%s stage=%s worker=%s lease=%s",
+        with get_session() as db:
+            task = db.get(SegmentTask, task_id)
+            cancelling = (
+                task is not None
+                and task.stage == TaskStatus.CANCELLING
+                and task.claimed_by == _WORKER_ID
+                and task.lease_token == lease_token
+            )
+        log = _logger.info if cancelling else _logger.warning
+        log(
+            "%s: task=%s stage=%s worker=%s lease=%s",
+            "execution_cancel_requested" if cancelling else "lease_lost_during_execution",
             task_id,
             active_stage_val,
             _WORKER_ID,
@@ -452,3 +467,36 @@ def execute_task(task_id: int, active_stage_val: str, lease_token: str | None = 
             from app.core.resource_budget import release_resources
 
             release_resources(**task_cost)
+        if lease is not None:
+            finish_execution(lease.task_id, lease.lease_token)
+            settle_cancellation(lease)
+
+
+def settle_cancellation(lease: TaskLease) -> None:
+    """仅由原租约在执行和资源清理结束后结算取消，不覆盖新所有者。"""
+    import logging
+
+    with get_session() as db:
+        if db.get_bind().dialect.name == "sqlite":
+            db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        task = db.get(SegmentTask, lease.task_id)
+        if (
+            task is None
+            or task.stage != TaskStatus.CANCELLING
+            or task.claimed_by != lease.worker_id
+            or task.lease_token != lease.lease_token
+        ):
+            return
+        cleanup_pending = False
+        if lease.expected_stage == TaskStatus.TRANSCRIBING:
+            from app.analysis.transcription.process_pool import get_process_pool
+
+            cleanup_pending = get_process_pool().has_active_task(lease.task_id, lease.lease_token)
+        if cleanup_pending:
+            task.last_error = "取消仍在等待模型进程与 IPC 资源清理"
+            db.add(task)
+            logging.getLogger(__name__).error("cancellation_cleanup_pending task=%s", lease.task_id)
+            return
+        enqueue_next(task, TaskStatus.CANCELLED)
+        db.add(task)
+    logging.getLogger(__name__).info("execution_cancellation_settled task=%s worker=%s", lease.task_id, lease.worker_id)

@@ -6,12 +6,51 @@ import asyncio
 import json
 import time
 from datetime import UTC, datetime
+from threading import Event
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.web.services.background_jobs import JobContext, WebJobManager, _decode_job, get_job
+
+
+@pytest.mark.parametrize("cancellable", [False, True])
+async def test_shutdown_timeout_keeps_handler_and_blocks_new_work(temp_db: None, cancellable: bool) -> None:
+    manager = WebJobManager(max_concurrency=1)
+    await manager.start()
+    entered = Event()
+    release = Event()
+
+    def handler(context: JobContext, payload: dict[str, object]) -> dict[str, bool]:
+        entered.set()
+        assert release.wait(5)
+        return {"finished": True}
+
+    manager.register("shutdown_test", handler)
+    job = await manager.enqueue(
+        "shutdown_test", {}, label="shutdown", owner="tester", cancellable_while_running=cancellable
+    )
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        with pytest.raises(RuntimeError, match="未确认退出"):
+            await manager.stop(timeout_s=0.01)
+        state = get_job(job["id"])
+        assert state is not None
+        assert state["status"] == ("cancelling" if cancellable else "running")
+        assert job["id"] in manager._tasks
+        assert not manager._tasks[job["id"]].cancelled()
+        assert job["id"] in manager._cancel_events
+        with pytest.raises(RuntimeError, match="正在关闭"):
+            await manager.enqueue("shutdown_test", {}, label="late", owner="tester")
+        with pytest.raises(RuntimeError, match="正在关闭"):
+            manager.retry(job["id"], "tester")
+        release.set()
+        result = await _wait_for_status(job["id"], {"cancelled" if cancellable else "succeeded"})
+        assert result["finished_at"] is not None
+    finally:
+        release.set()
+        await manager.stop()
 
 
 async def test_background_failure_persists_safe_exception_chain(temp_db: None) -> None:

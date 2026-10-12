@@ -104,7 +104,12 @@ def classify_ffmpeg_error(return_code: int, stderr: str) -> FfmpegErrorType:
         return FfmpegErrorType.INVALID_ARGUMENT
 
     # TRANSIENT_NETWORK: 瞬时网络错误
-    if any(
+    transport_eof = any(
+        any(tag in line for tag in ("[http @", "[https @", "[tls @", "[tcp @"))
+        and any(message in line for message in ("end of file", "unexpected eof", "error in the pull function"))
+        for line in stderr_lower.splitlines()
+    )
+    if transport_eof or any(
         keyword in stderr_lower
         for keyword in (
             "connection refused",

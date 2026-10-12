@@ -200,6 +200,7 @@ async function loadRooms() {
           </label>
           <label>高光关键词（换行分隔）
             <textarea id="hk-${r.id}" rows="2" style="width:100%;font-size:11px">${esc((r.room_config.highlight_keywords||[]).join("\n"))}</textarea>
+            <span class="muted">与全局词表合并，仅在当前房间的后续热点检测和高光评分中生效；已有素材不会自动重算。</span>
           </label>
           <label>人工纠错词典（每行“错误词=正确词”）
             <textarea id="al-${r.id}" rows="3" style="width:100%;font-size:11px">${esc(Object.entries(r.room_config.aliases||{}).map(([k,v])=>`${k}=${v}`).join("\n"))}</textarea>

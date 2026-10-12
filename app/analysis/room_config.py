@@ -112,6 +112,12 @@ def effective_hotwords(config: dict[str, object]) -> list[str]:
     return list(dict.fromkeys(value.strip() for value in values if value.strip()))
 
 
+def room_highlight_keywords(room: LiveRoom | None) -> tuple[str, ...]:
+    """读取当前房间已校验的额外高光关键词，供检测与评分共用。"""
+    config = load_room_config(room)
+    return tuple(_string_list(config["highlight_keywords"], name="highlight_keywords", limit=500))
+
+
 def learn_room_aliases(room: LiveRoom, aliases: dict[str, str]) -> dict[str, object]:
     """把人工转写纠错沉淀到当前直播间词典。"""
     validated = _alias_map(aliases, name="aliases")

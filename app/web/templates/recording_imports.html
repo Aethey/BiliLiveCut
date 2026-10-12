@@ -9,7 +9,7 @@
 <body class="imports-page">
   <header class="topbar">
     <a class="brand" href="/">BiliLiveCut</a>
-    <nav aria-label="页面导航"><a href="/">返回工作台</a><a href="/?tab=settings&amp;group=asr">本地模型设置</a><a href="/?tab=models">LLM 服务商</a></nav>
+    <nav aria-label="页面导航"><a href="/">返回工作台</a><a href="/?tab=settings&amp;group=asr">语音转写设置</a><a href="/?tab=models">LLM 服务商</a></nav>
   </header>
   <main class="imports-main">
     <div class="imports-heading">
@@ -49,13 +49,13 @@
         <h2>从文件到精彩片段</h2>
         <ol><li><strong>准备素材</strong><p>文件复制到运行 BiliLiveCut 的机器，保留你的原文件。</p></li>
           <li><strong>预处理</strong><p>检查媒体、按关键帧分段，统一弹幕时间轴。长视频可能需要数分钟。</p></li>
-          <li><strong>转写与分析</strong><p>本地模型完成语音转写，再按现有 LLM 配置整理文本、分析热点和总结整场，结果进入场次时间线。</p></li></ol>
+          <li><strong>转写与分析</strong><p>所选 ASR 引擎完成语音转写，再按现有 LLM 配置整理文本、分析热点和总结整场，结果进入场次时间线。</p></li></ol>
         <p class="hint">导入后可关闭页面，后台会继续处理。不会自动投稿；候选片段由你审核。</p>
         <details><summary>格式与存储说明</summary>
           <p>JSON 示例：</p><pre>{"comments":[{"offset_s":1.25,"text":"高能！"}]}</pre>
-          <p class="hint">XML 使用 B 站 d 节点的 p 属性秒数。字幕只作为文本事件，语音仍由本地模型转写。</p>
+          <p class="hint">XML 使用 B 站 d 节点的 p 属性秒数。字幕只作为文本事件，语音仍由所选 ASR 引擎转写。</p>
           <p class="hint">预处理需要额外一份视频大小加 256 MiB 的空间。成功后会删除上传副本，保留分析分段；未完成导入可以清理。时间线以导入时刻为原点，不代表原始开播日期。</p>
-          <p class="hint">LLM 沿用设置中心的服务商、开关和预算；原始音视频由本地引擎转写，转写文本及相关分析上下文可发送给所配置的 LLM。未配置服务商时沿用现有规则回退，整场 LLM 总结会提示生成失败，可在配置后重试。</p>
+          <p class="hint">LLM 沿用设置中心的服务商、开关和预算；选择远程 ASR 会上传标准化音频至所配转写服务，转写文本及相关分析上下文可发送给所配置的 LLM。未配置服务商时沿用现有规则回退，整场 LLM 总结会提示生成失败，可在配置后重试。</p>
         </details>
       </aside>
     </div>

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess as _subprocess
+
 import typer
 from rich.console import Console
 
@@ -165,9 +167,9 @@ def cmd_doctor(
         res = detect_resources()
         if res.gpu_available:
             vram = res.vram_total_mb / 1024
-            report("PASS", "GPU", f"可用 ({vram:.1f} GB VRAM)")
+            report("PASS", "GPU 硬件", f"NVIDIA ({vram:.1f} GB VRAM)；ASR 后端可用性另行检查")
         else:
-            report("WARN", "GPU", "未检测到 NVIDIA GPU (将使用 CPU 模式)")
+            report("WARN", "GPU 硬件", "nvidia-smi 未检测到 NVIDIA GPU；不会因此改写 ASR 设备配置")
     except Exception as exc:
         report("WARN", "GPU", safe_exception_summary(exc))
 
@@ -175,10 +177,43 @@ def cmd_doctor(
     asr_backend = _cfg.asr_primary
     report("PASS" if asr_backend != "none" else "WARN", "ASR 后端", asr_backend or "未配置")
 
+    # CUDA 配置、NVIDIA 硬件与推理后端的实际可用性是三个不同事实。
+    from app.core.asr_devices import probe_device
+
+    roles: list[tuple[str, str, str]] = []
+    if asr_backend in {"funasr_nano", "paraformer"}:
+        roles.append(("primary", "torch", _cfg.asr_primary_device))
+        if _cfg.asr_sensevoice and _cfg.asr_sensevoice_enabled:
+            roles.append(("auxiliary", "torch", _cfg.asr_auxiliary_device))
+        if asr_backend == "paraformer" and _cfg.asr_funasr_review:
+            roles.append(("review", "torch", _cfg.asr_review_device))
+    if asr_backend == "whisper":
+        roles.append(("fallback (Whisper 主引擎)", "ctranslate2", _cfg.asr_fallback_device))
+    elif _cfg.asr_fallback_whisper:
+        roles.append(("fallback", "ctranslate2", _cfg.asr_fallback_device))
+    cache: dict[tuple[str, str], dict[str, str | bool | None]] = {}
+    for role, backend, device in roles:
+        device = device or _cfg.whisper_device
+        try:
+            key = (backend, device)
+            if key not in cache:
+                cache[key] = probe_device(backend, device)
+            actual = cache[key]
+            detail = ", ".join(f"{key}={value}" for key, value in actual.items())
+            report(
+                "PASS" if actual["ok"] else ("FAIL" if device.startswith("cuda") else "WARN"),
+                f"ASR 设备 {role}",
+                detail,
+            )
+        except (OSError, ValueError, _subprocess.SubprocessError) as exc:
+            report("FAIL" if device.startswith("cuda") else "WARN", f"ASR 设备 {role}", safe_exception_summary(exc))
+
     # ── 模型目录
     configured_models = _os.environ.get("BLC_MODELS_DIR", "")
     model_dir = _Path(configured_models) if configured_models else None
-    if model_dir and model_dir.exists():
+    if asr_backend == "openai_compatible" and not _cfg.asr_fallback_whisper:
+        report("PASS", "模型目录", "远程转写且未启用本地回退，无需本地转写模型")
+    elif model_dir and model_dir.exists():
         report("PASS", "模型目录", str(model_dir))
     elif model_dir:
         report("WARN", "模型目录", "不存在")

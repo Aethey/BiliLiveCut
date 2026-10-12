@@ -3,7 +3,13 @@ import { $, api, esc } from "./common.js";
 
 const effects = { new_room: "新建房间时", next_task: "下一任务", next_recording: "下次录制", next_poll: "下次调度检查", immediate: "下一次读取", restart: "重启后", deployment: "部署配置" };
 const groups = { recording: "录制与自动化", asr: "本地语音模型", llm: "大模型与预算", trends: "网感采集", highlights: "高光与评分", review: "审核", output: "成片与编码", storage: "存储与清理", publishing: "上传与发布", notifications: "通知", system: "账号与系统" };
-const common = new Set(["recording_pipeline_enabled", "segment_duration_s", "stream_quality", "live_poll_interval_s", "recording_max_duration_s", "asr_primary", "asr_task_max_concurrency", "transcript_llm_refine_enabled", "llm_daily_budget", "trend_enabled", "trend_schedule_enabled", "trend_schedule_start", "trend_schedule_end", "trend_schedule_interval_min", "highlight_threshold", "highlight_review_threshold", "highlight_auto_approve_threshold", "clip_subtitle", "clip_max_duration_s", "clip_video_crf", "min_free_disk_gb", "storage_cleanup_enabled", "raw_retention_days", "biliup_enabled", "auto_upload", "auto_publish_threshold", "bilibili_cookie", "notify_on_clip", "notify_on_error", "notify_on_disk_alert"]);
+const common = new Set(["recording_pipeline_enabled", "segment_duration_s", "stream_quality", "live_poll_interval_s", "recording_max_duration_s", "asr_primary", "asr_remote_base_url", "asr_remote_api_key", "asr_remote_model", "asr_remote_language", "asr_remote_response_format", "asr_remote_timeout_s", "asr_remote_chunk_s", "asr_task_max_concurrency", "transcript_llm_refine_enabled", "llm_daily_budget", "trend_enabled", "trend_schedule_enabled", "trend_schedule_start", "trend_schedule_end", "trend_schedule_interval_min", "highlight_threshold", "highlight_review_threshold", "highlight_auto_approve_threshold", "clip_subtitle", "clip_danmaku", "clip_danmaku_mode", "clip_danmaku_font_size", "clip_danmaku_color", "clip_danmaku_opacity", "clip_danmaku_duration_s", "clip_danmaku_max_lines", "clip_max_duration_s", "clip_video_crf", "clip_preset", "clip_video_encoder", "clip_hardware_quality", "clip_hardware_preset", "clip_loudnorm", "clip_remove_silence", "clip_vertical", "min_free_disk_gb", "storage_cleanup_enabled", "raw_retention_days", "biliup_enabled", "auto_upload", "auto_publish_threshold", "bilibili_cookie", "notify_on_clip", "notify_on_error", "notify_on_disk_alert"]);
+const optionLabels = {
+  asr_primary: { funasr_nano: "Fun-ASR-Nano（本地）", paraformer: "Paraformer（本地）", whisper: "Whisper（本地）", openai_compatible: "远程转写（OpenAI 兼容）" },
+  clip_video_encoder: { cpu: "CPU（关闭硬件编码）", nvidia: "NVIDIA 显卡", intel: "Intel 显卡", amd: "AMD 显卡" },
+  clip_danmaku_mode: { scroll: "从右向左滚动", top: "顶部固定", bottom: "下方固定" },
+  clip_hardware_preset: { speed: "速度优先", balanced: "均衡", quality: "质量优先" },
+};
 const scoringLabels = { volume: "音量", danmaku: "弹幕", keywords: "关键词", speech_rate: "语速", audio_events: "音频事件", trend: "网感", laughter: "笑声", danmaku_sentiment: "弹幕情绪", alpha: "规则分融合系数", beta: "大模型分融合系数", pre_roll_s: "前置留白（秒）", post_roll_s: "后置留白（秒）", iou_threshold: "重叠去重阈值", cooldown_s: "冷却时间（秒）" };
 const links = {
   all: [["features", "房间自动化与阈值"], ["models", "大模型服务商"], ["login", "账号登录"], ["plugins", "插件中心"]],
@@ -32,7 +38,7 @@ function input(field, value, path = "", schema = field) {
   const id = `configuration-${field.key}${path ? "-" + path.replaceAll(".", "-") : ""}`;
   const attrs = `id="${id}" data-config-key="${esc(field.key)}" data-path="${esc(path)}" ${field.editable ? "" : "disabled"} aria-describedby="configuration-help-${field.key}"`;
   if (schema.type === "boolean") return `<input ${attrs} type="checkbox" ${value ? "checked" : ""} />`;
-  if (schema.enum) return `<select ${attrs}>${schema.enum.map(item => `<option value="${esc(item)}" ${item === value ? "selected" : ""}>${esc(item)}</option>`).join("")}</select>`;
+  if (schema.enum) return `<select ${attrs}>${schema.enum.map(item => `<option value="${esc(item)}" ${item === value ? "selected" : ""}>${esc(optionLabels[field.key]?.[item] || item)}</option>`).join("")}</select>`;
   const type = field.secret ? "password" : ["number", "integer"].includes(schema.type) ? "number" : "text";
   return `<input ${attrs} type="${type}" value="${esc(field.secret ? "" : value)}" ${type === "number" ? `step="${schema.type === "integer" ? "1" : "any"}"` : ""} ${schema.minimum == null ? "" : `min="${schema.minimum}"`} ${schema.maximum == null ? "" : `max="${schema.maximum}"`} ${field.secret ? `autocomplete="new-password" placeholder="${field.configured ? "已配置；留空保持" : "未配置"}"` : ""} />`;
 }

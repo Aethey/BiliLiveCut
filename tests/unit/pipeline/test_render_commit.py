@@ -112,7 +112,7 @@ def test_cancel_or_reject_during_move_cannot_be_overwritten(
     monkeypatch.setattr(Path, "replace", cancel_after_move)
     render.commit_render(lease, result, 1)
     with get_session() as db:
-        assert db.get(SegmentTask, lease.task_id).stage == TaskStatus.CANCELLED
+        assert db.get(SegmentTask, lease.task_id).stage == TaskStatus.CANCELLING
         assert db.exec(select(FinalClip).where(FinalClip.candidate_id == result["candidate_id"])).first() is None
         if reject:
             assert db.get(HighlightCandidate, result["candidate_id"]).status == "rejected"

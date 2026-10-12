@@ -21,12 +21,14 @@ import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from loguru import logger
 from sqlmodel import select
 
 from app.accelerators.dispatcher import group_srt_blocks
 from app.analysis.transcript_windows import extract_transcript_window
+from app.clipping.danmaku import write_danmaku_ass
 from app.clipping.models import ClipOptions
 from app.core.config import settings
 from app.core.ffmpeg_errors import classify_ffmpeg_error
@@ -46,6 +48,9 @@ from app.db.entities import (
     Transcript,
 )
 from app.db.session import get_session
+
+if TYPE_CHECKING:
+    from app.pipeline.lease import TaskLease
 
 # 竖屏目标分辨率(适合手机端短视频)。
 _VERT_W, _VERT_H = 1080, 1920
@@ -218,7 +223,7 @@ def _escape_filter_value(value: str) -> str:
     return value
 
 
-def _build_video_filter(options: ClipOptions, srt_path: Path | None) -> str:
+def _build_video_filter(options: ClipOptions, srt_path: Path | None, danmaku_path: Path | None = None) -> str:
     """构造视频滤镜链。
 
     * 竖屏重构:等比缩放到不超过 1080x1920,再用黑边居中填充(避免裁切丢内容)。
@@ -227,6 +232,7 @@ def _build_video_filter(options: ClipOptions, srt_path: Path | None) -> str:
 
     :param options: 切片选项。
     :param srt_path: 字幕文件路径(启用字幕时)。
+    :param danmaku_path: 已校准到剪辑时间轴的安全 ASS 弹幕路径。
     :returns: 逗号连接的视频滤镜串;无滤镜时为空字符串。
     """
     # 先归零再做画面处理，尤其确保以切片本地时间生成的 SRT 在归零后的时间轴
@@ -238,18 +244,38 @@ def _build_video_filter(options: ClipOptions, srt_path: Path | None) -> str:
             f"scale={_VERT_W}:{_VERT_H}:force_original_aspect_ratio=decrease,"
             f"pad={_VERT_W}:{_VERT_H}:(ow-iw)/2:(oh-ih)/2:black"
         )
+    if options.danmaku and danmaku_path is not None:
+        escaped = _escape_filter_value(danmaku_path.resolve().as_posix())
+        filters.append(f"ass=filename={escaped}")
     if options.subtitle and srt_path is not None:
         escaped = _escape_filter_value(srt_path.resolve().as_posix())
         filters.append(f"subtitles=filename={escaped}:charenc=UTF-8")
     return ",".join(filters)
 
 
-def _clip_filters(options: ClipOptions, srt_path: Path | None, cut_offset: float, duration: float) -> tuple[str, str]:
+def _clip_filters(
+    options: ClipOptions, srt_path: Path | None, cut_offset: float, duration: float, danmaku_path: Path | None = None
+) -> tuple[str, str]:
     """先在拼接流内精剪，再归零并烧录剪辑相对字幕，不依赖 concat 随机寻址。"""
     bounds = f"start={cut_offset:.6f}:duration={duration:.6f}"
     audio = f"asetpts=PTS-STARTPTS,atrim={bounds}," + _build_audio_filter(options)
-    video = f"setpts=PTS-STARTPTS,trim={bounds}," + _build_video_filter(options, srt_path)
+    video = f"setpts=PTS-STARTPTS,trim={bounds}," + _build_video_filter(options, srt_path, danmaku_path)
     return audio, video
+
+
+def _write_clip_danmaku(
+    segments: list[RawSegment], start_ts: datetime, duration: float, options: ClipOptions, work_dir: Path
+) -> Path | None:
+    """使用最终画面大小及同一剪辑窗口生成弹幕，关闭时不探测或查询。"""
+    if not options.danmaku:
+        return None
+    if options.vertical:
+        width, height = _VERT_W, _VERT_H
+    else:
+        _, width, height = probe_media(segments[0].file_path)
+    return write_danmaku_ass(
+        segments[0].session_id, start_ts, duration, width, height, options, work_dir / "danmaku.ass"
+    )
 
 
 def _write_concat_list(segments: list[RawSegment], work_dir: Path) -> Path:
@@ -341,6 +367,7 @@ def _render_intro_outro_cards(
             tmpl.intro_bg_color,
             width,
             height,
+            options=options,
         )
         cards.append(card_path)
 
@@ -358,6 +385,8 @@ def _render_text_card(
     bg_color: str,
     width: int,
     height: int,
+    *,
+    options: ClipOptions | None = None,
 ) -> None:
     """用 FFmpeg color 源 + drawtext 生成文字标题卡视频。
 
@@ -370,6 +399,7 @@ def _render_text_card(
     :param bg_color: 背景颜色(支持透明度如 black@0.6)。
     :param width: 视频宽。
     :param height: 视频高。
+    :param options: 当前任务的编码选项快照。
     """
     import re as _re
     import tempfile as _tmp
@@ -400,12 +430,7 @@ def _render_text_card(
             f"x=(w-text_w)/2:y=(h-text_h)/2:"
             f"box=1:boxcolor=black@0.4:boxborderw=20"
         ),
-        "-c:v",
-        "libx264",
-        "-crf",
-        "18",
-        "-preset",
-        "ultrafast",
+        *(options or ClipOptions.from_settings()).video_encoding_args(),
         "-an",
         "-y",
         str(out_path),
@@ -490,14 +515,7 @@ def _prepend_intro_cards(
             "[v]",
             "-map",
             "[a]",
-            "-c:v",
-            "libx264",
-            "-crf",
-            str(options.crf),
-            "-preset",
-            options.preset,
-            "-pix_fmt",
-            "yuv420p",
+            *options.video_encoding_args(),
             "-fps_mode",
             "vfr",
             "-c:a",
@@ -751,7 +769,8 @@ def render_clip_to_file(
                 srt_path = work_dir / "sub.srt"
                 srt_path.write_text(srt_text, encoding="utf-8")
 
-        _run_ffmpeg_clip(concat_list, output_path, cut_offset, duration, options, srt_path)
+        danmaku_path = _write_clip_danmaku(segments, resolved_start_ts, duration, options, work_dir)
+        _run_ffmpeg_clip(concat_list, output_path, cut_offset, duration, options, srt_path, danmaku_path=danmaku_path)
         peak_rel += _prepend_intro_cards(candidate_id, output_path, options)
 
     real_duration, width, height = probe_media(str(output_path))
@@ -791,6 +810,7 @@ def produce_clip(
     progress_callback: Callable[[int, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
     render_variants: bool = True,
+    task_lease: TaskLease | None = None,
 ) -> FinalClip:
     """把一个高光候选生成为成品 MP4 并入库。
 
@@ -802,6 +822,7 @@ def produce_clip(
     :param progress_callback: 可选的进度回调。
     :param cancel_check: 可选的协作取消检查。
     :param render_variants: 是否继续生成派生版本。
+    :param task_lease: 人工任务的原租约，提交前在写事务内复验。
     :returns: 新建的 :class:`FinalClip`。
     :raises ValueError: 候选不存在或找不到覆盖片段时。
     :raises RuntimeError: FFmpeg 执行失败时。
@@ -837,9 +858,13 @@ def produce_clip(
     duration = (resolved_end_ts - resolved_start_ts).total_seconds()
     peak_rel = max(0.0, (peak_ts - resolved_start_ts).total_seconds())
 
+    if task_lease is not None and output_suffix is None:
+        output_suffix = f"lease_{task_lease.lease_token}"
     output_stem = f"clip_{candidate_id}{_normalize_output_suffix(output_suffix)}"
     out_path = clips_dir() / f"{output_stem}.mp4"
     cover_path = clips_dir() / f"{output_stem}.jpg"
+    if task_lease is not None and (out_path.exists() or cover_path.exists()):
+        raise FileExistsError("当前租约的成片或封面路径已存在，拒绝覆盖")
 
     with tempfile.TemporaryDirectory(prefix="blc_clip_") as tmp:
         work_dir = Path(tmp)
@@ -852,6 +877,7 @@ def produce_clip(
                 srt_path = work_dir / "sub.srt"
                 srt_path.write_text(srt_text, encoding="utf-8")
 
+        danmaku_path = _write_clip_danmaku(segments, resolved_start_ts, duration, options, work_dir)
         _report_progress(progress_callback, 25, "正在渲染主视频")
         try:
             _run_ffmpeg_clip(
@@ -861,6 +887,7 @@ def produce_clip(
                 duration,
                 options,
                 srt_path,
+                danmaku_path=danmaku_path,
                 cancel_check=cancel_check,
             )
             peak_rel += _prepend_intro_cards(candidate_id, out_path, options, cancel_check=cancel_check)
@@ -871,6 +898,7 @@ def produce_clip(
         # V0.1.8.2: 提前保存临时文件内容,供 with 块外部重建使用(临时目录退出后会清理)。
         _concat_content = concat_list.read_text(encoding="utf-8")
         _srt_content = srt_path.read_text(encoding="utf-8") if srt_path else None
+        _danmaku_content = danmaku_path.read_text(encoding="utf-8") if danmaku_path else None
 
     _report_progress(progress_callback, 55, "主视频完成，正在检查媒体")
     try:
@@ -896,6 +924,15 @@ def produce_clip(
         status=ClipStatus.GENERATED,
     )
     with get_session() as db:
+        if task_lease is not None:
+            from app.pipeline.lease import LeaseLostError, require_current_lease
+
+            try:
+                require_current_lease(db, task_lease)
+            except LeaseLostError:
+                out_path.unlink(missing_ok=True)
+                cover_path.unlink(missing_ok=True)
+                raise
         db.add(clip)
         db.flush()
         db.refresh(clip)
@@ -930,6 +967,10 @@ def produce_clip(
         if _srt_content:
             _recon_srt = _recon_dir / f"{output_stem}.srt"
             _recon_srt.write_text(_srt_content, encoding="utf-8")
+        _recon_danmaku: Path | None = None
+        if _danmaku_content:
+            _recon_danmaku = _recon_dir / f"{output_stem}.ass"
+            _recon_danmaku.write_text(_danmaku_content, encoding="utf-8")
         # V0.1.8 P1.1: 渲染多版本出片(归档版+压制版+互补字幕版)。
         _render_variants(
             clip,
@@ -938,6 +979,7 @@ def produce_clip(
             cut_offset,
             duration,
             _recon_srt,
+            danmaku_path=_recon_danmaku,
             progress_callback=progress_callback,
             cancel_check=cancel_check,
         )
@@ -981,7 +1023,7 @@ def _create_clip_variants(
     规则:
     - 主版本记作 SINGLE(已渲染,直接关联)。
     - 如果渲染了字幕,同时记作 SUBTITLED。
-    - 净版(NO_SUBTITLES)在渲染时未生成字幕则自动记。
+    - 无 ASR 字幕版(NO_SUBTITLES)在未烧录转写时登记，弹幕独立。
     - 压制版(COMPRESSED)和归档版(ARCHIVE):先标记 queued,P1.1 渲染流程更新。
 
     :param clip: 新创建的 FinalClip。
@@ -1069,6 +1111,7 @@ def _run_ffmpeg_clip(
     options: ClipOptions,
     srt_path: Path | None,
     *,
+    danmaku_path: Path | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> None:
     """执行精剪 + 后处理的 FFmpeg 命令。
@@ -1079,7 +1122,7 @@ def _run_ffmpeg_clip(
     * ``trim`` / ``atrim``:在滤镜内逐帧精剪，随后归零并烧录本地时间轴字幕;
     * ``-t duration``:截取时长;
     * ``-af`` / ``-vf``:音/视频后处理并把各自首个有效帧的时间戳归零;
-    * ``-c:v libx264 -crf -preset``:H.264 编码,CRF 控质量;
+    * ``-c:v``:所选 CPU/硬件 H.264 编码器，使用该后端专用质量参数;
     * ``-c:a aac -b:a 160k``:AAC 音频;
     * ``-movflags +faststart``:moov 前置,便于网络边下边播。
 
@@ -1089,10 +1132,11 @@ def _run_ffmpeg_clip(
     :param duration: 时长(秒)。
     :param options: 切片选项。
     :param srt_path: 字幕文件(可空)。
+    :param danmaku_path: 独立于 ASR 字幕的 ASS 弹幕路径(可空)。
     :param cancel_check: 可选的取消检查。
     :raises RuntimeError: FFmpeg 失败时。
     """
-    af, vf = _clip_filters(options, srt_path, cut_offset, duration)
+    af, vf = _clip_filters(options, srt_path, cut_offset, duration, danmaku_path)
 
     cmd = [
         settings.ffmpeg_path,
@@ -1113,12 +1157,7 @@ def _run_ffmpeg_clip(
     if vf:
         cmd += ["-vf", vf]
     cmd += [
-        "-c:v",
-        "libx264",
-        "-crf",
-        str(options.crf),
-        "-preset",
-        options.preset,
+        *options.video_encoding_args(),
         "-c:a",
         "aac",
         "-b:a",
@@ -1134,7 +1173,7 @@ def _run_ffmpeg_clip(
     if result.returncode != 0:
         stderr = result.stderr.decode("utf-8", errors="ignore")
         error_type = classify_ffmpeg_error(result.returncode, stderr)
-        raise RuntimeError(f"FFmpeg 切片失败 [{error_type.name}]: {stderr}")
+        raise RuntimeError(f"FFmpeg 切片失败 [encoder={options.video_encoder} {error_type.name}]: {stderr}")
 
 
 def _grab_cover(video_path: Path, cover_path: Path, at_s: float) -> None:
@@ -1176,14 +1215,15 @@ def _render_variants(
     srt_path: Path | None,
     *,
     progress_callback: Callable[[int, str], None] | None = None,
+    danmaku_path: Path | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> None:
     """渲染多版本出片(V0.1.8 P1.1)。
 
-    在主干视频生成后,异步渲染:
-    - ARCHIVE:高码率归档版(CRF 14,preset medium,256k 音频)
-    - COMPRESSED:投稿压制版(CRF 26,preset veryfast,128k 音频)
-    - 互补字幕版:与主干相反(主干有字幕→净版,主干无字幕→带字幕版)
+    在主干视频生成后,依次渲染:
+    - ARCHIVE:高质量归档版(CPU CRF/硬件质量值 14,256k 音频)
+    - COMPRESSED:投稿压制版(CPU CRF/硬件质量值 26,128k 音频)
+    - 互补字幕版:与主干相反(主干有字幕→无 ASR 字幕版,主干无字幕→带 ASR 字幕版；弹幕始终独立保留)
 
     每个变体渲染完成即更新对应的 ClipVariant 记录。
 
@@ -1193,6 +1233,7 @@ def _render_variants(
     :param cut_offset: 裁剪偏移(秒)。
     :param duration: 时长(秒)。
     :param srt_path: 字幕文件(可空)。
+    :param danmaku_path: 独立于 ASR 字幕的 ASS 弹幕路径(可空)。
     :param progress_callback: 可选的进度回调。
     :param cancel_check: 可选的取消检查。
     """
@@ -1208,12 +1249,15 @@ def _render_variants(
         cut_offset,
         duration,
         crf=14,
+        hardware_quality=14,
+        options=options,
         preset="medium",
         audio_bitrate="256k",
         subtitle=options.subtitle,
         srt_path=srt_path,
         variant_type=ClipVariantType.ARCHIVE,
         clip=clip,
+        danmaku_path=danmaku_path,
         cancel_check=cancel_check,
     )
 
@@ -1227,17 +1271,20 @@ def _render_variants(
         cut_offset,
         duration,
         crf=26,
+        hardware_quality=26,
+        options=options,
         preset="veryfast",
         audio_bitrate="128k",
         subtitle=options.subtitle,
         srt_path=srt_path,
         variant_type=ClipVariantType.COMPRESSED,
         clip=clip,
+        danmaku_path=danmaku_path,
         cancel_check=cancel_check,
     )
 
     if srt_path is None:
-        # 无字幕证据时主片已是净版，不能把另一个净版登记为字幕版。
+        # 无 ASR 字幕证据时不生成字幕互补版，弹幕仍独立保留。
         _report_progress(progress_callback, 90, "派生版本已完成（本窗口无字幕）")
         return
     _report_progress(progress_callback, 84, "正在生成字幕互补版本")
@@ -1253,16 +1300,18 @@ def _render_variants(
             cut_offset,
             duration,
             crf=options.crf,
+            options=options,
             preset=options.preset,
             audio_bitrate="160k",
             subtitle=True,
             srt_path=srt_path,
             variant_type=ClipVariantType.SUBTITLED,
             clip=clip,
+            danmaku_path=danmaku_path,
             cancel_check=cancel_check,
         )
     else:
-        # 主干有字幕 → 渲染无字幕净版
+        # 主干有 ASR 字幕 → 渲染无 ASR 字幕版，弹幕仍沿用主片设置
         clean_path = variants_dir / f"clip_{clip.candidate_id}_clean.mp4"
         _render_single_variant(
             concat_list,
@@ -1270,12 +1319,14 @@ def _render_variants(
             cut_offset,
             duration,
             crf=options.crf,
+            options=options,
             preset=options.preset,
             audio_bitrate="160k",
             subtitle=False,
             srt_path=None,
             variant_type=ClipVariantType.NO_SUBTITLES,
             clip=clip,
+            danmaku_path=danmaku_path,
             cancel_check=cancel_check,
         )
     _report_progress(progress_callback, 90, "派生版本已完成")
@@ -1294,6 +1345,9 @@ def _render_single_variant(
     srt_path: Path | None,
     variant_type: str,
     clip: FinalClip,
+    options: ClipOptions | None = None,
+    hardware_quality: int | None = None,
+    danmaku_path: Path | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> None:
     """执行单个变体的 FFmpeg 渲染并更新数据库。
@@ -1307,21 +1361,26 @@ def _render_single_variant(
     :param audio_bitrate: 音频码率。
     :param subtitle: 是否烧录字幕。
     :param srt_path: SRT 字幕路径(可空)。
+    :param danmaku_path: 独立于 ASR 字幕的 ASS 弹幕路径(可空)。
     :param variant_type: 变体类型。
     :param clip: 关联的 FinalClip。
+    :param options: 主片的完整渲染配置快照，派生版本沿用设备和后处理开关。
+    :param hardware_quality: 归档或压制版本专用的硬件质量值。
     :param cancel_check: 可选的取消检查。
     """
-    # 构建简化的 ClipOptions 用于滤镜构建
+    # 沿用主片快照，仅覆盖当前变体的质量和字幕参数。
     from dataclasses import replace
 
+    base_options = options or ClipOptions.from_settings()
     var_opts = replace(
-        ClipOptions.from_settings(),
+        base_options,
         crf=crf,
         preset=preset,
         subtitle=subtitle,
+        hardware_quality=base_options.hardware_quality if hardware_quality is None else hardware_quality,
     )
 
-    af, vf = _clip_filters(var_opts, srt_path, cut_offset, duration)
+    af, vf = _clip_filters(var_opts, srt_path, cut_offset, duration, danmaku_path)
 
     cmd = [
         settings.ffmpeg_path,
@@ -1342,12 +1401,7 @@ def _render_single_variant(
     if vf:
         cmd += ["-vf", vf]
     cmd += [
-        "-c:v",
-        "libx264",
-        "-crf",
-        str(crf),
-        "-preset",
-        preset,
+        *var_opts.video_encoding_args(),
         "-c:a",
         "aac",
         "-b:a",
@@ -1358,7 +1412,15 @@ def _render_single_variant(
         str(out_path),
     ]
 
-    logger.info("渲染变体 {} {} -> {} (CRF={} preset={})", variant_type, clip.candidate_id, out_path.name, crf, preset)
+    logger.info(
+        "渲染变体 {} {} -> {} (encoder={} quality={} preset={})",
+        variant_type,
+        clip.candidate_id,
+        out_path.name,
+        var_opts.video_encoder,
+        var_opts.crf if var_opts.video_encoder == "cpu" else var_opts.hardware_quality,
+        var_opts.preset if var_opts.video_encoder == "cpu" else var_opts.hardware_preset,
+    )
     try:
         result = run_cancellable(cmd, capture_output=True, timeout=1800, cancel_check=cancel_check)
         if result.returncode == 0:

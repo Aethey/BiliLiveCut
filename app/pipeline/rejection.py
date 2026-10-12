@@ -15,9 +15,8 @@ from app.db.entities import (
     HighlightEvent,
     ReviewStatus,
     SegmentTask,
-    TaskStatus,
 )
-from app.pipeline.stage_result import can_transition, enqueue_next
+from app.pipeline.stage_result import request_cancellation
 
 
 def reject_candidate_and_outputs(
@@ -31,7 +30,7 @@ def reject_candidate_and_outputs(
     """在同一事务中拒绝候选并停止其未终结工作流。
 
     已发布成片代表真实的外部发布结果，不能因事后的候选决策而改写；
-    其余关联成片会标记为拒绝，仍在运行或排队的任务会失去租约并取消。
+    其余关联成片会标记为拒绝，排队任务直接取消，活跃计算等待收尾；已开始发布须核对结果。
 
     :param db: 调用方持有的数据库会话。
     :param candidate_id: 被拒绝的候选 ID。
@@ -61,9 +60,8 @@ def reject_candidate_and_outputs(
     cancelled_tasks = 0
     tasks = db.exec(select(SegmentTask).where(SegmentTask.candidate_id == candidate_id)).all()
     for task in tasks:
-        if not can_transition(task.stage, TaskStatus.CANCELLED):
+        if not request_cancellation(task):
             continue
-        enqueue_next(task, TaskStatus.CANCELLED)
         db.add(task)
         cancelled_tasks += 1
 

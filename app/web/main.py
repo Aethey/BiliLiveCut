@@ -13,8 +13,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -107,60 +107,74 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 non_loopback_ips[:3],
             )
     # V0.1.13: 启动 Metrics 后台采样
-    from app.core.metrics import start_metrics_collector
-
-    start_metrics_collector(interval_s=60)
+    from app.core.metrics import start_metrics_collector, stop_metrics_collector
 
     # V0.1.14.11: 代理环境变量规范化
     # 不篡改用户代理配置 (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY), 但确保 localhost 绕过代理
     _setup_proxy_env()
 
+    # V0.1.6:启动持久化任务队列 Worker。
+    from app.pipeline.lifecycle import shutdown_event
+    from app.pipeline.task_worker import get_worker
     from app.plugins.manager import plugin_manager
     from app.trends.scheduler import trend_scheduler
-
-    trend_scheduler.start(recording_active=lambda: bool(rooms_service.recorder_manager.running_ids()))
-    await plugin_manager.start()
-
-    # V0.1.6:启动持久化任务队列 Worker。
-    from app.pipeline.task_worker import get_worker
     from app.web.services.background_jobs import web_job_manager
 
     task_worker = get_worker()
-    await task_worker.start()
-    await web_job_manager.start()
+    # V0.1.7 P3:启动开播自动录制监控器。
+    from app.pipeline.live_monitor import live_monitor
 
-    # V0.1.2:自动恢复中断的录制会话。
-    try:
-        recovered = await rooms_service.auto_recover_interrupted_sessions()
-        if recovered:
-            logger.info("已恢复 {} 个中断的录制会话。", len(recovered))
-    except Exception as exc:  # noqa: BLE001
-        logger.opt(exception=exc).warning("中断录制自动恢复失败")
-
-    # V0.1.2:启动录制预约调度后台任务。
-    schedule_task = asyncio.create_task(_schedule_loop())
-
-    logger.info("Web 后台已启动。")
-    try:
-        # V0.1.7 P3:启动开播自动录制监控器。
-        from app.pipeline.live_monitor import live_monitor
-
-        await live_monitor.start()
-
-        yield
-    finally:
-        schedule_task.cancel()
+    async with AsyncExitStack() as cleanup:
         try:
-            await schedule_task
-        except asyncio.CancelledError:
-            pass
-        await trend_scheduler.stop()
-        await live_monitor.stop()
-        await rooms_service.recorder_manager.stop_all()
-        await plugin_manager.stop()
-        await web_job_manager.stop()
-        await task_worker.stop()
-        logger.info("Web 后台已关闭,所有录制已停止。")
+            cleanup.push_async_callback(asyncio.to_thread, stop_metrics_collector)
+            start_metrics_collector(interval_s=60)
+            cleanup.push_async_callback(_stop_service, "trends", trend_scheduler.stop)
+            trend_scheduler.start(recording_active=lambda: bool(rooms_service.recorder_manager.running_ids()))
+            cleanup.push_async_callback(_stop_service, "plugins", plugin_manager.stop)
+            await plugin_manager.start()
+            cleanup.push_async_callback(_stop_service, "worker", task_worker.stop)
+            await task_worker.start()
+            cleanup.push_async_callback(_stop_service, "web_jobs", web_job_manager.stop)
+            await web_job_manager.start()
+            cleanup.push_async_callback(_stop_service, "recorders", rooms_service.recorder_manager.stop_all)
+
+            # V0.1.2:自动恢复中断的录制会话。
+            try:
+                recovered = await rooms_service.auto_recover_interrupted_sessions()
+                if recovered:
+                    logger.info("已恢复 {} 个中断的录制会话。", len(recovered))
+            except Exception as exc:  # noqa: BLE001
+                logger.opt(exception=exc).warning("中断录制自动恢复失败")
+
+            # V0.1.2:启动录制预约调度后台任务。
+            schedule_task = asyncio.create_task(_schedule_loop())
+            cleanup.push_async_callback(_stop_schedule, schedule_task)
+            cleanup.push_async_callback(_stop_service, "live_monitor", live_monitor.stop)
+            await live_monitor.start()
+            logger.info("Web 后台已启动。")
+            yield
+        finally:
+            # 先通知计算及媒体调用，再串行停止生产者、作业、Worker 和采样。
+            shutdown_event.set()
+    logger.info("Web 服务资源已关闭；操作系统进程退出由服务器调用方确认。")
+
+
+async def _stop_service(name: str, stop: Callable[[], Awaitable[object]]) -> None:
+    """记录关闭服务的真实结果；失败交给退出栈，其他清理仍继续。"""
+    try:
+        await stop()
+    except Exception as exc:  # 生命周期清理边界，记录并继续退出栈的其余资源清理。
+        logger.opt(exception=exc).error("Web 服务关闭失败 service={}", name)
+        raise
+
+
+async def _stop_schedule(task: asyncio.Task[None]) -> None:
+    """取消并读取预约调度任务，不遗漏后台异常。"""
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 async def _schedule_loop() -> None:

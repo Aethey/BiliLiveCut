@@ -15,6 +15,8 @@ from sqlmodel import Session, select
 
 from app.analysis.event_enricher import (
     EventEnrichmentDraft,
+    EventEvidenceChangedError,
+    EventTargetUnavailableError,
     build_event_evidence_bundle,
 )
 from app.analysis.highlight import candidate_time_bounds, contiguous_recording_range
@@ -214,14 +216,27 @@ def compute_hotspot_clip_draft(
     with get_session() as db:
         event = db.get(HotspotEvent, event_id)
         if event is None:
-            raise ValueError(f"HotspotEvent 不存在: event_id={event_id}")
+            raise EventTargetUnavailableError(f"HotspotEvent 不存在: event_id={event_id}")
         if event.status != HotspotStatus.CONFIRMED:
-            raise ValueError(f"仅 confirmed HotspotEvent 可评分: event_id={event_id} status={event.status}")
+            raise EventTargetUnavailableError(
+                f"仅 confirmed HotspotEvent 可评分: event_id={event_id} status={event.status}"
+            )
         if event.candidate_id is not None:
-            raise ValueError(f"HotspotEvent 已关联候选: event_id={event_id} candidate_id={event.candidate_id}")
+            raise EventTargetUnavailableError(
+                f"HotspotEvent 已关联候选: event_id={event_id} candidate_id={event.candidate_id}"
+            )
         bundle = build_event_evidence_bundle(db, event_id)
         if enrichment is not None and enrichment.bundle_fingerprint != bundle.fingerprint:
-            raise ValueError("EventEnrichmentDraft 与当前 HotspotEvent 证据快照不一致")
+            raise EventEvidenceChangedError(
+                f"EventEnrichmentDraft 与当前 HotspotEvent 证据快照不一致: event_id={event_id}"
+            )
+        previous = _json_mapping(event.features_json).get("event_enrichment")
+        if (
+            enrichment is None
+            and isinstance(previous, Mapping)
+            and previous.get("bundle_fingerprint") != bundle.fingerprint
+        ):
+            raise EventEvidenceChangedError(f"已保存的事件补全与当前证据快照不一致: event_id={event_id}")
         context = _load_event_context(
             db,
             event,

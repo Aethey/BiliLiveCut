@@ -48,6 +48,40 @@ def test_registry_covers_every_core_runtime_field_without_secrets(temp_db: None)
     assert fields["smtp_password"]["configured"] is True
 
 
+def test_web_encoder_settings_reach_next_render_and_preserve_existing_options(temp_db: None) -> None:
+    from app.clipping.models import ClipOptions
+    from app.web.main import app
+
+    existing = ClipOptions.from_settings()
+    client = TestClient(app)
+    response = client.patch(
+        "/api/settings/configuration",
+        json={
+            "values": {
+                "clip_video_encoder": "intel",
+                "clip_hardware_quality": 18,
+                "clip_hardware_preset": "quality",
+                "clip_loudnorm": False,
+                "clip_vertical": True,
+                "clip_preset": "slow",
+            }
+        },
+    )
+    assert response.status_code == 200, response.text
+    current = ClipOptions.from_settings()
+    assert current.video_encoder == "intel" and current.hardware_quality == 18
+    assert current.hardware_preset == "quality" and current.preset == "slow"
+    assert current.vertical and not current.loudnorm
+    command = current.video_encoding_args()
+    assert command[command.index("-c:v") + 1] == "h264_qsv"
+    assert command[command.index("-global_quality") + 1] == "18"
+    assert existing.video_encoder == "cpu" and existing.vertical is False
+    assert (
+        client.patch("/api/settings/configuration", json={"values": {"clip_video_encoder": "cpu"}}).status_code == 200
+    )
+    assert ClipOptions.from_settings().video_encoder == "cpu"
+
+
 @pytest.mark.parametrize(
     "invalid",
     [
@@ -55,6 +89,10 @@ def test_registry_covers_every_core_runtime_field_without_secrets(temp_db: None)
         {"asr_primary_max_concurrency": 0},
         {"asr_primary": "unavailable-engine"},
         {"clip_preset": "not-a-preset"},
+        {"clip_video_encoder": "unavailable-device"},
+        {"clip_hardware_quality": 0},
+        {"clip_hardware_quality": 52},
+        {"clip_hardware_preset": "ultrafast"},
         {"llm_daily_budget": -1},
         {"smtp_port": 65536},
         {"trend_schedule_end": "99:45"},
@@ -333,3 +371,82 @@ def test_auto_upload_requires_all_three_switches(
             if global_enabled and biliup and room_enabled and score is not None and score >= 0.8
             else "awaiting_publish_confirmation"
         )
+
+
+def test_web_danmaku_settings_reach_next_task_and_invalid_change_is_atomic(temp_db: None) -> None:
+    from app.clipping.models import ClipOptions
+    from app.web.main import app
+
+    before = ClipOptions.from_settings()
+    client = TestClient(app)
+    response = client.patch(
+        "/api/settings/configuration",
+        json={
+            "values": {
+                "clip_danmaku": True,
+                "clip_danmaku_mode": "bottom",
+                "clip_danmaku_font_size": 48,
+                "clip_danmaku_color": "FF8000",
+                "clip_danmaku_opacity": 0.5,
+                "clip_danmaku_duration_s": 4.5,
+                "clip_danmaku_max_lines": 3,
+            }
+        },
+    )
+    assert response.status_code == 200, response.text
+    current = ClipOptions.from_settings()
+    assert current.danmaku is True and current.subtitle is False
+    assert current.danmaku_mode == "bottom" and current.danmaku_font_size == 48
+    assert current.danmaku_color == "FF8000" and current.danmaku_opacity == 0.5
+    assert current.danmaku_duration_s == 4.5 and current.danmaku_max_lines == 3
+    assert before.danmaku is False
+    rejected = client.patch(
+        "/api/settings/configuration",
+        json={
+            "values": {
+                "clip_danmaku": False,
+                "clip_danmaku_color": "FFFFFF\nStyle: injected",
+            }
+        },
+    )
+    assert rejected.status_code == 400
+    assert ClipOptions.from_settings() == current
+
+
+def test_remote_asr_settings_are_atomic_and_credentials_never_echo(temp_db: None) -> None:
+    from app.web.main import app
+
+    client = TestClient(app)
+    invalid = client.patch("/api/settings/configuration", json={"values": {"asr_primary": "openai_compatible"}})
+    assert invalid.status_code == 400 and settings.asr_primary == "funasr_nano"
+    saved = client.patch(
+        "/api/settings/configuration",
+        json={
+            "values": {
+                "asr_primary": "openai_compatible",
+                "asr_remote_base_url": "https://asr.example.invalid/v1",
+                "asr_remote_model": "operator-selected-model",
+                "asr_remote_api_key": "unique-fixture-asr-credential",
+                "asr_remote_response_format": "verbose_json",
+                "asr_remote_language": "zh",
+                "asr_remote_chunk_s": 120,
+            }
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert "unique-fixture-asr-credential" not in saved.text
+    fields = {item["key"]: item for item in saved.json()["fields"]}
+    assert fields["asr_remote_api_key"]["secret"] and fields["asr_remote_api_key"]["configured"]
+    assert fields["asr_remote_base_url"]["effect"] == "next_task"
+    assert settings.asr_primary == "openai_compatible" and settings.asr_remote_chunk_s == 120
+    preserved = client.patch("/api/settings/configuration", json={"values": {"asr_remote_api_key": ""}})
+    assert preserved.status_code == 200 and settings.asr_remote_api_key == "unique-fixture-asr-credential"
+    rejected = client.patch(
+        "/api/settings/configuration", json={"values": {"asr_remote_base_url": "https://user:password@host/v1"}}
+    )
+    assert rejected.status_code == 400
+    assert settings.asr_remote_base_url == "https://asr.example.invalid/v1"
+    cleared = client.patch("/api/settings/configuration", json={"clear": ["asr_remote_api_key"]})
+    assert cleared.status_code == 200 and settings.asr_remote_api_key == ""
+    back = client.patch("/api/settings/configuration", json={"values": {"asr_primary": "funasr_nano"}})
+    assert back.status_code == 200

@@ -56,6 +56,33 @@ def test_cli_help_preserves_dependency_hints_and_current_doctor_text() -> None:
     assert "V0.1.13" not in result.output
 
 
+@pytest.mark.parametrize("entrypoint", ["module", "installed"])
+@pytest.mark.parametrize("arguments,exit_code", [(["--help"], 0), (["未知命令"], 2)])
+def test_cli_entrypoints_handle_chinese_with_cp1252_streams(
+    entrypoint: str, arguments: list[str], exit_code: int
+) -> None:
+    command = [sys.executable, "-m", "app.cli"]
+    if entrypoint == "installed":
+        command = [
+            sys.executable,
+            "-c",
+            "from importlib.metadata import distribution; "
+            "next(e for e in distribution('bili-live-cut').entry_points "
+            "if e.group == 'console_scripts' and e.name == 'blc').load()()",
+        ]
+    result = subprocess.run(
+        [*command, *arguments],
+        env={**os.environ, "PYTHONUTF8": "0", "PYTHONIOENCODING": "cp1252", "NO_COLOR": "1"},
+        check=False,
+        capture_output=True,
+        timeout=60,
+    )
+    output = result.stdout.decode("utf-8") + result.stderr.decode("utf-8")
+    assert result.returncode == exit_code, output
+    assert "UnicodeEncodeError" not in output
+    assert ("直播实时切片系统" if exit_code == 0 else "未知命令") in output
+
+
 def test_serve_exports_actual_cli_port_to_application(monkeypatch) -> None:  # noqa: ANN001
     """直接 CLI 的显式端口必须成为设置 API 看到的本次实际端口。"""
     import uvicorn

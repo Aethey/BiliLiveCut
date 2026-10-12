@@ -23,6 +23,7 @@ import re
 import time
 import uuid
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, Self, cast
 
 from loguru import logger
 
@@ -34,8 +35,12 @@ from app.analysis.transcription.models import (  # single source of truth — no
     EmotionEvent,
     Word,
 )
+from app.core.asr_devices import confirm_torch_model_device, require_torch_device, require_whisper_device
 from app.core.config import settings
 from app.core.sanitize import safe_exception_summary
+
+if TYPE_CHECKING:
+    from faster_whisper import WhisperModel
 
 # ═══════════════════════════════════════════════════════════
 # 工具函数
@@ -99,6 +104,14 @@ def _probe_audio_duration(audio_path: str) -> float:
 # ═══════════════════════════════════════════════════════════
 # FunASR 多引擎后端 (Paraformer + SenseVoice + FunASR-Nano)
 # ═══════════════════════════════════════════════════════════
+
+
+class _FloatingModule(Protocol):
+    """FunASR 的 Torch 子模型精度边界，不依赖开发环境安装 Torch。"""
+
+    def float(self) -> Self:
+        """将浮点参数及缓冲区转换为 FP32，保持设备不变。"""
+        ...
 
 
 class FunASRBackend:
@@ -181,16 +194,25 @@ class FunASRBackend:
 
     # ---- 懒加载 ----
 
+    @staticmethod
+    def _prepare_vad_precision(model: object) -> None:
+        """FSMN-VAD 接收 FP32 特征，仅转换 VAD，保留 Nano 的 LLM 精度。"""
+        vad = getattr(model, "vad_model", None)
+        if vad is None:
+            raise RuntimeError("FunASR 未加载所配置的 FSMN-VAD，不能执行转写")
+        cast(_FloatingModule, vad).float()
+
     def _load_primary(self) -> object:
         """Load Paraformer-zh main engine (Chinese ASR + punctuation + timestamps).
 
         Uses the per-engine self._REVISION_PRIMARY.
         """
+        device = settings.asr_primary_device or settings.whisper_device
+        require_torch_device(device, role="primary")
         try:
             from funasr import AutoModel
-        except ImportError:
-            raise RuntimeError("Need funasr installed. Run: pip install funasr modelscope") from None
-        device = settings.asr_primary_device or settings.whisper_device
+        except ImportError as exc:
+            raise RuntimeError("Need funasr installed. Run: pip install funasr modelscope") from exc
         revision = self._REVISION_PRIMARY or None
 
         if self._use_local_models:
@@ -201,6 +223,7 @@ class FunASRBackend:
             model = AutoModel(
                 model=self._primary_model_name,
                 vad_model=vad_path,
+                vad_kwargs={"fp16": False, "bf16": False},
                 punc_model=punc_path,
                 device=device,
                 hub="ms",
@@ -208,7 +231,7 @@ class FunASRBackend:
             )
         else:
             logger.info(
-                "Loading Paraformer-zh online: model=%s device=%s revision=%s",
+                "Loading Paraformer-zh online: model={} device={} revision={}",
                 self._primary_model_name,
                 device,
                 revision,
@@ -216,37 +239,45 @@ class FunASRBackend:
             model = AutoModel(
                 model=self._primary_model_name,
                 vad_model="fsmn-vad",
+                vad_kwargs={"fp16": False, "bf16": False},
                 punc_model="ct-punc",
                 device=device,
                 hub="ms",
-                revision=revision,
+                model_revision=revision,
+                disable_update=True,
             )
+        self._prepare_vad_precision(model)
+        confirm_torch_model_device(model, device, role="primary")
         asr_metrics.record_backend_call("paraformer", 0, success=True)
         logger.info("Paraformer loaded: device={} local={}", device, self._use_local_models)
         return model
 
     def _load_sensevoice(self) -> object:
         """加载 SenseVoice-Small (情感/笑声/音乐/事件检测)。 Uses per-engine revision."""
+        device = settings.asr_auxiliary_device or settings.whisper_device
+        require_torch_device(device, role="auxiliary")
         try:
             from funasr import AutoModel
-        except ImportError:
-            raise RuntimeError("需要安装 funasr。请执行: pip install funasr modelscope") from None
+        except ImportError as exc:
+            raise RuntimeError("需要安装 funasr。请执行: pip install funasr modelscope") from exc
         if self._use_local_models:
             sensevoice_path = str(Path(self._models_dir) / "sensevoice")
             logger.info("Loading SenseVoice-Small from local path: {}", sensevoice_path)
             model = AutoModel(
                 model=sensevoice_path,
-                device=settings.asr_auxiliary_device or settings.whisper_device,
+                device=device,
                 hub="ms",
                 disable_update=True,
             )
         else:
             model = AutoModel(
                 model=self.MODEL_ID_SENSEVOICE,
-                device=settings.asr_auxiliary_device or settings.whisper_device,
+                device=device,
                 hub="ms",
-                revision=self._REVISION_SENSEVOICE or None,
+                model_revision=self._REVISION_SENSEVOICE or None,
+                disable_update=True,
             )
+        confirm_torch_model_device(model, device, role="auxiliary")
         return model
 
     def _load_funasr(self, *, for_primary: bool = False) -> object:
@@ -256,12 +287,18 @@ class FunASRBackend:
             局部复核时使用 ``ASR_REVIEW_DEVICE``。
         :returns: 缓存的 FunASR ``AutoModel`` 实例。
         """
+        device = (settings.asr_primary_device if for_primary else settings.asr_review_device) or settings.whisper_device
+        role = "primary" if for_primary else "review"
+        require_torch_device(device, role=role)
         try:
             from funasr import AutoModel
-        except ImportError:
-            raise RuntimeError("Need funasr. Run: pip install funasr modelscope") from None
-        device = (settings.asr_primary_device if for_primary else settings.asr_review_device) or settings.whisper_device
-        vad_kwargs = {"max_single_segment_time": settings.asr_vad_max_segment_s * 1000}
+        except ImportError as exc:
+            raise RuntimeError("Need funasr. Run: pip install funasr modelscope") from exc
+        vad_kwargs = {
+            "max_single_segment_time": settings.asr_vad_max_segment_s * 1000,
+            "fp16": False,
+            "bf16": False,
+        }
         if self._use_local_models:
             nano_path = str(Path(self._models_dir) / "funasr_nano")
             vad_path = str(Path(self._models_dir) / "paraformer" / "fsmn-vad")
@@ -291,8 +328,11 @@ class FunASRBackend:
                 vad_kwargs=vad_kwargs,
                 device=device,
                 hub="ms",
-                revision=self._REVISION_NANO or None,
+                model_revision=self._REVISION_NANO or None,
+                disable_update=True,
             )
+        self._prepare_vad_precision(model)
+        confirm_torch_model_device(model, device, role=role)
         return model
 
     # ---- 转写 (V0.1.12.2: 返回 ASRTranscriptResult) ----
@@ -831,11 +871,12 @@ class FasterWhisperBackend:
         return self.transcribe(audio_path)
 
 
-def _load_whisper_model(model_size: str, device: str, compute_type: str):  # noqa: ANN202
+def _load_whisper_model(model_size: str, device: str, compute_type: str) -> WhisperModel:
     """创建 WhisperModel；实例由推理模型池独占管理。
 
     V0.1.13: 加载前检查系统资源, 不足时根据 asr_resource_policy 决定抛异常或仅警告。
     """
+    cuda_index = require_whisper_device(device)
     # V0.1.13: ASR resource detection before model loading
     from app.core.asr_detection import check_resources_sufficient
 
@@ -862,6 +903,8 @@ def _load_whisper_model(model_size: str, device: str, compute_type: str):  # noq
         compute_type,
     )
     try:
+        if cuda_index is not None:
+            return WhisperModel(model_size, device="cuda", device_index=cuda_index, compute_type=compute_type)
         return WhisperModel(model_size, device=device, compute_type=compute_type)
     except ValueError as exc:
         if not _is_unsupported_compute_type_error(exc, compute_type):
@@ -873,6 +916,8 @@ def _load_whisper_model(model_size: str, device: str, compute_type: str):  # noq
             device,
             exc,
         )
+        if cuda_index is not None:
+            return WhisperModel(model_size, device="cuda", device_index=cuda_index, compute_type="auto")
         return WhisperModel(model_size, device=device, compute_type="auto")
 
 

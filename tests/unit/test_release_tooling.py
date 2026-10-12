@@ -55,8 +55,8 @@ def test_release_gate_cannot_disable_payload_or_portable_checks() -> None:
     assert "--skip-reproducible" not in source
 
 
-def test_ci_gate_runs_ruff_with_current_python(monkeypatch: MonkeyPatch) -> None:
-    """本地 CI 门禁不得依赖 PATH 中的裸 ``ruff`` 可执行文件。"""
+def test_ci_gate_runs_shared_checks_with_current_python(monkeypatch: MonkeyPatch) -> None:
+    """本地 CI 门禁共用提交检查，不依赖 PATH 中的裸工具可执行文件。"""
     from scripts import ci_gate
 
     commands: list[list[str]] = []
@@ -70,9 +70,13 @@ def test_ci_gate_runs_ruff_with_current_python(monkeypatch: MonkeyPatch) -> None
     monkeypatch.setattr(ci_gate.sys, "argv", ["ci_gate.py", "--skip-audit"])
 
     assert ci_gate.main() == 0
-    assert commands[:2] == [
-        [sys.executable, "scripts/run_ruff.py", "check"],
-        [sys.executable, "scripts/run_ruff.py", "format"],
+    assert commands[0] == [
+        sys.executable,
+        "-m",
+        "pre_commit",
+        "run",
+        "--all-files",
+        "--show-diff-on-failure",
     ]
 
 

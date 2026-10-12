@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -84,13 +85,16 @@ def approve_candidate_sync(
     :param cancel_check: 可选的取消检查。
     :returns: 生成的 clip_id;失败返回 ``None``。
     """
+    from app.core.process_control import ProcessCancelledError
     from app.db.entities import HighlightEvent, SegmentTask
     from app.db.entities import TaskStatus as _Ts
     from app.pipeline.approval import approve_event_and_task
     from app.pipeline.heartbeat import start_heartbeat_thread
     from app.pipeline.highlight_feedback import record_candidate_review_feedback
-    from app.pipeline.lifecycle import _WORKER_ID, now_utc
-    from app.pipeline.stage_result import enqueue_next, mark_completed, mark_failed
+    from app.pipeline.lease import LeaseLostError, TaskLease, still_owns_lease
+    from app.pipeline.lifecycle import _WORKER_ID, finish_execution, now_utc, register_execution
+    from app.pipeline.scheduler import settle_cancellation
+    from app.pipeline.stage_result import enqueue_next, mark_completed, mark_failed, request_cancellation
 
     claimed_task_id: int | None = None
     claimed_lease_token: str | None = None
@@ -111,6 +115,14 @@ def approve_candidate_sync(
 
         if event is None:
             raise ValueError(f"候选数据不完整：缺少审核事件 candidate_id={candidate_id}")
+        if task is not None and task.stage in {
+            _Ts.TRANSCRIBING,
+            _Ts.ANALYZING,
+            _Ts.RENDERING,
+            _Ts.PUBLISHING,
+            _Ts.CANCELLING,
+        }:
+            raise RuntimeError("任务正在执行或取消中，不能重复人工出片")
         approved = approve_event_and_task(
             task_id=task.id if task is not None else None,
             event_id=event.id,
@@ -147,16 +159,33 @@ def approve_candidate_sync(
 
     from app.pipeline.orchestrator import produce_clip
 
-    heartbeat_stop = (
-        start_heartbeat_thread(claimed_task_id, claimed_lease_token, _Ts.RENDERING)
+    lease = (
+        TaskLease(claimed_task_id, _WORKER_ID, claimed_lease_token, _Ts.RENDERING)
         if claimed_task_id is not None and claimed_lease_token is not None
         else None
     )
+
+    def cancelled() -> bool:
+        if cancel_check is not None and cancel_check():
+            return True
+        if lease is not None:
+            with get_session() as db:
+                return not still_owns_lease(db, lease)
+        return False
+
+    if lease is not None:
+        register_execution(lease.task_id, lease.lease_token)
+
+    heartbeat_stop: threading.Event | None = None
     try:
+        if lease is not None:
+            heartbeat_stop = start_heartbeat_thread(lease.task_id, lease.lease_token, _Ts.RENDERING)
         clip = produce_clip(
             candidate_id,
             progress_callback=progress_callback,
-            cancel_check=cancel_check,
+            cancel_check=cancelled,
+            task_lease=lease,
+            output_suffix=f"lease_{lease.lease_token}" if lease is not None else None,
         )
     except Exception as exc:
         if claimed_task_id is not None:
@@ -167,12 +196,18 @@ def approve_candidate_sync(
                     and claimed_task.stage == _Ts.RENDERING
                     and claimed_task.lease_token == claimed_lease_token
                 ):
-                    mark_failed(claimed_task, f"人工出片失败: {exc}", permanent=False)
+                    if isinstance(exc, (ProcessCancelledError, LeaseLostError)):
+                        request_cancellation(claimed_task)
+                    else:
+                        mark_failed(claimed_task, f"人工出片失败: {exc}", permanent=False)
                     db.add(claimed_task)
         raise
     finally:
         if heartbeat_stop is not None:
             heartbeat_stop.set()
+        if lease is not None:
+            finish_execution(lease.task_id, lease.lease_token)
+            settle_cancellation(lease)
     if claimed_task_id is not None:
         with get_session() as db:
             claimed_task = db.get(SegmentTask, claimed_task_id)

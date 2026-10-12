@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from functools import wraps
 from typing import ParamSpec, TypeVar
@@ -72,5 +73,19 @@ def version() -> None:
     print(f"BiliLiveCut {__version__}")
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """初始化 UTF-8 输出后运行 CLI，覆盖帮助和参数错误等回调前输出。"""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (OSError, TypeError, ValueError):
+            # 测试捕获器或嵌入式宿主可能禁止修改流配置；保留宿主设置。
+            continue
     app()
+
+
+if __name__ == "__main__":
+    main()

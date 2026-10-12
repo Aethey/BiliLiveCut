@@ -91,6 +91,7 @@ class WebJobManager:
         self._cancel_events: dict[str, threading.Event] = {}
         self._handlers: dict[str, JobHandler] = {}
         self._started = False
+        self._stopping = False
 
     def register(self, job_type: str, handler: JobHandler) -> None:
         """注册一种作业处理器。"""
@@ -101,6 +102,7 @@ class WebJobManager:
         if self._started:
             return
         self._started = True
+        self._stopping = False
         self._semaphore = asyncio.Semaphore(self._max_concurrency)
         from app.web.services.job_handlers import register_job_handlers
 
@@ -134,10 +136,11 @@ class WebJobManager:
             if job["status"] in _ACTIVE:
                 self._schedule(job["id"])
 
-    async def stop(self) -> None:
+    async def stop(self, *, timeout_s: float = 15.0) -> None:
         """请求活动作业停止，并等待可取消处理器释放资源。"""
         if not self._started:
             return
+        self._stopping = True
         for job_id, task in tuple(self._tasks.items()):
             job = get_job(job_id)
             if job is None:
@@ -153,10 +156,10 @@ class WebJobManager:
                 _update_job(job_id, status="cancelling", message="服务关闭，正在停止")
         tasks = tuple(self._tasks.values())
         if tasks:
-            try:
-                await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=15)
-            except TimeoutError:
-                logger.warning("Web 作业关闭等待超时，{} 个线程仍在收尾", len(self._tasks))
+            _, pending = await asyncio.wait(tasks, timeout=timeout_s)
+            if pending:
+                logger.error("Web 作业关闭等待超时，{} 个处理器仍在收尾；保留作业及取消登记", len(pending))
+                raise RuntimeError(f"{len(pending)} 个 Web 作业未确认退出，关闭未完成")
         self._tasks.clear()
         self._cancel_events.clear()
         self._started = False
@@ -172,6 +175,8 @@ class WebJobManager:
         cancellable_while_running: bool = True,
     ) -> dict[str, Any]:
         """创建作业；相同去重键已有活动作业时直接返回原作业。"""
+        if self._stopping:
+            raise RuntimeError("Web 作业管理器正在关闭，不能接受新作业")
         if job_type not in self._handlers:
             if not self._started:
                 await self.start()
@@ -233,6 +238,8 @@ class WebJobManager:
     def retry(self, job_id: str, actor: str, *, is_admin: bool = False) -> dict[str, Any]:
         """原地重试失败或取消的作业。"""
         asyncio.get_running_loop()
+        if self._stopping:
+            raise RuntimeError("Web 作业管理器正在关闭，不能重试")
         if self._semaphore is None:
             raise ValueError("作业管理器尚未启动")
         job = get_job(job_id)

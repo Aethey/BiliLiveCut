@@ -220,7 +220,7 @@ def _next_message(slot: _Slot, timeout: float = 0.2) -> dict[str, Any] | None:
 def _roles(config: Settings) -> tuple[str, ...]:
     roles = {"fallback"} if config.asr_primary == "whisper" else {"primary"}
     if config.asr_primary != "whisper":
-        if config.asr_sensevoice and config.asr_sensevoice_enabled:
+        if config.asr_primary != "openai_compatible" and config.asr_sensevoice and config.asr_sensevoice_enabled:
             roles.add("auxiliary")
         if config.asr_funasr_review and config.asr_primary == "paraformer":
             roles.add("review")
@@ -500,6 +500,15 @@ class ASRProcessPool:
                     or (expired and not any(getattr(config, f"asr_{role}_keep_loaded") for role in _roles(config)))
                 ):
                     self._kill(slot)
+
+    def has_active_task(self, task_id: int, lease_token: str) -> bool:
+        """核对原任务是否仍占用进程、IPC 或标准化操作，不能提前结算取消。"""
+        with self._condition:
+            contexts = [slot.context for slot in self._slots if slot.busy]
+            contexts.extend(self._operations.values())
+            return any(
+                context.get("task_id") == task_id and context.get("lease_token") == lease_token for context in contexts
+            )
 
     def infos(self) -> list[dict[str, object]]:
         """返回子进程实测模型状态及监管阶段，不在父进程加载模型。"""
