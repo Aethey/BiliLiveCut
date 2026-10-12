@@ -165,3 +165,35 @@ def test_release_rejects_injected_tag_without_executing_it(tmp_path: Path, tag: 
     result = subprocess.run([bash, "-c", step["run"]], cwd=tmp_path, env=env, timeout=10, capture_output=True)
     assert result.returncode != 0
     assert not (tmp_path / "injected").exists()
+
+
+@pytest.mark.parametrize(
+    ("event_name", "macos_result", "succeeds"),
+    [
+        ("push", "success", True),
+        ("push", "failure", False),
+        ("push", "skipped", False),
+        ("workflow_dispatch", "success", True),
+        ("workflow_dispatch", "failure", False),
+        ("workflow_dispatch", "skipped", False),
+        ("pull_request", "skipped", True),
+        ("pull_request", "failure", False),
+    ],
+)
+def test_ci_status_requires_macos_for_manual_verification(
+    tmp_path: Path, event_name: str, macos_result: str, succeeds: bool
+) -> None:
+    workflow = yaml.safe_load((ci_gate.REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    step = workflow["jobs"]["ci-status"]["steps"][0]
+    bash = shutil.which("bash")
+    if os.name == "nt":
+        git = shutil.which("git")
+        assert git is not None
+        candidate = Path(git).resolve().parents[1] / "bin/bash.exe"
+        if candidate.is_file():
+            bash = str(candidate)
+    assert bash is not None
+    results = {key: "success" for key in step["env"] if key.endswith("_RESULT")}
+    env = os.environ | results | {"EVENT_NAME": event_name, "MACOS_RESULT": macos_result}
+    result = subprocess.run([bash, "-c", step["run"]], cwd=tmp_path, env=env, timeout=10, capture_output=True)
+    assert (result.returncode == 0) is succeeds, result.stderr

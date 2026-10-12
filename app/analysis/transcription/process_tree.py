@@ -16,6 +16,7 @@ class ProcessTree:
     def __init__(self, pid: int) -> None:
         self.pid = pid
         self._lock = Lock()
+        self._terminated = False
         self._handle: int | None = None
         if os.name != "nt":
             return
@@ -102,7 +103,13 @@ class ProcessTree:
     def terminate(self) -> None:
         """终止本监管器独占的进程树；调用方再用 join/wait 确认启动者退出。"""
         with self._lock:
+            if self._terminated:
+                return
             self._terminate()
+            # 成功终止后不再发送信号：Darwin 的僵尸进程组可能返回 EPERM，
+            # 回收后的 PID/PGID 也可能被其他进程复用。失败则保留所有权供重试。
+            # 调用方仍须通过 join/wait/communicate 确认退出和管道收尾。
+            self._terminated = True
 
     def _terminate(self) -> None:
         if os.name == "nt":

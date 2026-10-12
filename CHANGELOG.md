@@ -2,6 +2,8 @@
 
 ## V0.1.18.8 Alpha (2026-10-11)
 
+- 修复 macOS 重复清理受监管进程组时的 `EPERM`：成功终止保持幂等，失败仍保留所有权和重试能力；继续等待命令退出及管道收尾。手动 CI 纳入 macOS 完整验收，服务退出回归超时时保留子进程诊断。
+
 - 修复配置 CUDA 却仍使用 CPU 的诊断与安装缺口：Portable 增加持久化 Torch CPU/cu126/cu130 安装选择，固定官方 Windows 双 ABI wheel 与 SHA-256，离线缺包明确失败，启动不再覆盖已识别的 CUDA 配套包。FunASR 加载前验证真实 CUDA 运算、加载后核对参数设备，拒绝 SDK 静默回退；Whisper 按 CTranslate2 独立检查，Doctor 显示有效配置与实际运行时。
 
 - 鸣谢补充 Bilibili 用户 TDD-怡汁汽水糖 与伯丶牙，以及贡献 PR #73 的 GitHub 用户 GEYUANwuqi，保留已有反馈者与支持者名单。

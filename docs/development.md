@@ -99,7 +99,7 @@ python -m pre_commit run --all-files --show-diff-on-failure
 
 CI 的每周定时任务只运行依赖审计，避免无源码变更时重复执行整套测试与 Portable 构建。各矩阵覆盖率文件按目录保存；`CI status` 汇总所有适用 job 的结果，可作为分支保护的必需检查。是否启用分支保护由仓库管理员配置。
 
-GitHub Actions 的 macOS 全量测试仅在 `main` 推送时运行。覆盖率测试步骤上限为 90 分钟，整个 job 上限为 120 分钟，为依赖安装和报告上传保留余量。超时配置更新仅对使用新提交的运行生效，重跑旧提交仍使用其原有时限。
+GitHub Actions 的 macOS 全量测试在 `main` 推送或手动运行 CI（`workflow_dispatch`）时执行，可在修复分支上先验收平台问题；两种事件的 `CI status` 都要求 macOS 成功。覆盖率测试步骤上限为 90 分钟，整个 job 上限为 120 分钟，为依赖安装和报告上传保留余量。超时配置更新仅对使用新提交的运行生效，重跑旧提交仍使用其原有时限。
 
 macOS 字幕和片头测试需要带 `subtitles`、`drawtext` 滤镜的 FFmpeg。CI 安装 Homebrew 的 [`ffmpeg-full`](https://formulae.brew.sh/formula/ffmpeg-full)，通过 `brew --prefix --installed ffmpeg-full` 解析路径，并显式设置 `FFMPEG_PATH`、`FFPROBE_PATH` 和后续步骤的 `PATH`。该配方为 keg-only，仅安装它不会替换默认路径中的普通 `ffmpeg`；普通版缺少这些滤镜时会导致真实烧录测试失败。安装步骤检查两个可执行文件和所需滤镜，缺失时在完整测试前直接报错，不跳过字幕或片头测试。
 
@@ -117,6 +117,8 @@ python scripts/release_gate.py
 `dev` extra 包含门禁使用的 `pytest-timeout`。本地 CI 门禁和发布门禁均拒绝测试跳过；本地 CI 门禁先构建 Windows Payload，再执行 Portable 测试，构建失败时拒绝复用旧产物。完整 Portable 检查需要 Windows 和相应原生构建工具；其他平台可运行 `python scripts/ci_gate.py --skip-portable`。所有 `--skip-*` 模式都会明确标记为部分检查通过，不代表完整 CI 门禁通过。
 
 真实高光插件联调需要单独提供插件仓库，命令见[使用指南](usage.md#可插拔高光评分)，不属于宿主默认测试集。
+
+受监管进程树的终止操作在锁内保持幂等：成功发送终止信号后，重复清理不会再次使用可能已回收的 PID/PGID；首次权限错误继续上报并保留重试能力。调用方仍须等待直接子进程退出并排空管道，不能将发出信号等同于服务已退出。
 
 ## 版本与源码冻结
 
