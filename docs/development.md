@@ -30,6 +30,8 @@ uv run --locked --extra asr-all --extra llm blc serve
 
 `uv run` 会同步环境，省略 extras 可能移除此前安装的可选依赖；已同步后可用 `uv run --no-sync ...` 运行当前环境。纯运行环境使用 `uv sync --locked --no-dev --extra web`，对应命令为 `uv run --locked --no-dev --extra web blc ...`。
 
+`blc` 和 `python -m app.cli` 在解析参数前将标准输出及标准错误流设为 UTF-8，帮助与错误信息中的中文不依赖 Windows 当前代码页；重定向日志也应按 UTF-8 读取。嵌入式调用可继续使用 `app.cli.app`，由宿主管理输出流。
+
 `uv.lock` 纳入版本管理，锁定源码环境的依赖；Portable 的 Windows ABI 锁仍按原流程维护。修改依赖后执行 `uv lock` 并一起提交 `pyproject.toml` 和 `uv.lock`；有意升级单个包时用 `uv lock --upgrade-package 包名`。[`--locked` 会拒绝过期锁文件](https://docs.astral.sh/uv/concepts/projects/sync/#checking-the-lockfile)，CI 在 Linux/Windows 验证锁文件、运行与开发安装、原生扩展导入和目标测试。原有 pip 多 Python 测试矩阵继续运行。
 
 ### venv + pip

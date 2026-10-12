@@ -76,7 +76,7 @@ dev = [
 
 [project.scripts]
 # 安装后可直接用 `blc` 命令调用 CLI。
-blc = "app.cli:app"
+blc = "app.cli:main"
 
 [dependency-groups]
 # uv 默认安装开发环境；复用 pip extras，避免维护两份依赖清单。
