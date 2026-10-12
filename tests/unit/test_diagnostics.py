@@ -235,20 +235,29 @@ def test_cancel_error_keeps_cleanup_failure_note_without_credentials(monkeypatch
     from unittest.mock import Mock
 
     from app.core import process_control
+    from app.pipeline import lifecycle
 
     process = Mock(spec=subprocess.Popen)
+    process.pid = -1
     process.poll.return_value = None
     process.terminate.side_effect = PermissionError("terminate denied token=private-cleanup")
     monkeypatch.setattr(process_control.subprocess, "Popen", lambda *args, **kwargs: process)
+    tree = Mock(spec=process_control.ProcessTree)
+    monkeypatch.setattr(process_control, "ProcessTree", lambda pid: tree)
 
     def failed_cancel() -> bool:
         raise ValueError("cancel state unavailable")
 
-    with pytest.raises(ValueError) as caught:
-        run_cancellable(["fake-process"], cancel_check=failed_cancel)
-    summary = safe_exception_summary(caught.value)
-    assert "cancel state unavailable" in summary and "PermissionError: terminate denied" in summary
-    assert "private-cleanup" not in summary
+    try:
+        with pytest.raises(ValueError) as caught:
+            run_cancellable(["fake-process"], cancel_check=failed_cancel)
+        summary = safe_exception_summary(caught.value)
+        assert "cancel state unavailable" in summary and "PermissionError: terminate denied" in summary
+        assert "private-cleanup" not in summary
+        assert process in lifecycle._subprocesses
+    finally:
+        process.poll.return_value = 0
+        lifecycle.cleanup_subprocesses()
 
 
 def test_multi_gpu_resource_probe_uses_first_device(monkeypatch: pytest.MonkeyPatch) -> None:
