@@ -279,6 +279,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,web]"
 
+      - name: Verify process cleanup and service shutdown
+        shell: bash
+        env:
+          ASR_NO_MODEL_DOWNLOAD: "1"
+        run: python -m pytest tests/unit/test_process_tree.py tests/unit/test_process_control.py tests/unit/test_service_shutdown.py --timeout=120 --fail-on-skip
+        timeout-minutes: 10
+
       - name: Run pytest with coverage (>=50%)
         shell: bash
         env:
