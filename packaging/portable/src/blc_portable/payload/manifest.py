@@ -5,7 +5,7 @@ Manifest 只描述 ZIP 内实际存在的文件，不包含未入包的文件。
 
 字段语义:
 - portable_release_version: Portable 发布版本 (如 0.1.18.8-alpha)
-- core_source_commit / core_source_commit_short: 固定业务源码基线 cece25d
+- core_source_commit / core_source_commit_short: 固定业务源码基线 01e5a18
 - core_api_level: 业务源码的 schema version
 - builder_commit: 构建工具 commit
 - format_version: Manifest 当前且唯一的格式版本
@@ -24,8 +24,8 @@ from typing import Any
 
 from blc_portable.project_license import PROJECT_LICENSE_ID, project_license_sha256
 
-SOURCE_COMMIT_SHORT = "cece25d"
-SOURCE_COMMIT_FULL = "cece25d20d11e8d9e5388923cabcf79f71c7f137"
+SOURCE_COMMIT_SHORT = "01e5a18"
+SOURCE_COMMIT_FULL = "01e5a1854aa73396a195b4f4a43399eb09beb35a"
 RELEASE_VERSION = "0.1.18.8-alpha"
 MANIFEST_FORMAT_VERSION = 7
 _MANIFEST_FIELDS = {
