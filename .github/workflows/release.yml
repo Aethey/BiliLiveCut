@@ -21,7 +21,7 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
   actions: read
 
 jobs:
@@ -34,12 +34,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Validate tag input
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_TAG: ${{ github.event.inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG_INPUT="${{ github.event.inputs.tag }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG_INPUT="$REQUESTED_TAG"
           else
             TAG_INPUT="${GITHUB_REF#refs/tags/}"
           fi
@@ -90,6 +94,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -103,20 +109,14 @@ jobs:
       - name: Install dev dependencies
         run: |
           python -m pip install --upgrade pip "setuptools>=77" "Cython==3.2.9"
-          pip install -e ".[dev,web]" \
-            --index-url https://mirrors.aliyun.com/pypi/simple/ \
-            --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple \
-            --trusted-host mirrors.aliyun.com \
-            --trusted-host pypi.tuna.tsinghua.edu.cn
+          pip install -e ".[dev,web]" --index-url https://pypi.org/simple
           python setup.py build_ext --inplace
-      - name: Ruff lint
-        run: python scripts/run_ruff.py check
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
 
-      - name: Ruff format check
-        run: python scripts/run_ruff.py format
-
-      - name: Version consistency
-        run: python scripts/check_version_consistency.py
+      - name: Shared pre-commit checks
+        run: python -m pre_commit run --all-files --show-diff-on-failure
 
       - name: Release audit (full)
         run: python scripts/release_audit.py
@@ -137,6 +137,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - uses: actions/setup-python@v5
@@ -152,9 +153,12 @@ jobs:
 
       - name: Extract tag version
         id: tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_TAG: ${{ github.event.inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ github.event.inputs.tag }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$REQUESTED_TAG"
           else
             TAG="${GITHUB_REF#refs/tags/}"
           fi
@@ -214,6 +218,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - uses: actions/setup-python@v5
@@ -284,6 +289,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - uses: actions/setup-python@v5
@@ -420,6 +426,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - uses: actions/setup-python@v5
@@ -651,13 +658,15 @@ jobs:
   # ═══════════════════════════════════════════════════════════════════
   release:
     name: "Create GitHub Release"
-    needs: [build-sdist, build-windows-lite, smoke-test]
-    runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
+    needs: [build-sdist, build-windows-lite, smoke-test]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Download sdist
@@ -710,9 +719,12 @@ jobs:
 
       - name: Extract tag version
         id: tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_TAG: ${{ github.event.inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ github.event.inputs.tag }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$REQUESTED_TAG"
           else
             TAG="${GITHUB_REF#refs/tags/}"
           fi

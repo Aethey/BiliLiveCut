@@ -314,6 +314,8 @@ def check_distribution_config(audit: AuditResult) -> None:
     ci_path = REPO_ROOT / ".github" / "workflows" / "ci.yml"
     release_path = REPO_ROOT / ".github" / "workflows" / "release.yml"
     frontend_check_path = REPO_ROOT / "scripts" / "check_frontend_interactions.mjs"
+    frontend_runner_path = REPO_ROOT / "scripts" / "check_frontend.py"
+    hook_config_path = REPO_ROOT / ".pre-commit-config.yaml"
     portable_spec_path = REPO_ROOT / "packaging" / "portable" / "specs" / "portable_launcher.spec"
 
     pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
@@ -401,7 +403,18 @@ def check_distribution_config(audit: AuditResult) -> None:
     frontend_check = frontend_check_path.read_text(encoding="utf-8") if frontend_check_path.is_file() else ""
     audit.check(
         "CI 执行前端模块与交互检查",
-        "node scripts/check_frontend_interactions.mjs" in ci,
+        "python -m pre_commit run --all-files --show-diff-on-failure" in ci
+        and hook_config_path.is_file()
+        and "entry: python scripts/check_frontend.py" in hook_config_path.read_text(encoding="utf-8")
+        and frontend_runner_path.is_file()
+        and all(
+            suite in frontend_runner_path.read_text(encoding="utf-8")
+            for suite in (
+                "scripts/check_frontend_interactions.mjs",
+                "scripts/check_configuration_interactions.mjs",
+                "scripts/check_recording_import_interactions.mjs",
+            )
+        ),
     )
     audit.check(
         "前端交互检查覆盖模块、场次时间线与标签切换",

@@ -237,6 +237,8 @@ python download_engines.py            # 可选：按锁定 revision 建立本地
 python build_engine_pack.py --from-cache  # 从已验证缓存构建
 ```
 
+`--fixture` 按统一模型目录生成必需文件的非空占位内容，可通过真实安装器验证安装、摘要和内容身份；它不包含可推理模型，不能作为正式 Engine Pack 分发。Release 的冻结启动器 smoke 使用此包验证离线模型准备，缺失或空必需文件仍会被拒绝。
+
 输出:
 
 - dist/engine-pack/BiliLiveCut-EnginePack-0.1.18.8-alpha.zip

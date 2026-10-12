@@ -4,11 +4,47 @@
 
 ## 开发环境
 
-使用 Python 3.11/3.12，准备 FFmpeg 和 Node.js。在隔离虚拟环境中安装开发依赖：
+使用 Python 3.11/3.12，准备 FFmpeg 和 Node.js 22 或更新版本。uv 和传统 venv + pip 均受支持，共用 `pyproject.toml` 中的依赖与 extras。
+
+### uv
+
+先按 [uv 官方说明](https://docs.astral.sh/uv/getting-started/installation/)安装 uv，当前 CI 验证版本为 `0.12.18`。在项目根目录执行：
+
+```bash
+uv sync --locked
+uv run --locked pre-commit install
+uv run --locked python -m pytest tests/unit/test_native_parity.py
+uv run --locked pre-commit run --all-files --show-diff-on-failure
+```
+
+`.python-version` 默认选择 Python 3.12，不改变包的 `>=3.11` 要求；需要其他版本可用 `uv sync --locked --python 3.11`。`uv sync` 创建 `.venv` 并以 editable 方式安装项目，无需手动激活环境。[默认 dev 依赖组](https://docs.astral.sh/uv/concepts/projects/dependencies/#default-groups)复用原有 `dev`、`web` extras；setuptools 和 wheel 与现有可复现 bootstrap wheel 构建器的固定版本一致，不默认安装 FunASR/LLM 或下载转写模型。
+
+需要完整业务依赖时，同步与运行都传入所需 extras：
+
+```bash
+uv sync --locked --extra asr-all --extra llm
+uv run --locked --extra asr-all --extra llm blc serve
+```
+
+`uv run` 会同步环境，省略 extras 可能移除此前安装的可选依赖；已同步后可用 `uv run --no-sync ...` 运行当前环境。纯运行环境使用 `uv sync --locked --no-dev --extra web`，对应命令为 `uv run --locked --no-dev --extra web blc ...`。
+
+`uv.lock` 纳入版本管理，锁定源码环境的依赖；Portable 的 Windows ABI 锁仍按原流程维护。修改依赖后执行 `uv lock` 并一起提交 `pyproject.toml` 和 `uv.lock`；有意升级单个包时用 `uv lock --upgrade-package 包名`。[`--locked` 会拒绝过期锁文件](https://docs.astral.sh/uv/concepts/projects/sync/#checking-the-lockfile)，CI 在 Linux/Windows 验证锁文件、运行与开发安装、原生扩展导入和目标测试。原有 pip 多 Python 测试矩阵继续运行。
+
+### venv + pip
+
+先用 `python -m venv .venv` 创建环境，Linux/macOS 执行 `source .venv/bin/activate`，PowerShell 执行 `.\.venv\Scripts\Activate.ps1`，再安装开发依赖：
 
 ```powershell
+python -m pip install "setuptools>=77"
 pip install -e ".[dev,web,asr-all,llm]"
+python -m pre_commit install
 ```
+
+`pre-commit install` 为当前 checkout 安装提交钩子；每次克隆后执行一次。首次运行需要联网准备隔离的 hook 环境，之后复用缓存。项目的 Python 检查脚本不需要在 hook 环境安装应用或下载模型；前端检查使用 PATH 中的 Node.js。
+
+提交时以只读模式检查暂存文件的 Ruff lint/格式、JSON/YAML/TOML、冲突标记和新增文件大小（上限 1 MiB），并运行项目版本一致性、changelog 归档和快速发行契约审计。Web 或前端检查脚本变更时，还检查 JavaScript 文件、模板内联脚本的语法，以及仪表盘、设置中心、录播导入三组交互。需要修复时，对目标文件显式执行 Ruff 修复或格式化，检查 diff 后再暂存。
+
+Ruff 与 pre-commit 的版本固定在项目配置中，外部 hook 和新增 Action 使用经核对的完整 Git 提交；更新 Ruff 时同步修改 `pyproject.toml`、hook 提交与 `additional_dependencies`。更新 pre-commit 时同步修改开发依赖、配置最低版本和 CI 安装版本。新增超过上限且确需入库的文件应明确调整 hook 配置；录像、模型及发行产物应继续放在存储或构建目录中。
 
 源码依赖要求 `sqlmodel>=0.0.22,<0.0.45`，Portable 完整锁继续使用 `0.0.39`。当前 Schema 与 API 使用既有无时区 UTC 时间约定；[SQLModel 0.0.45 起改变默认日期时间行为](https://sqlmodel.tiangolo.com/advanced/datetime/#upgrade-existing-applications)，直接升级会影响入库、查询、时间比较与响应格式。依赖上限用于保持现有数据契约，不触发数据库迁移。
 
@@ -16,7 +52,24 @@ Portable 依赖锁固定 `hydra-core==1.3.7` 和 `urllib3==2.8.0`，对应 [Hydr
 
 Windows 的 `FFMPEG_PATH`、`FFPROBE_PATH` 应指向真实二进制文件，避免指向 Chocolatey 的 `bin` 包装程序。包装进程可能在停止时留下仍持有管道的 FFmpeg 子进程。Windows CI 共用 `scripts/download_release_ffmpeg.py` 的 Release 下载入口，沿用 BtbN/Gyan 来源、每源最多三次尝试及 ZIP 完整性校验，绕开 Chocolatey 服务超时后返回成功但未安装文件的问题。通过 `--github-env` 指定 Actions 环境文件时，脚本先执行两个二进制的版本探测并确认 `subtitles`、`drawtext` 滤镜，全部成功后才写入真实绝对路径，并把已验证目录加入后续步骤的 PATH；失败保留具体原因并返回非零状态。Portable Full 已使用随包二进制的绝对路径。
 
+### 原生扩展构建与安装排错
+
 Python 镜像配置见[使用指南](usage.md#python-依赖源)。普通源码运行缺少原生扩展时可按函数回退到 Python 参考实现；完整验证和 Portable 发行需要对应 ABI 的 C、Cython、Rust 三个扩展。Windows C/Cython 构建需要可用的 MSVC 工具链，Rust 需要 Rust 工具链。
+
+默认安装编译 C/Cython；uv 与 pip 使用相同构建后端。Ubuntu 使用系统 Python 3.12 时，`Python.h: No such file or directory` 表示缺少开发头文件，可执行 `sudo apt-get install build-essential python3.12-dev`（其他 Python 版本安装对应的开发包）。uv 也可管理 Python：`uv python install 3.12` 后使用 `uv sync --locked --managed-python`，仍需 C 编译器；若已有使用系统 Python 的 `.venv`，应先退出并将该环境移走，再创建新环境。
+
+不需要原生加速时，可以显式跳过扩展安装：
+
+```bash
+# Linux/macOS
+BLC_SKIP_C_EXTENSIONS=1 uv sync --locked
+# pip 同样支持此开关
+BLC_SKIP_C_EXTENSIONS=1 python -m pip install -e ".[dev,web]"
+```
+
+PowerShell 对应执行 `$env:BLC_SKIP_C_EXTENSIONS = "1"` 后再安装。uv 运行命令时保持该环境变量；恢复原生构建先取消它（PowerShell：`Remove-Item Env:BLC_SKIP_C_EXTENSIONS`），再执行 `uv sync --locked --reinstall-package bili-live-cut`。uv 构建缓存跟踪此开关及 C/Cython 源文件，切换模式后不会沿用不匹配的构建缓存；本地已生成的扩展文件不会因此删除。纯 Python 安装不代表完整原生发行验证通过。
+
+使用 uv 编译时，在下列 Python 命令前加 `uv run --locked`：
 
 ```powershell
 python setup.py build_ext --inplace
@@ -35,13 +88,12 @@ CI 使用 `pip install -e ".[dev,web]"` 安装依赖。`dev` 复用 `asr-whisper
 
 ```powershell
 python -m pytest
-python scripts/run_ruff.py check
-python scripts/run_ruff.py format
-python scripts/check_version_consistency.py
-python scripts/check_changelog_archive.py
-node scripts/check_frontend_interactions.mjs
-node scripts/check_configuration_interactions.mjs
+python -m pre_commit run --all-files --show-diff-on-failure
 ```
+
+提交钩子、CI 的 lint job 和发布前检查共用 `.pre-commit-config.yaml`。只验证前端可执行 `python scripts/check_frontend.py`。完整测试、覆盖率、联网依赖审计和 Portable 构建由 CI/发布门禁执行，不放进每次提交。文档包含版本信息并参与源码发行，因此 Markdown 修改也触发 CI 的检查。
+
+CI 的每周定时任务只运行依赖审计，避免无源码变更时重复执行整套测试与 Portable 构建。各矩阵覆盖率文件按目录保存；`CI status` 汇总所有适用 job 的结果，可作为分支保护的必需检查。是否启用分支保护由仓库管理员配置。
 
 GitHub Actions 的 macOS 全量测试仅在 `main` 推送时运行。覆盖率测试步骤上限为 90 分钟，整个 job 上限为 120 分钟，为依赖安装和报告上传保留余量。超时配置更新仅对使用新提交的运行生效，重跑旧提交仍使用其原有时限。
 
@@ -57,6 +109,8 @@ python scripts/ci_gate.py
 # 发布前门禁：拒绝测试跳过、无效审计结果及不完整或不可复现的产物
 python scripts/release_gate.py
 ```
+
+`dev` extra 包含门禁使用的 `pytest-timeout`。本地 CI 门禁和发布门禁均拒绝测试跳过；本地 CI 门禁先构建 Windows Payload，再执行 Portable 测试，构建失败时拒绝复用旧产物。完整 Portable 检查需要 Windows 和相应原生构建工具；其他平台可运行 `python scripts/ci_gate.py --skip-portable`。所有 `--skip-*` 模式都会明确标记为部分检查通过，不代表完整 CI 门禁通过。
 
 真实高光插件联调需要单独提供插件仓库，命令见[使用指南](usage.md#可插拔高光评分)，不属于宿主默认测试集。
 
