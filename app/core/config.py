@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     # FFmpeg 按关键帧边界完成分段，因此 300 秒是目标值，实际片长会有小幅浮动。
     segment_duration_s: int = Field(default=300, ge=5, le=600)
     preferred_stream_protocol: Literal["hls", "flv"] = "hls"
-    stream_quality: int = 10000
+    stream_quality: int = Field(default=10000, ge=1)
     reconnect_max_backoff_s: int = Field(default=30, ge=1)
     live_poll_interval_s: int = Field(default=15, ge=5)
     room_metadata_refresh_interval_s: int = Field(default=30, ge=5, le=3600)

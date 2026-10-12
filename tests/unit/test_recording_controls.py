@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -504,6 +505,98 @@ def test_reconnect_budget_honors_count_time_and_reset() -> None:
     budget.begin(100.0)
     assert budget.exhaustion_reason(129.9, max_attempts=0, max_elapsed_s=30) is None
     assert "30.0/30 秒" in (budget.exhaustion_reason(130.0, max_attempts=0, max_elapsed_s=30) or "")
+
+
+@pytest.mark.parametrize("db_room_id", [3, 5])
+async def test_transport_eof_refreshes_signed_address_and_stops_at_budget(
+    temp_db: None, tmp_path: Path, monkeypatch: MonkeyPatch, db_room_id: int
+) -> None:
+    from app.db.entities import AppSetting, LiveRoom, RecordingSession, SessionStatus
+    from app.db.session import get_session
+    from app.pipeline import storage_lifecycle
+    from app.recording import recorder as recorder_module
+
+    source_room = SourceRoom(
+        platform="bilibili",
+        source_id=str(100000 + db_room_id),
+        canonical_url=f"https://live.bilibili.com/{100000 + db_room_id}",
+    )
+    with get_session() as db:
+        room = LiveRoom(
+            id=db_room_id, room_id=int(source_room.source_id), platform="bilibili", input_url=source_room.canonical_url
+        )
+        db.add(room)
+        db.flush()
+        bind_bilibili_room(db, room)
+    requested: list[str] = []
+    launched: list[str] = []
+
+    async def fresh_stream(self: object, room: SourceRoom, preference: object) -> list[StreamSpec]:
+        assert room == source_room
+        url = f"https://cdn.example.com/stream.m3u8?token=private-{db_room_id}-{len(requested)}"
+        requested.append(url)
+        return [StreamSpec(url=url, transport="hls", container="ts", quality_id="250")]
+
+    original_spawn = asyncio.create_subprocess_exec
+    fake_ffmpeg = tmp_path / "ffmpeg_eof.py"
+    fake_ffmpeg.write_text(
+        "import sys; print('[https @ 000001] End of file',file=sys.stderr,flush=True);sys.exit(1)", encoding="utf-8"
+    )
+
+    async def spawn(*args: str, **kwargs: object) -> asyncio.subprocess.Process:
+        launched.append(args[args.index("-i") + 1])
+        return await original_spawn(sys.executable, str(fake_ffmpeg), **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(storage_lifecycle, "should_stop_recording", lambda: False)
+    monkeypatch.setattr(recorder_module.settings, "collect_danmaku", False)
+    monkeypatch.setattr(recorder_module.settings, "recording_reconnect_max_attempts", 2)
+    monkeypatch.setattr(recorder_module.settings, "recording_reconnect_max_elapsed_s", 0)
+    monkeypatch.setattr("app.sources.bilibili.source.BilibiliSource.get_streams", fresh_stream)
+    recorder = recorder_module.Recorder(source_room=source_room, db_room_id=db_room_id, metadata_prepared=True)
+    await recorder.run()
+    assert len(requested) == 2 and len(set(requested)) == 2
+    assert launched == requested
+    assert recorder.retry_budget_exhausted and recorder._active_process is None
+    with get_session() as db:
+        session = db.get(RecordingSession, recorder.session_id)
+        assert session is not None and session.status == SessionStatus.ERROR
+        assert session.reconnect_count == 1
+        selection = db.get(AppSetting, f"session_stream:{recorder.session_id}")
+        assert selection is not None
+        assert json.loads(selection.value)["quality_id"] == "250"
+        assert "private-" not in selection.value and "cdn.example.com" not in selection.value
+
+
+async def test_temporary_stream_failure_budget_keeps_error_status(
+    temp_db: None, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    from app.plugins.live_source import SourceTemporaryError
+    from app.recording import recorder as recorder_module
+
+    recorder = recorder_module.Recorder(
+        source_room=SourceRoom(platform="bilibili", source_id="123", canonical_url="https://live.bilibili.com/123"),
+        db_room_id=1,
+        metadata_prepared=True,
+    )
+    updates: list[dict[str, object]] = []
+
+    async def failed_stream(room: SourceRoom, preference: object) -> list[StreamSpec]:
+        raise SourceTemporaryError("live but no compatible quality")
+
+    async def no_wait(seconds: float) -> None:
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(recorder_module.source_registry, "get_streams", failed_stream)
+    monkeypatch.setattr(recorder_module, "session_raw_dir", lambda sid: tmp_path)
+    monkeypatch.setattr(recorder, "_create_session", lambda: 123)
+    monkeypatch.setattr(recorder, "_update_session", lambda **kwargs: updates.append(kwargs))
+    monkeypatch.setattr(recorder, "_sleep_or_stop", no_wait)
+    monkeypatch.setattr(recorder_module.settings, "collect_danmaku", False)
+    monkeypatch.setattr(recorder_module.settings, "recording_reconnect_max_attempts", 2)
+    await recorder.run()
+    assert updates[-1]["status"] == "error"
+    assert "取流暂时失败" in str(updates[-1]["error_message"])
 
 
 @pytest.mark.asyncio

@@ -128,6 +128,7 @@ class Recorder:
         self._source: LiveSource | None = None
         self._run_task: asyncio.Task[None] | None = None
         self._source_retry_delay = 0.0
+        self._source_error: str | None = None
         self._source_action_required = False
         self.db_room_id = db_room_id
         self.on_segment = on_segment
@@ -441,8 +442,8 @@ class Recorder:
             return False
         self._retry_budget_exhausted = True
         message = f"{reason}，自动结束本场录制"
-        if self._last_exit_abnormal:
-            self._recording_error = message
+        if self._last_exit_abnormal or self._source_error is not None:
+            self._recording_error = f"{message}；{self._source_error}" if self._source_error is not None else message
         self._update_session(error_message=message)
         logger.info("{} room={} session={}", message, self.db_room_id, self._session_id)
         return True
@@ -513,12 +514,14 @@ class Recorder:
     async def _fetch_stream(self) -> StreamSpec | None:
         """每次重连重新取流；永久来源错误结束当前录制，临时失败使用原预算。"""
         self._source_retry_delay = 0.0
+        self._source_error = None
         try:
             streams = await source_registry.get_streams(
                 self.source_room, StreamPreference(preferred_transport=settings.preferred_stream_protocol)
             )
         except SourceTemporaryError as exc:
             self._source_retry_delay = exc.retry_after or 0.0
+            self._source_error = f"取流暂时失败：{exc.code}"
             self._update_session(error_message=f"取流暂时失败：{exc.code}")
             logger.opt(exception=exc).warning(
                 "取流失败 db_room={} platform={} session={} code={} retry_after={}",

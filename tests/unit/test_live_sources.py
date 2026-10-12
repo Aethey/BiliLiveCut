@@ -27,7 +27,14 @@ from app.plugins.live_source import (
     StreamSpec,
 )
 from app.plugins.manager import PluginManager, PluginStateError
-from app.sources.bilibili.client import BilibiliLiveClient, BilibiliRateLimitError, HttpErrorType, RoomInfo, StreamInfo
+from app.sources.bilibili.client import (
+    BilibiliLiveClient,
+    BilibiliRateLimitError,
+    BilibiliStreamUnavailable,
+    HttpErrorType,
+    RoomInfo,
+    StreamInfo,
+)
 from app.sources.bilibili.source import BilibiliSource
 from app.sources.registry import SourceRegistry
 
@@ -266,7 +273,7 @@ async def test_bilibili_adapter_preserves_qn_protocol_and_error_meaning(
     assert room.source_id == "123"
     assert (await source.get_room_info(room)).status == LiveStatus.UNKNOWN
     result = await source.get_streams(room, StreamPreference())
-    assert [item.quality_id for item in result] == ["250", "10000"]
+    assert [item.quality_id for item in result] == ["250"]
     assert all("Cookie" not in item.headers for item in result)
 
     async def denied(self: BilibiliLiveClient, value: str, *, include_detail: bool = True) -> RoomInfo:
@@ -275,6 +282,18 @@ async def test_bilibili_adapter_preserves_qn_protocol_and_error_meaning(
     monkeypatch.setattr(BilibiliLiveClient, "get_room_info", denied)
     with pytest.raises(SourceAuthenticationError, match="登录态"):
         await source.get_room_info(room)
+
+
+async def test_no_quality_stream_is_temporary_without_platform_cooldown(monkeypatch: MonkeyPatch) -> None:
+    async def unavailable(self: BilibiliLiveClient, room_id: int, quality: int) -> list[StreamInfo]:
+        raise BilibiliStreamUnavailable("live but no usable quality")
+
+    monkeypatch.setattr(BilibiliLiveClient, "get_streams", unavailable)
+    room = SourceRoom(platform="bilibili", source_id="123", canonical_url="https://live.bilibili.com/123")
+    with pytest.raises(SourceTemporaryError) as error:
+        await BilibiliSource().get_streams(room, StreamPreference())
+    assert error.value.retry_after is None
+    assert isinstance(error.value.__cause__, BilibiliStreamUnavailable)
 
 
 def write_source_plugin(root: Path, *, broken: bool = False) -> Path:
