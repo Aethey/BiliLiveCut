@@ -1,8 +1,8 @@
 {
   "release_version": "0.1.18.8-alpha",
   "version_label": "V0.1.18.8 Alpha",
-  "source_commit_short": "ebe8f8a",
-  "source_commit_full": "ebe8f8a83c0c51e74c0961ce0760d2ba50d1d05c",
+  "source_commit_short": "e5ded04",
+  "source_commit_full": "e5ded04324fc0daf5af8b018a22484d100da9295",
   "engine_pack_version": "0.1.18.8-alpha",
   "runtime_schema": 5,
   "core_schema": 6,
