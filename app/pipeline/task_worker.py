@@ -279,6 +279,7 @@ class TaskWorker:
         self._session_summaries: set[asyncio.Task[bool]] = set()
         self._summary_claims: dict[asyncio.Task[bool], SessionSummaryClaim] = {}
         self._main_task: asyncio.Task[None] | None = None
+        self._preload_task: asyncio.Task[None] | None = None
         self._running: bool = False
         self._next_summary_scan = 0.0
         self._summary_scan_cursor = 0
@@ -304,6 +305,7 @@ class TaskWorker:
         self._main_task = asyncio.create_task(self._loop())
         if settings.asr_preload_on_start:
             self._preload_task = asyncio.create_task(self._preload_models())
+            self._preload_task.add_done_callback(_observe_execution)
         from app.core.settings_store import asr_task_max_concurrency
 
         _logger.info(
@@ -323,6 +325,7 @@ class TaskWorker:
         """优雅关闭 — 停止领取新任务, 等待当前任务完成或取消。"""
         shutdown_event.set()
         self._running = False
+        errors: list[Exception] = []
 
         if self._main_task is not None:
             self._main_task.cancel()
@@ -330,6 +333,9 @@ class TaskWorker:
                 await self._main_task
             except asyncio.CancelledError:
                 pass
+            except Exception as exc:  # 关闭边界：主循环故障也必须继续释放模型和媒体资源。
+                errors.append(exc)
+                _logger.opt(exception=exc).error("Worker 主循环异常，继续资源清理")
 
         grace_period = settings.worker_shutdown_timeout_seconds
         deadline = time.monotonic() + grace_period
@@ -347,7 +353,7 @@ class TaskWorker:
                 for claim in self._summary_claims.values():
                     await asyncio.to_thread(interrupt_summary_execution, claim)
             finally:
-                cleanup_subprocesses()
+                await asyncio.to_thread(cleanup_subprocesses)
             raise
         preload = getattr(self, "_preload_task", None)
         if preload is not None and not preload.done():
@@ -391,8 +397,10 @@ class TaskWorker:
                 if still_running:
                     await asyncio.gather(*still_running, return_exceptions=True)
 
+        await asyncio.to_thread(cleanup_subprocesses)
+        if errors:
+            raise ExceptionGroup("Worker 关闭期间发现异常", errors)
         _logger.info("TaskWorker stopped.")
-        cleanup_subprocesses()
 
     async def _loop(self) -> None:
         """主调度循环 — 每个 tick 执行阶段推进、stale 恢复、任务分发。"""

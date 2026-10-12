@@ -55,7 +55,12 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
     TaskStatus.APPROVED: {TaskStatus.APPROVED_WAITING_RENDER, TaskStatus.QUEUED_FOR_RENDER},
     TaskStatus.APPROVED_WAITING_RENDER: {TaskStatus.QUEUED_FOR_RENDER, TaskStatus.CANCELLED},
     TaskStatus.QUEUED_FOR_RENDER: {TaskStatus.RENDERING},
-    TaskStatus.RENDERING: {TaskStatus.RENDERED, TaskStatus.TRANSIENT_FAILED, TaskStatus.FAILED},
+    TaskStatus.RENDERING: {
+        TaskStatus.RENDERED,
+        TaskStatus.TRANSIENT_FAILED,
+        TaskStatus.FAILED,
+        TaskStatus.QUEUED_FOR_RENDER,
+    },
     # 成功发布日志恢复可直接完成；结果未知必须回到人工核对入口。
     TaskStatus.RENDERED: {
         TaskStatus.AWAITING_PUBLISH_CONFIRMATION,

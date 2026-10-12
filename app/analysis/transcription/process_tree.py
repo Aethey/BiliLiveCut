@@ -1,4 +1,4 @@
-"""ASR 子进程树的所有权；父进程退出时不遗留原生推理或 FFmpeg。"""
+"""受监管子进程树的所有权；父进程退出时不遗留原生推理或媒体处理。"""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import os
 import signal
 import time
 from ctypes import wintypes
+from threading import Lock
 
 
 class ProcessTree:
@@ -14,6 +15,7 @@ class ProcessTree:
 
     def __init__(self, pid: int) -> None:
         self.pid = pid
+        self._lock = Lock()
         self._handle: int | None = None
         if os.name != "nt":
             return
@@ -98,7 +100,11 @@ class ProcessTree:
         self._handle = handle
 
     def terminate(self) -> None:
-        """终止本监管器独占的进程树；退出确认由 Process.join 完成。"""
+        """终止本监管器独占的进程树；调用方再用 join/wait 确认启动者退出。"""
+        with self._lock:
+            self._terminate()
+
+    def _terminate(self) -> None:
         if os.name == "nt":
             if self._handle is not None:
 
@@ -125,7 +131,8 @@ class ProcessTree:
                     if time.monotonic() >= deadline:
                         raise RuntimeError(f"进程树终止后仍有 {accounting.ActiveProcesses} 个活动进程 pid={self.pid}")
                     time.sleep(0.02)
-                self._kernel.CloseHandle(self._handle)
+                if not self._kernel.CloseHandle(self._handle):
+                    raise ctypes.WinError(ctypes.get_last_error())
                 self._handle = None
         else:
             try:

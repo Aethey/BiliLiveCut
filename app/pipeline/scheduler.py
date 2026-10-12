@@ -10,6 +10,7 @@ from sqlmodel import select
 
 from app.analysis.transcription.process_pool import ASRShutdownError
 from app.core.config import settings
+from app.core.process_control import ProcessShutdownError
 from app.core.runtime_settings import configured_entry
 from app.core.sanitize import safe_exception_summary
 from app.db.entities import (
@@ -403,13 +404,16 @@ def execute_task(task_id: int, active_stage_val: str, lease_token: str | None = 
             run_render(lease)
         elif active_stage_val == TaskStatus.PUBLISHING:
             run_publish(lease)
-    except ASRShutdownError:
+    except (ASRShutdownError, ProcessShutdownError):
         with get_session() as db:
             if db.get_bind().dialect.name == "sqlite":
                 db.connection().exec_driver_sql("BEGIN IMMEDIATE")
             task = db.get(SegmentTask, task_id)
             if task is not None and lease is not None and still_owns_lease(db, lease):
+                attempts = task.attempts
                 enqueue_next(task, resume_stage(active_stage_val))
+                # 服务关闭不增加失败次数，也不能清零先前已有的重试计数。
+                task.attempts = attempts
                 db.add(task)
         _logger.info(
             "execution_shutdown_requeued task=%s stage=%s worker=%s lease=%s",

@@ -503,22 +503,33 @@ async def test_shutdown_failure_still_fences_computation_and_summary(
     assert session_summary._commit_summary_result(claim, result) is False
 
 
-def test_shutdown_does_not_consume_task_retry_budget(temp_db: None, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("stage", [TaskStatus.TRANSCRIBING, TaskStatus.RENDERING])
+@pytest.mark.parametrize("attempts", [0, 2])
+def test_shutdown_does_not_consume_task_retry_budget(
+    temp_db: None, monkeypatch: pytest.MonkeyPatch, stage: str, attempts: int
+) -> None:
     from app.analysis.transcription.process_pool import ASRShutdownError
+    from app.core.process_control import ProcessShutdownError
     from app.pipeline import scheduler
 
-    task_id, _, _ = seed()
+    task_id, _, _ = seed(stage)
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        assert task is not None
+        task.attempts = attempts
+        db.add(task)
     monkeypatch.setattr(scheduler, "_WORKER_ID", "worker")
     monkeypatch.setattr(scheduler, "start_heartbeat_thread", lambda *args: threading.Event())
 
     def interrupted(lease: object) -> None:
-        raise ASRShutdownError("shutdown deadline")
+        error = ASRShutdownError if stage == TaskStatus.TRANSCRIBING else ProcessShutdownError
+        raise error("shutdown deadline")
 
-    monkeypatch.setattr(scheduler, "run_transcribe", interrupted)
-    scheduler.execute_task(task_id, TaskStatus.TRANSCRIBING, "old")
+    monkeypatch.setattr(scheduler, "run_transcribe" if stage == TaskStatus.TRANSCRIBING else "run_render", interrupted)
+    scheduler.execute_task(task_id, stage, "old")
     with get_session() as db:
         task = db.get(SegmentTask, task_id)
-        assert task.stage == TaskStatus.QUEUED_FOR_TRANS and task.attempts == 0
+        assert task.stage == stale_recovery.resume_stage(stage) and task.attempts == attempts
         assert task.lease_token is None
 
 

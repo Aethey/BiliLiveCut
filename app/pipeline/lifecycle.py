@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import random
+import subprocess
 import threading
-import time as _time
 import uuid
 from datetime import UTC, datetime
 
+from app.analysis.transcription.process_tree import ProcessTree
 from app.core.sanitize import safe_exception_summary
 
 _WORKER_ID: str = f"worker-{uuid.uuid4().hex[:8]}"
@@ -16,7 +17,7 @@ _WORKER_ID: str = f"worker-{uuid.uuid4().hex[:8]}"
 shutdown_event: threading.Event = threading.Event()
 
 # 子进程跟踪 — 锁在模块初始化时立即创建, 避免延迟初始化竞态
-_subprocesses: list = []
+_subprocesses: dict[subprocess.Popen[str] | subprocess.Popen[bytes], ProcessTree] = {}
 _subprocesses_lock: threading.Lock = threading.Lock()
 
 # V0.1.13: Task-level resource tracking (ResourceBudget integration)
@@ -56,43 +57,39 @@ def jitter(base: float, jitter_s: float = _RETRY_JITTER_S) -> float:
     return base + random.uniform(0, jitter_s)
 
 
-def track_subprocess(proc) -> None:
-    """注册子进程句柄, 供关闭时统一 terminate/kill。"""
+def track_subprocess(proc: subprocess.Popen[str] | subprocess.Popen[bytes], tree: ProcessTree) -> None:
+    """登记命令及其独占进程树，关闭时同时确认后代与管道收尾。"""
     with _subprocesses_lock:
-        _subprocesses.append(proc)
+        _subprocesses[proc] = tree
 
 
-def untrack_subprocess(proc) -> None:
+def untrack_subprocess(proc: subprocess.Popen[str] | subprocess.Popen[bytes]) -> None:
     """从跟踪集中移除已正常结束的子进程。"""
     with _subprocesses_lock:
-        try:
-            _subprocesses.remove(proc)
-        except ValueError:
-            pass
+        _subprocesses.pop(proc, None)
 
 
 def cleanup_subprocesses() -> None:
-    """关闭所有被跟踪的子进程: SIGTERM → 等待 → SIGKILL。"""
+    """收尾本实例登记的命令树；失败保留登记并上报，不能声称已释放。"""
     import logging
+
+    from app.core.process_control import terminate_owned_process
 
     _logger = logging.getLogger(__name__)
     with _subprocesses_lock:
-        procs = list(_subprocesses)
-        _subprocesses.clear()
+        procs = list(_subprocesses.items())
     if not procs:
         return
-    _logger.warning("清理 %s 个子进程 (SIGTERM)", len(procs))
-    for p in procs:
+    _logger.warning("清理 %s 个独占命令进程树", len(procs))
+    errors: list[Exception] = []
+    for proc, tree in procs:
         try:
-            if p.poll() is None:
-                p.terminate()
-        except OSError as exc:
-            _logger.error("子进程清理失败 pid=%s: %s", p.pid, safe_exception_summary(exc))
-    _time.sleep(5)
-    for p in procs:
-        try:
-            if p.poll() is None:
-                p.kill()
-                _logger.warning("子进程 %s 已被 SIGKILL", p.pid)
-        except OSError as exc:
-            _logger.error("子进程清理失败 pid=%s: %s", p.pid, safe_exception_summary(exc))
+            # 输出仅由命令调用者读取，关闭线程不能同时消费同一 PIPE。
+            terminate_owned_process(proc, tree, drain_output=False)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            errors.append(exc)
+            _logger.error("子进程树清理失败 pid=%s: %s", proc.pid, safe_exception_summary(exc))
+        else:
+            untrack_subprocess(proc)
+    if errors:
+        raise ExceptionGroup("受监管命令进程树清理失败", errors)
