@@ -11,7 +11,7 @@
   "sha256": "a0f86217f052c3847b8966dbb78824c082abe0301d8654abc5efce1a78fc4ad1",
   "content_manifest_sha256": "3664ce179150bc3242ebe49064544a0755bc6ed8c5882a411dbf8af5e2e94605",
   "model_lock_sha256": "27a4229efbb7f7646a54e992e75cc304d858527be74a296a4aa3b4c437a9b3db",
-  "source_commit": "ca6d83fffebe5d7fd7aee23dd20e899be975ae51",
+  "source_commit": "b76939aa4f6cf58f37840140b3d71d48ae7a676c",
   "builder_commit": "5af24451228b7e227c348dcdbbe194710914aa9f",
   "build_timestamp": "2026-10-12T21:15:37",
   "expected_engine_ids": [
