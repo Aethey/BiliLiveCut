@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+from blc_portable.atomic_fs import replace_with_retry
+
 RUNTIMES = ("cpu", "cu126", "cu130")
 
 
@@ -63,7 +65,7 @@ def save_torch_runtime(app_root: Path, runtime: str) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        replace_with_retry(temporary, path)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
@@ -135,10 +137,10 @@ def verify_torch_runtime(python: Path, base_lock: Path, runtime: str, environmen
     expected_cuda = {"cpu": None, "cu126": "12.6", "cu130": "13.0"}[runtime]
     script = (
         "import importlib.metadata as m, json, sys; import torch, torchaudio; "
-        "expected=json.loads(sys.argv[1]); actual={p:m.version(p) for p in expected}; "
-        "assert actual==expected, f'Torch package versions mismatch: {actual}'; "
-        "cuda=json.loads(sys.argv[2]); "
-        "assert torch.version.cuda==cuda, f'Torch CUDA build mismatch: {torch.version.cuda}'; "
+        "expected=json.loads(sys.argv[1]); actual={p:m.version(p) for p in expected}\n"
+        "if actual != expected: raise RuntimeError(f'Torch package versions mismatch: {actual}')\n"
+        "cuda=json.loads(sys.argv[2])\n"
+        "if torch.version.cuda != cuda: raise RuntimeError(f'Torch CUDA build mismatch: {torch.version.cuda}')\n"
         "print(json.dumps({'torch':str(torch.__version__),'torchaudio':str(torchaudio.__version__),"
         "'cuda_build':torch.version.cuda,'cuda_available':torch.cuda.is_available()}))"
     )

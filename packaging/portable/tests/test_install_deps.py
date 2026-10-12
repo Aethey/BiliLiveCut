@@ -98,7 +98,7 @@ def test_install_dependencies_recognizes_strict_hash_lock_versions(
     )
     calls: list[list[str]] = []
 
-    def _fake_run(args, **kwargs):
+    def _fake_run(args: list[str], **kwargs: object) -> _sp.CompletedProcess[str]:
         calls.append(args)
         if args[-3:] == ["pip", "list", "--format=json"]:
             return _sp.CompletedProcess(

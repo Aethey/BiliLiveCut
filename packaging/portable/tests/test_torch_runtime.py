@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -260,3 +261,27 @@ def test_offline_missing_gpu_wheels_stop_before_pip_install(
         main.install_dependencies(Path("python.exe"), tmp_path, torch_runtime="cu126")
     assert not any("install" in args for args in commands)
     assert runtime.load_torch_runtime(tmp_path) is None
+
+
+@pytest.mark.parametrize("mismatch", ["version", "cuda"])
+def test_optimized_interpreter_cannot_bypass_installed_runtime_validation(
+    base_lock: Path, tmp_path: Path, mismatch: str
+) -> None:
+    """Run a real optimized interpreter against controlled package metadata and SDKs."""
+    for package, version in (("torch", "2.13.0+cu126"), ("torchaudio", "2.11.0+cu126")):
+        metadata = tmp_path / f"{package}-{version}.dist-info"
+        metadata.mkdir()
+        declared = "0.0.0" if mismatch == "version" else version
+        (metadata / "METADATA").write_text(f"Name: {package}\nVersion: {declared}\n", encoding="utf-8")
+        (tmp_path / f"{package}.py").write_text(
+            "from types import SimpleNamespace\n"
+            f"__version__ = {version!r}\n"
+            f"version = SimpleNamespace(cuda={'None' if mismatch == 'cuda' else repr('12.6')})\n"
+            "cuda = SimpleNamespace(is_available=lambda: False)\n",
+            encoding="utf-8",
+        )
+    environment = {**os.environ, "PYTHONPATH": str(tmp_path), "PYTHONOPTIMIZE": "1"}
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        runtime.verify_torch_runtime(Path(sys.executable), base_lock, "cu126", environment)
+    expected = "package versions mismatch" if mismatch == "version" else "CUDA build mismatch"
+    assert expected in caught.value.stderr
