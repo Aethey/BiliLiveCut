@@ -23,6 +23,7 @@ import re
 import time
 import uuid
 from pathlib import Path
+from typing import Protocol, Self, cast
 
 from loguru import logger
 
@@ -99,6 +100,14 @@ def _probe_audio_duration(audio_path: str) -> float:
 # ═══════════════════════════════════════════════════════════
 # FunASR 多引擎后端 (Paraformer + SenseVoice + FunASR-Nano)
 # ═══════════════════════════════════════════════════════════
+
+
+class _FloatingModule(Protocol):
+    """FunASR 的 Torch 子模型精度边界，不依赖开发环境安装 Torch。"""
+
+    def float(self) -> Self:
+        """将浮点参数及缓冲区转换为 FP32，保持设备不变。"""
+        ...
 
 
 class FunASRBackend:
@@ -181,6 +190,14 @@ class FunASRBackend:
 
     # ---- 懒加载 ----
 
+    @staticmethod
+    def _prepare_vad_precision(model: object) -> None:
+        """FSMN-VAD 接收 FP32 特征，仅转换 VAD，保留 Nano 的 LLM 精度。"""
+        vad = getattr(model, "vad_model", None)
+        if vad is None:
+            raise RuntimeError("FunASR 未加载所配置的 FSMN-VAD，不能执行转写")
+        cast(_FloatingModule, vad).float()
+
     def _load_primary(self) -> object:
         """Load Paraformer-zh main engine (Chinese ASR + punctuation + timestamps).
 
@@ -188,8 +205,8 @@ class FunASRBackend:
         """
         try:
             from funasr import AutoModel
-        except ImportError:
-            raise RuntimeError("Need funasr installed. Run: pip install funasr modelscope") from None
+        except ImportError as exc:
+            raise RuntimeError("Need funasr installed. Run: pip install funasr modelscope") from exc
         device = settings.asr_primary_device or settings.whisper_device
         revision = self._REVISION_PRIMARY or None
 
@@ -201,6 +218,7 @@ class FunASRBackend:
             model = AutoModel(
                 model=self._primary_model_name,
                 vad_model=vad_path,
+                vad_kwargs={"fp16": False, "bf16": False},
                 punc_model=punc_path,
                 device=device,
                 hub="ms",
@@ -208,7 +226,7 @@ class FunASRBackend:
             )
         else:
             logger.info(
-                "Loading Paraformer-zh online: model=%s device=%s revision=%s",
+                "Loading Paraformer-zh online: model={} device={} revision={}",
                 self._primary_model_name,
                 device,
                 revision,
@@ -216,11 +234,14 @@ class FunASRBackend:
             model = AutoModel(
                 model=self._primary_model_name,
                 vad_model="fsmn-vad",
+                vad_kwargs={"fp16": False, "bf16": False},
                 punc_model="ct-punc",
                 device=device,
                 hub="ms",
-                revision=revision,
+                model_revision=revision,
+                disable_update=True,
             )
+        self._prepare_vad_precision(model)
         asr_metrics.record_backend_call("paraformer", 0, success=True)
         logger.info("Paraformer loaded: device={} local={}", device, self._use_local_models)
         return model
@@ -229,8 +250,8 @@ class FunASRBackend:
         """加载 SenseVoice-Small (情感/笑声/音乐/事件检测)。 Uses per-engine revision."""
         try:
             from funasr import AutoModel
-        except ImportError:
-            raise RuntimeError("需要安装 funasr。请执行: pip install funasr modelscope") from None
+        except ImportError as exc:
+            raise RuntimeError("需要安装 funasr。请执行: pip install funasr modelscope") from exc
         if self._use_local_models:
             sensevoice_path = str(Path(self._models_dir) / "sensevoice")
             logger.info("Loading SenseVoice-Small from local path: {}", sensevoice_path)
@@ -245,7 +266,8 @@ class FunASRBackend:
                 model=self.MODEL_ID_SENSEVOICE,
                 device=settings.asr_auxiliary_device or settings.whisper_device,
                 hub="ms",
-                revision=self._REVISION_SENSEVOICE or None,
+                model_revision=self._REVISION_SENSEVOICE or None,
+                disable_update=True,
             )
         return model
 
@@ -258,10 +280,14 @@ class FunASRBackend:
         """
         try:
             from funasr import AutoModel
-        except ImportError:
-            raise RuntimeError("Need funasr. Run: pip install funasr modelscope") from None
+        except ImportError as exc:
+            raise RuntimeError("Need funasr. Run: pip install funasr modelscope") from exc
         device = (settings.asr_primary_device if for_primary else settings.asr_review_device) or settings.whisper_device
-        vad_kwargs = {"max_single_segment_time": settings.asr_vad_max_segment_s * 1000}
+        vad_kwargs = {
+            "max_single_segment_time": settings.asr_vad_max_segment_s * 1000,
+            "fp16": False,
+            "bf16": False,
+        }
         if self._use_local_models:
             nano_path = str(Path(self._models_dir) / "funasr_nano")
             vad_path = str(Path(self._models_dir) / "paraformer" / "fsmn-vad")
@@ -291,8 +317,10 @@ class FunASRBackend:
                 vad_kwargs=vad_kwargs,
                 device=device,
                 hub="ms",
-                revision=self._REVISION_NANO or None,
+                model_revision=self._REVISION_NANO or None,
+                disable_update=True,
             )
+        self._prepare_vad_precision(model)
         return model
 
     # ---- 转写 (V0.1.12.2: 返回 ASRTranscriptResult) ----

@@ -281,6 +281,8 @@ bash scripts/docker-up.sh
 
 空文件、损坏 PCM 和 SDK 错误不会伪装成功；合法音频经 VAD 确认没有语音后保存 `no_speech`，继续使用已取得的音乐/笑声事件。单独安装 `.[asr-funasr]` 也会安装公共 CPU VAD 所需的 faster-whisper。
 
+Nano 与 Paraformer 的 FSMN-VAD 固定使用 FP32 浮点参数，Nano 的语言模型仍采用自身配置的精度，避免 VAD 的 `Float / BFloat16` 冲突。在线加载通过 SDK 的 `model_revision` 使用各引擎固定版本。模型按角色、来源和配置在每个 ASR 子进程内独占复用；初始化失败释放名额，下次任务可以重试。主模型推理失败时依次回退 Paraformer、启用的 Whisper，保留主模型错误和次级错误，不将失败异常帧长期留在流水线缓存中。不同 PID、配置变化或空闲回收后的重新加载有各自独立的缓存，须结合进程及模型诊断判断。
+
 整场总结等待活动任务收尾，终态缺口允许生成“部分完成”报告并列出缺失片段、时间和原因；后台扫描已结束场次，手动重试、补齐转写后重新生成并标明补齐完成，无需打开时间线触发。超时预算与角色并发详见[配置参考](configuration.md#asr-与-llm-有限等待)。
 
 Windows 静态 JS/MJS/CSS 响应不依赖系统 MIME 映射。白屏或“添加直播间”无响应时记录浏览器控制台错误、失败资源 URL 和响应 Content-Type；服务端仍保留 HEAD、Range、缓存与 404 语义。

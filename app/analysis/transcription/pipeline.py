@@ -142,21 +142,25 @@ class ASRPipeline:
         from app.analysis.transcription.speech_evidence import no_speech_result, require_final_result
 
         self._last_backend_error = None
-        result = self._run_backends(audio_path, initial_prompt)
-        model_failed = bool(result.primary_error_type and result.primary_error_type != "ASRQualityError")
-        if not (result.final_text or result.text).strip():
-            if model_failed:
-                raise RuntimeError(
-                    f"ASR 模型异常且无可用回退: {result.primary_error_type}: {result.primary_error_message}"
-                ) from self._last_backend_error
-            if result.result_type != "no_speech":
-                empty = no_speech_result(audio_path, backend=result.backend)
-                if empty is not None:
-                    empty.emotions = result.emotions
-                    empty.primary_backend = result.primary_backend
-                    empty.fallback_backend = result.fallback_backend
-                    result = empty
-        return require_final_result(result)
+        try:
+            result = self._run_backends(audio_path, initial_prompt)
+            model_failed = bool(result.primary_error_type and result.primary_error_type != "ASRQualityError")
+            if not (result.final_text or result.text).strip():
+                if model_failed:
+                    raise RuntimeError(
+                        f"ASR 模型异常且无可用回退: {result.primary_error_type}: {result.primary_error_message}"
+                    ) from self._last_backend_error
+                if result.result_type != "no_speech":
+                    empty = no_speech_result(audio_path, backend=result.backend)
+                    if empty is not None:
+                        empty.emotions = result.emotions
+                        empty.primary_backend = result.primary_backend
+                        empty.fallback_backend = result.fallback_backend
+                        result = empty
+            return require_final_result(result)
+        finally:
+            # 缓存的流水线不能持有失败初始化/推理帧中的模型与 GPU 张量。
+            self._last_backend_error = None
 
     def _run_backends(
         self,
@@ -215,8 +219,11 @@ class ASRPipeline:
             except Exception as exc:
                 self._last_backend_error = exc
                 logger.opt(exception=True).error("Paraformer 次级引擎转写失败: {}", exc)
-                result.primary_error_type = type(exc).__name__
-                result.primary_error_message = safe_exception_summary(exc, limit=500)
+                result.metadata["secondary_error"] = {
+                    "backend": "paraformer",
+                    "error_type": type(exc).__name__,
+                    "error_message": safe_exception_summary(exc, limit=500),
+                }
             else:
                 _merge_auxiliary(result, secondary)
                 secondary_text = secondary.final_text or secondary.text
@@ -253,6 +260,8 @@ class ASRPipeline:
                 fallback_result.primary_error_message = result.primary_error_message
                 fallback_result.fallback_backend = "whisper"
                 fallback_result.fallback_trigger_reason = trigger_reason
+                if "secondary_error" in result.metadata:
+                    fallback_result.metadata["secondary_error"] = result.metadata["secondary_error"]
                 return fallback_result
             result.final_text_source = "none"
             return result
