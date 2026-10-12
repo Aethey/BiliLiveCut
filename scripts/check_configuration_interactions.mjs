@@ -61,6 +61,8 @@ globalThis.document = {
 element("configuration-group").value = "all";
 const fields = [
   { key: "clip_video_crf", label: "视频质量", group: "output", type: "integer", value: 20, baseline: 20, minimum: 0, maximum: 51 },
+  { key: "clip_video_encoder", label: "视频编码设备", group: "output", type: "string", enum: ["cpu", "nvidia", "intel", "amd"], value: "cpu", baseline: "cpu" },
+  { key: "clip_hardware_quality", label: "硬件质量", group: "output", type: "integer", value: 23, baseline: 23, minimum: 1, maximum: 51 },
   { key: "smtp_password", label: "邮箱密码", group: "notifications", type: "string", value: null, baseline: null, secret: true, configured: false },
   { key: "stream_url", label: "文本参数", group: "recording", type: "string", value: "abcdef", baseline: "abcdef" },
   { key: "database_url", label: "数据库", group: "system", type: "string", value: null, secret: true, editable: false, reason: "启动前确定" },
@@ -117,6 +119,7 @@ console.error("configuration check: loading source modules");
   const edit = async (key, value) => { const control = element(`configuration-${key}`); control.value = value; await form.emit("input", control); };
   const action = async (key, name) => form.emit("click", { closest: () => ({ dataset: { key, configAction: name } }) });
   assert.equal(element("configuration-database_url").disabled, true);
+  assert.equal(element("field-clip_video_encoder").hidden, false, "encoder must be visible without advanced settings");
 
   await edit("clip_video_crf", "27");
   assert.equal(module.hasConfigurationDraft(), true);
@@ -172,5 +175,12 @@ console.error("configuration check: loading source modules");
   assert.deepEqual(requests.at(-1).reset, ["clip_video_crf"]);
   assert.equal(element("configuration-clip_video_crf").value, "20");
   assert.equal(element("configuration-database_url").disabled, true);
-  console.log("PASS: configuration draft, delayed reload/caret, validation focus, save failure, concurrent submit, secret clearing, reset and readonly controls");
+  await edit("clip_video_encoder", "nvidia");
+  await edit("clip_hardware_quality", "18");
+  await form.emit("submit");
+  assert.deepEqual(requests.at(-1).values, { clip_video_encoder: "nvidia", clip_hardware_quality: 18 });
+  assert.match(element("configuration-fields").innerHTML, /value="nvidia" selected>NVIDIA 显卡/);
+  await edit("clip_video_encoder", "cpu"); await form.emit("submit");
+  assert.deepEqual(requests.at(-1).values, { clip_video_encoder: "cpu" });
+  console.log("PASS: configuration draft, delayed reload/caret, validation focus, save failure, concurrent submit, secret clearing, reset, readonly controls and hardware encoder selection");
 }

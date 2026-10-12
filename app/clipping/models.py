@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from app.core.config import settings
 
@@ -32,6 +33,9 @@ class ClipOptions:
     :param max_duration_s: 最大时长(秒)。
     :param crf: x264 质量(0-51)。
     :param preset: x264 编码速度档。
+    :param video_encoder: 编码设备；cpu 使用 libx264，其余使用对应硬件编码器。
+    :param hardware_quality: 硬件质量参数；NVENC/AMF 为 QP，QSV 为 ICQ，与 CRF 不等价。
+    :param hardware_preset: 硬件编码速度、均衡或质量档。
     """
 
     loudnorm: bool = True
@@ -41,12 +45,58 @@ class ClipOptions:
     max_duration_s: int = 180
     crf: int = 20
     preset: str = "veryfast"
+    video_encoder: Literal["cpu", "nvidia", "intel", "amd"] = "cpu"
+    hardware_quality: int = 23
+    hardware_preset: Literal["speed", "balanced", "quality"] = "balanced"
+
+    def video_encoding_args(self) -> list[str]:
+        """生成后端专用编码参数；显式选择硬件时不偷偷回退到 CPU。"""
+        if self.video_encoder == "cpu":
+            return ["-c:v", "libx264", "-crf", str(self.crf), "-preset", self.preset, "-pix_fmt", "yuv420p"]
+        if not 1 <= self.hardware_quality <= 51:
+            raise ValueError("硬件编码质量值必须在 1~51 之间")
+        if self.hardware_preset not in {"speed", "balanced", "quality"}:
+            raise ValueError("硬件编码速度档无效")
+        quality = str(self.hardware_quality)
+        if self.video_encoder == "nvidia":
+            preset = {"speed": "p1", "balanced": "p4", "quality": "p7"}[self.hardware_preset]
+            return ["-c:v", "h264_nvenc", "-rc", "constqp", "-qp", quality, "-preset", preset, "-pix_fmt", "yuv420p"]
+        if self.video_encoder == "intel":
+            preset = {"speed": "veryfast", "balanced": "medium", "quality": "veryslow"}[self.hardware_preset]
+            return [
+                "-c:v",
+                "h264_qsv",
+                "-global_quality",
+                quality,
+                "-look_ahead",
+                "0",
+                "-preset",
+                preset,
+                "-pix_fmt",
+                "nv12",
+            ]
+        if self.video_encoder == "amd":
+            return [
+                "-c:v",
+                "h264_amf",
+                "-rc",
+                "cqp",
+                "-qp_i",
+                quality,
+                "-qp_p",
+                quality,
+                "-quality",
+                self.hardware_preset,
+                "-pix_fmt",
+                "nv12",
+            ]
+        raise ValueError(f"不支持的视频编码设备: {self.video_encoder}")
 
     @classmethod
     def from_settings(cls) -> ClipOptions:
         """从全局配置构造默认选项。
 
-        :returns: 依据 ``.env`` 的 :class:`ClipOptions`。
+        :returns: 依据当前任务有效配置快照的 :class:`ClipOptions`。
         """
         return cls(
             loudnorm=settings.clip_loudnorm,
@@ -56,4 +106,7 @@ class ClipOptions:
             max_duration_s=settings.clip_max_duration_s,
             crf=settings.clip_video_crf,
             preset=settings.clip_preset,
+            video_encoder=settings.clip_video_encoder,
+            hardware_quality=settings.clip_hardware_quality,
+            hardware_preset=settings.clip_hardware_preset,
         )

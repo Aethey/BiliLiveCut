@@ -21,6 +21,7 @@ from sqlmodel import Session, select
 
 from app.analysis import audio as audio_mod
 from app.analysis.keywords import match_keywords
+from app.analysis.room_config import room_highlight_keywords
 from app.analysis.source_policy import session_danmaku_lag_s
 from app.analysis.transcription.content import refined_transcript_text
 from app.core.config import settings
@@ -1372,7 +1373,9 @@ def _score_segment_draft(
     lag_s = session_danmaku_lag_s(session_id)
     danmaku_start_ts, danmaku_end_ts = align_danmaku_window(analysis_start_ts, analysis_end_ts, lag_s=lag_s)
     semantic_text_available = bool(judgement_text.strip())
-    kw_score, kw_hits = match_keywords(judgement_text) if semantic_text_available else (0.0, [])
+    kw_score, kw_hits = (
+        match_keywords(judgement_text, room_highlight_keywords(room)) if semantic_text_available else (0.0, [])
+    )
     from app.analysis.source_policy import session_has_danmaku
 
     has_danmaku = session_has_danmaku(session_id, danmaku_start_ts, danmaku_end_ts)

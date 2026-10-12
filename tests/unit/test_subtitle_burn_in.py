@@ -189,6 +189,7 @@ def test_burn_in_survives_nonzero_cross_segment_cut_and_special_path(
             db.flush()
             db.add(ClipVariant(event_id=event.id, variant_type=ClipVariantType.SUBTITLED))
             clip = FinalClip(candidate_id=candidate.id, file_path=str(output))
+        monkeypatch.setattr(settings, "clip_vertical", True)
         _render_single_variant(
             concat,
             output,
@@ -201,6 +202,7 @@ def test_burn_in_survives_nonzero_cross_segment_cut_and_special_path(
             srt_path=subtitle,
             variant_type=ClipVariantType.SUBTITLED,
             clip=clip,
+            options=ClipOptions(loudnorm=False, vertical=False, subtitle=True, preset="ultrafast"),
         )
     else:
         _run_ffmpeg_clip(

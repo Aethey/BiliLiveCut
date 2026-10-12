@@ -196,6 +196,15 @@ class Settings(BaseSettings):
     clip_subtitle: bool = False  # 烧录字幕(从转写生成)
     clip_max_duration_s: int = Field(default=180, ge=5, le=900)
     clip_video_crf: int = Field(default=20, ge=0, le=51)  # x264 质量,越小越好
+    clip_video_encoder: Literal["cpu", "nvidia", "intel", "amd"] = Field(
+        default="cpu", description="视频编码设备：cpu 关闭硬件编码；其余选项需要对应显卡、驱动及 FFmpeg 编码器。"
+    )
+    clip_hardware_quality: int = Field(
+        default=23, ge=1, le=51, description="硬件编码质量值，越小通常越清晰；与 CPU CRF 不等价。"
+    )
+    clip_hardware_preset: Literal["speed", "balanced", "quality"] = Field(
+        default="balanced", description="硬件编码速度档：speed 优先速度、balanced 均衡、quality 优先质量。"
+    )
     clip_preset: Literal[
         "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"
     ] = "veryfast"  # x264 编码速度档

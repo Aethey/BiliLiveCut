@@ -48,6 +48,40 @@ def test_registry_covers_every_core_runtime_field_without_secrets(temp_db: None)
     assert fields["smtp_password"]["configured"] is True
 
 
+def test_web_encoder_settings_reach_next_render_and_preserve_existing_options(temp_db: None) -> None:
+    from app.clipping.models import ClipOptions
+    from app.web.main import app
+
+    existing = ClipOptions.from_settings()
+    client = TestClient(app)
+    response = client.patch(
+        "/api/settings/configuration",
+        json={
+            "values": {
+                "clip_video_encoder": "intel",
+                "clip_hardware_quality": 18,
+                "clip_hardware_preset": "quality",
+                "clip_loudnorm": False,
+                "clip_vertical": True,
+                "clip_preset": "slow",
+            }
+        },
+    )
+    assert response.status_code == 200, response.text
+    current = ClipOptions.from_settings()
+    assert current.video_encoder == "intel" and current.hardware_quality == 18
+    assert current.hardware_preset == "quality" and current.preset == "slow"
+    assert current.vertical and not current.loudnorm
+    command = current.video_encoding_args()
+    assert command[command.index("-c:v") + 1] == "h264_qsv"
+    assert command[command.index("-global_quality") + 1] == "18"
+    assert existing.video_encoder == "cpu" and existing.vertical is False
+    assert (
+        client.patch("/api/settings/configuration", json={"values": {"clip_video_encoder": "cpu"}}).status_code == 200
+    )
+    assert ClipOptions.from_settings().video_encoder == "cpu"
+
+
 @pytest.mark.parametrize(
     "invalid",
     [
@@ -55,6 +89,10 @@ def test_registry_covers_every_core_runtime_field_without_secrets(temp_db: None)
         {"asr_primary_max_concurrency": 0},
         {"asr_primary": "unavailable-engine"},
         {"clip_preset": "not-a-preset"},
+        {"clip_video_encoder": "unavailable-device"},
+        {"clip_hardware_quality": 0},
+        {"clip_hardware_quality": 52},
+        {"clip_hardware_preset": "ultrafast"},
         {"llm_daily_budget": -1},
         {"smtp_port": 65536},
         {"trend_schedule_end": "99:45"},

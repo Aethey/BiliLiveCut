@@ -345,6 +345,7 @@ def _render_intro_outro_cards(
             tmpl.intro_bg_color,
             width,
             height,
+            options=options,
         )
         cards.append(card_path)
 
@@ -362,6 +363,8 @@ def _render_text_card(
     bg_color: str,
     width: int,
     height: int,
+    *,
+    options: ClipOptions | None = None,
 ) -> None:
     """用 FFmpeg color 源 + drawtext 生成文字标题卡视频。
 
@@ -374,6 +377,7 @@ def _render_text_card(
     :param bg_color: 背景颜色(支持透明度如 black@0.6)。
     :param width: 视频宽。
     :param height: 视频高。
+    :param options: 当前任务的编码选项快照。
     """
     import re as _re
     import tempfile as _tmp
@@ -404,12 +408,7 @@ def _render_text_card(
             f"x=(w-text_w)/2:y=(h-text_h)/2:"
             f"box=1:boxcolor=black@0.4:boxborderw=20"
         ),
-        "-c:v",
-        "libx264",
-        "-crf",
-        "18",
-        "-preset",
-        "ultrafast",
+        *(options or ClipOptions.from_settings()).video_encoding_args(),
         "-an",
         "-y",
         str(out_path),
@@ -494,14 +493,7 @@ def _prepend_intro_cards(
             "[v]",
             "-map",
             "[a]",
-            "-c:v",
-            "libx264",
-            "-crf",
-            str(options.crf),
-            "-preset",
-            options.preset,
-            "-pix_fmt",
-            "yuv420p",
+            *options.video_encoding_args(),
             "-fps_mode",
             "vfr",
             "-c:a",
@@ -1098,7 +1090,7 @@ def _run_ffmpeg_clip(
     * ``trim`` / ``atrim``:在滤镜内逐帧精剪，随后归零并烧录本地时间轴字幕;
     * ``-t duration``:截取时长;
     * ``-af`` / ``-vf``:音/视频后处理并把各自首个有效帧的时间戳归零;
-    * ``-c:v libx264 -crf -preset``:H.264 编码,CRF 控质量;
+    * ``-c:v``:所选 CPU/硬件 H.264 编码器，使用该后端专用质量参数;
     * ``-c:a aac -b:a 160k``:AAC 音频;
     * ``-movflags +faststart``:moov 前置,便于网络边下边播。
 
@@ -1132,12 +1124,7 @@ def _run_ffmpeg_clip(
     if vf:
         cmd += ["-vf", vf]
     cmd += [
-        "-c:v",
-        "libx264",
-        "-crf",
-        str(options.crf),
-        "-preset",
-        options.preset,
+        *options.video_encoding_args(),
         "-c:a",
         "aac",
         "-b:a",
@@ -1153,7 +1140,7 @@ def _run_ffmpeg_clip(
     if result.returncode != 0:
         stderr = result.stderr.decode("utf-8", errors="ignore")
         error_type = classify_ffmpeg_error(result.returncode, stderr)
-        raise RuntimeError(f"FFmpeg 切片失败 [{error_type.name}]: {stderr}")
+        raise RuntimeError(f"FFmpeg 切片失败 [encoder={options.video_encoder} {error_type.name}]: {stderr}")
 
 
 def _grab_cover(video_path: Path, cover_path: Path, at_s: float) -> None:
@@ -1199,9 +1186,9 @@ def _render_variants(
 ) -> None:
     """渲染多版本出片(V0.1.8 P1.1)。
 
-    在主干视频生成后,异步渲染:
-    - ARCHIVE:高码率归档版(CRF 14,preset medium,256k 音频)
-    - COMPRESSED:投稿压制版(CRF 26,preset veryfast,128k 音频)
+    在主干视频生成后,依次渲染:
+    - ARCHIVE:高质量归档版(CPU CRF/硬件质量值 14,256k 音频)
+    - COMPRESSED:投稿压制版(CPU CRF/硬件质量值 26,128k 音频)
     - 互补字幕版:与主干相反(主干有字幕→净版,主干无字幕→带字幕版)
 
     每个变体渲染完成即更新对应的 ClipVariant 记录。
@@ -1227,6 +1214,8 @@ def _render_variants(
         cut_offset,
         duration,
         crf=14,
+        hardware_quality=14,
+        options=options,
         preset="medium",
         audio_bitrate="256k",
         subtitle=options.subtitle,
@@ -1246,6 +1235,8 @@ def _render_variants(
         cut_offset,
         duration,
         crf=26,
+        hardware_quality=26,
+        options=options,
         preset="veryfast",
         audio_bitrate="128k",
         subtitle=options.subtitle,
@@ -1272,6 +1263,7 @@ def _render_variants(
             cut_offset,
             duration,
             crf=options.crf,
+            options=options,
             preset=options.preset,
             audio_bitrate="160k",
             subtitle=True,
@@ -1289,6 +1281,7 @@ def _render_variants(
             cut_offset,
             duration,
             crf=options.crf,
+            options=options,
             preset=options.preset,
             audio_bitrate="160k",
             subtitle=False,
@@ -1313,6 +1306,8 @@ def _render_single_variant(
     srt_path: Path | None,
     variant_type: str,
     clip: FinalClip,
+    options: ClipOptions | None = None,
+    hardware_quality: int | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> None:
     """执行单个变体的 FFmpeg 渲染并更新数据库。
@@ -1328,16 +1323,20 @@ def _render_single_variant(
     :param srt_path: SRT 字幕路径(可空)。
     :param variant_type: 变体类型。
     :param clip: 关联的 FinalClip。
+    :param options: 主片的完整渲染配置快照，派生版本沿用设备和后处理开关。
+    :param hardware_quality: 归档或压制版本专用的硬件质量值。
     :param cancel_check: 可选的取消检查。
     """
-    # 构建简化的 ClipOptions 用于滤镜构建
+    # 沿用主片快照，仅覆盖当前变体的质量和字幕参数。
     from dataclasses import replace
 
+    base_options = options or ClipOptions.from_settings()
     var_opts = replace(
-        ClipOptions.from_settings(),
+        base_options,
         crf=crf,
         preset=preset,
         subtitle=subtitle,
+        hardware_quality=base_options.hardware_quality if hardware_quality is None else hardware_quality,
     )
 
     af, vf = _clip_filters(var_opts, srt_path, cut_offset, duration)
@@ -1361,12 +1360,7 @@ def _render_single_variant(
     if vf:
         cmd += ["-vf", vf]
     cmd += [
-        "-c:v",
-        "libx264",
-        "-crf",
-        str(crf),
-        "-preset",
-        preset,
+        *var_opts.video_encoding_args(),
         "-c:a",
         "aac",
         "-b:a",
@@ -1377,7 +1371,15 @@ def _render_single_variant(
         str(out_path),
     ]
 
-    logger.info("渲染变体 {} {} -> {} (CRF={} preset={})", variant_type, clip.candidate_id, out_path.name, crf, preset)
+    logger.info(
+        "渲染变体 {} {} -> {} (encoder={} quality={} preset={})",
+        variant_type,
+        clip.candidate_id,
+        out_path.name,
+        var_opts.video_encoder,
+        var_opts.crf if var_opts.video_encoder == "cpu" else var_opts.hardware_quality,
+        var_opts.preset if var_opts.video_encoder == "cpu" else var_opts.hardware_preset,
+    )
     try:
         result = run_cancellable(cmd, capture_output=True, timeout=1800, cancel_check=cancel_check)
         if result.returncode == 0:
