@@ -13,10 +13,13 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
+from ipaddress import ip_address
 from pathlib import Path
 
+import psutil
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -80,6 +83,18 @@ def _setup_proxy_env() -> None:
         )
 
 
+def _non_loopback_interface_addresses() -> list[str]:
+    """读取本机网卡地址，不通过 DNS/mDNS 解析主机名。"""
+    return sorted(
+        {
+            address.address
+            for addresses in psutil.net_if_addrs().values()
+            for address in addresses
+            if address.family in (socket.AF_INET, socket.AF_INET6) and not ip_address(address.address).is_loopback
+        }
+    )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """应用生命周期:启动初始化、启动 TaskWorker、自动恢复、预约调度、关闭时优雅停止。"""
@@ -93,19 +108,19 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     from app.core.config import settings as _cfg_startup
 
     if not _cfg_startup.admin_password:
-        import socket as _socket
-
-        hostname = _socket.gethostname()
-        non_loopback_ips = []
-        for info in _socket.getaddrinfo(hostname, None):
-            addr = info[4][0]
-            if not addr.startswith("127.") and addr != "::1":
-                non_loopback_ips.append(addr)
-        if non_loopback_ips:
-            logger.warning(
-                "安全警告: ADMIN_PASSWORD 为空, 但主机存在非 loopback 接口: {}. Web 将禁止非本机请求访问 /api 路由。",
-                non_loopback_ips[:3],
+        try:
+            non_loopback_ips = await asyncio.to_thread(_non_loopback_interface_addresses)
+        except OSError as exc:
+            logger.opt(exception=exc).warning(
+                "安全警告: ADMIN_PASSWORD 为空，无法枚举本机网络接口。Web 将禁止非本机请求访问 /api 路由。"
             )
+        else:
+            if non_loopback_ips:
+                logger.warning(
+                    "安全警告: ADMIN_PASSWORD 为空, 但主机存在非 loopback 接口: {}. "
+                    "Web 将禁止非本机请求访问 /api 路由。",
+                    non_loopback_ips[:3],
+                )
     # V0.1.13: 启动 Metrics 后台采样
     from app.core.metrics import start_metrics_collector, stop_metrics_collector
 

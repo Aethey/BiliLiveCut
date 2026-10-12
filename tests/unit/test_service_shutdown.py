@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 
+import psutil
 import pytest
 
 from app.core import metrics
@@ -61,6 +63,68 @@ def _prepare_lifespan(
 
     monkeypatch.setattr(rooms, "auto_recover_interrupted_sessions", recover)
     return stopped
+
+
+@pytest.mark.parametrize(
+    ("addresses", "expected"),
+    [
+        ([], []),
+        ([(socket.AF_INET, "127.0.0.2"), (socket.AF_INET6, "::1")], []),
+        ([(socket.AF_INET, "192.0.2.5"), (socket.AF_INET, "192.0.2.5")], ["192.0.2.5"]),
+        ([(socket.AF_INET6, "fe80::1%en0"), (socket.AF_INET6, "2001:db8::1")], ["2001:db8::1", "fe80::1%en0"]),
+        ([(psutil.AF_LINK, "01:02:03:04:05:06")], []),
+    ],
+)
+def test_startup_interface_scan_filters_local_addresses_without_dns(
+    monkeypatch: pytest.MonkeyPatch, addresses: list[tuple[int, str]], expected: list[str]
+) -> None:
+    from app.web import main
+
+    def interfaces() -> dict[str, list[SimpleNamespace]]:
+        return {"test0": [SimpleNamespace(family=family, address=address) for family, address in addresses]}
+
+    def unavailable_dns(*args: object, **kwargs: object) -> None:
+        raise AssertionError("startup must not resolve the hostname")
+
+    monkeypatch.setattr(psutil, "net_if_addrs", interfaces)
+    monkeypatch.setattr(socket, "getaddrinfo", unavailable_dns)
+    assert main._non_loopback_interface_addresses() == expected
+
+
+@pytest.mark.parametrize("probe_fails", [False, True])
+async def test_lifespan_interface_probe_keeps_event_loop_responsive_and_warns(
+    temp_db: None, monkeypatch: pytest.MonkeyPatch, probe_fails: bool
+) -> None:
+    from app.core.config import settings
+    from app.web import main
+
+    _prepare_lifespan(monkeypatch)
+    monkeypatch.setattr(settings, "admin_password", "")
+    loop_responded = Event()
+    loop = asyncio.get_running_loop()
+    messages: list[str] = []
+
+    def interfaces() -> dict[str, list[SimpleNamespace]]:
+        loop.call_soon_threadsafe(loop_responded.set)
+        assert loop_responded.wait(2), "interface inspection blocked the event loop"
+        if probe_fails:
+            raise OSError("interface enumeration unavailable")
+        return {"test0": [SimpleNamespace(family=socket.AF_INET, address="192.0.2.5")]}
+
+    def unavailable_dns(*args: object, **kwargs: object) -> None:
+        raise AssertionError("startup must not resolve the hostname")
+
+    monkeypatch.setattr(psutil, "net_if_addrs", interfaces)
+    monkeypatch.setattr(socket, "getaddrinfo", unavailable_dns)
+    sink = main.logger.add(messages.append, format="{message}", level="WARNING")
+    try:
+        async with main.lifespan(main.app):
+            assert loop_responded.is_set()
+    finally:
+        main.logger.remove(sink)
+    logged = "".join(messages)
+    assert "Web 将禁止非本机请求访问 /api 路由" in logged
+    assert ("无法枚举本机网络接口" if probe_fails else "192.0.2.5") in logged
 
 
 @pytest.mark.parametrize("failed_service", ["trends", "plugins", "worker", "web_jobs", "recorders", "live_monitor"])
@@ -167,6 +231,7 @@ def test_real_uvicorn_sigint_exits_with_active_media_job(tmp_path: Path) -> None
         DATABASE_URL=f"sqlite:///{(tmp_path / 'probe.db').as_posix()}",
         STORAGE_ROOT=str(tmp_path / "storage"),
         ASR_PRELOAD_ON_START="false",
+        ADMIN_PASSWORD="",
         PYTHONUTF8="1",
     )
     script = r"""
