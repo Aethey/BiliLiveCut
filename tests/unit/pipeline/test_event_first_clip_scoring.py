@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import numpy as np
+import pytest
 from sqlmodel import select
 
 from app.analysis.audio import AudioFeatures
@@ -376,3 +378,235 @@ def test_late_confirmation_retries_model_failure_without_orphan_candidate(
         task = db.get(SegmentTask, task_id)
         assert task.stage == TaskStatus.CANDIDATE_CREATED and task.candidate_id is not None
         assert len(db.exec(select(HighlightCandidate)).all()) == len(db.exec(select(SegmentTask)).all()) == 1
+
+
+def test_evidence_changed_during_model_call_is_recomputed_before_scoring(
+    temp_db: None, monkeypatch: MonkeyPatch
+) -> None:
+    from app.analysis import event_enricher
+    from app.pipeline.workers.analyze import analyze_compute, commit_highlight
+
+    task_id, event_id, _session_id = _seed_candidate_pass(strong=True)
+    _patch_compute_dependencies(monkeypatch)
+    calls = 0
+
+    def update_once(prompt: str, **kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            with get_session() as db:
+                event = db.get(HotspotEvent, event_id)
+                assert event is not None
+                event.transcript_text = "主播介绍本轮挑战的新规则。"
+                db.add(event)
+
+    monkeypatch.setattr(event_enricher.llm, "call_text", update_once)
+    result = analyze_compute(task_id)
+    assert calls == 2
+    assert len(result["event_clip_results"]) == 1
+    commit_highlight(_lease(task_id), result, 50)
+    with get_session() as db:
+        event = db.get(HotspotEvent, event_id)
+        assert event is not None and event.candidate_id is not None
+        bundle = event_enricher.build_event_evidence_bundle(db, event_id)
+        metadata = json.loads(event.features_json or "{}")
+        assert metadata["event_enrichment"]["bundle_fingerprint"] == bundle.fingerprint
+        assert metadata["event_clip_score"]["bundle_fingerprint"] == bundle.fingerprint
+        assert "新规则" in event.summary
+        assert db.get(SegmentTask, task_id).candidate_id == event.candidate_id
+        assert len(db.exec(select(HighlightCandidate)).all()) == 1
+
+
+def test_continuously_changing_evidence_uses_bounded_task_retry(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    from app.analysis import event_enricher
+    from app.pipeline import scheduler
+    from app.pipeline.claiming import pop_and_claim
+
+    task_id, event_id, _session_id = _seed_candidate_pass(strong=True)
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        assert task is not None
+        task.stage = TaskStatus.QUEUED_FOR_ANALYSIS
+        task.claimed_by = task.lease_token = None
+        db.add(task)
+    _patch_compute_dependencies(monkeypatch)
+    calls = 0
+
+    def update_always(prompt: str, **kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        with get_session() as db:
+            event = db.get(HotspotEvent, event_id)
+            assert event is not None
+            event.transcript_text = f"主播介绍第 {calls} 轮挑战的新规则。"
+            db.add(event)
+
+    monkeypatch.setattr(event_enricher.llm, "call_text", update_always)
+    claim = pop_and_claim(TaskStatus.QUEUED_FOR_ANALYSIS)
+    assert claim is not None
+    scheduler.execute_task(claim.id, claim.stage, claim.lease_token)
+    assert calls == 2
+    with get_session() as db:
+        task = db.get(SegmentTask, task_id)
+        assert task is not None and task.stage == TaskStatus.TRANSIENT_FAILED
+        assert task.attempts == 1 and task.next_retry_at is not None
+        assert not task.error_is_permanent
+        assert not db.exec(select(HighlightCandidate)).all()
+        assert not db.exec(select(HighlightEvent)).all()
+        assert db.get(HotspotEvent, event_id).title is None
+
+
+@pytest.mark.parametrize("status", [HotspotStatus.DISMISSED, HotspotStatus.ENRICHING, "deleted", "merged"])
+def test_target_changed_during_model_call_does_not_score_old_event(
+    temp_db: None, monkeypatch: MonkeyPatch, status: str
+) -> None:
+    from app.analysis import event_enricher
+    from app.pipeline.workers.analyze import analyze_compute
+
+    task_id, event_id, _session_id = _seed_candidate_pass(strong=True)
+    _patch_compute_dependencies(monkeypatch)
+
+    def change_target(prompt: str, **kwargs: object) -> None:
+        with get_session() as db:
+            event = db.get(HotspotEvent, event_id)
+            assert event is not None
+            if status == "deleted":
+                db.delete(event)
+            else:
+                if status == "merged":
+                    canonical = HotspotEvent(**event.model_dump(exclude={"id"}))
+                    canonical.event_key = "new-canonical-event"
+                    db.add(canonical)
+                    db.flush()
+                    event.merged_into_id = canonical.id
+                event.status = status
+                db.add(event)
+
+    monkeypatch.setattr(event_enricher.llm, "call_text", change_target)
+    result = analyze_compute(task_id)
+    assert result["event_clip_results"] == []
+    with get_session() as db:
+        assert not db.exec(select(HighlightCandidate)).all()
+        assert not db.exec(select(HighlightEvent)).all()
+
+
+@pytest.mark.parametrize("mismatch", ["event_id", "bundle_fingerprint"])
+def test_commit_rejects_mixed_enrichment_and_clip_snapshots(
+    temp_db: None, monkeypatch: MonkeyPatch, mismatch: str
+) -> None:
+    from app.pipeline.workers.analyze import analyze_compute, commit_highlight
+
+    task_id, event_id, _session_id = _seed_candidate_pass(strong=True)
+    _patch_compute_dependencies(monkeypatch)
+    result = analyze_compute(task_id)
+    item = result["event_clip_results"][0]
+    item["enrichment"] = replace(item["enrichment"], **{mismatch: event_id + 1 if mismatch == "event_id" else "stale"})
+    with pytest.raises(ValueError, match="同一事件和证据快照"):
+        commit_highlight(_lease(task_id), result, 50)
+    with get_session() as db:
+        assert db.get(HotspotEvent, event_id).title is None
+        assert db.get(SegmentTask, task_id).stage == TaskStatus.ANALYZING
+        assert not db.exec(select(HighlightCandidate)).all()
+
+
+def test_late_enrichment_does_not_overwrite_already_scored_event(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    from app.pipeline.workers.analyze import analyze_compute, commit_highlight, score_hotspot_event
+
+    task_id, event_id, _session_id = _seed_candidate_pass(strong=True)
+    _patch_compute_dependencies(monkeypatch)
+    result = analyze_compute(task_id)
+    candidate = score_hotspot_event(event_id)
+    assert candidate is not None
+    with get_session() as db:
+        event = db.get(HotspotEvent, event_id)
+        assert event is not None
+        event.title = "已经确认的标题"
+        db.add(event)
+    commit_highlight(_lease(task_id), result, 50)
+    with get_session() as db:
+        assert db.get(HotspotEvent, event_id).title == "已经确认的标题"
+        assert len(db.exec(select(HighlightCandidate)).all()) == 1
+
+
+def test_merged_event_is_recomputed_as_canonical_before_task_completion(
+    temp_db: None, monkeypatch: MonkeyPatch
+) -> None:
+    from app.analysis import event_enricher
+    from app.pipeline.workers.analyze import analyze_compute, commit_highlight
+
+    task_id, event_id, _session_id = _seed_candidate_pass(strong=True)
+    _patch_compute_dependencies(monkeypatch)
+    canonical_id: int | None = None
+    calls = 0
+
+    def merge_once(prompt: str, **kwargs: object) -> None:
+        nonlocal canonical_id, calls
+        calls += 1
+        if calls != 1:
+            return
+        with get_session() as db:
+            event = db.get(HotspotEvent, event_id)
+            assert event is not None
+            canonical = HotspotEvent(**event.model_dump(exclude={"id"}))
+            canonical.event_key = "merged-canonical-event"
+            db.add(canonical)
+            db.flush()
+            canonical_id = canonical.id
+            event.status = HotspotStatus.MERGED
+            event.merged_into_id = canonical_id
+            db.add(event)
+
+    monkeypatch.setattr(event_enricher.llm, "call_text", merge_once)
+    result = analyze_compute(task_id)
+    assert result["event_clip_results"] == []
+    commit_highlight(_lease(task_id), result, 50)
+    assert calls == 2 and canonical_id is not None
+    with get_session() as db:
+        canonical = db.get(HotspotEvent, canonical_id)
+        task = db.get(SegmentTask, task_id)
+        assert canonical is not None and canonical.candidate_id is not None
+        assert task is not None and task.stage == TaskStatus.CANDIDATE_CREATED
+        assert task.candidate_id == canonical.candidate_id
+        assert db.get(HotspotEvent, event_id).candidate_id is None
+        assert len(db.exec(select(HighlightCandidate)).all()) == len(db.exec(select(HighlightEvent)).all()) == 1
+
+
+def test_unrelated_value_error_is_not_treated_as_evidence_change(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    from app.analysis import event_enricher
+    from app.pipeline.workers.analyze import analyze_compute
+
+    task_id, _event_id, _session_id = _seed_candidate_pass(strong=True)
+    _patch_compute_dependencies(monkeypatch)
+    calls = 0
+
+    def invalid_model_configuration(prompt: str, **kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        raise ValueError("模型配置无效")
+
+    monkeypatch.setattr(event_enricher.llm, "call_text", invalid_model_configuration)
+    with pytest.raises(ValueError, match="模型配置无效"):
+        analyze_compute(task_id)
+    assert calls == 1
+
+
+def test_saved_enrichment_cannot_be_reused_after_evidence_changes(temp_db: None, monkeypatch: MonkeyPatch) -> None:
+    from app.analysis.clip_scorer import compute_hotspot_clip_draft
+    from app.analysis.event_enricher import EventEvidenceChangedError, enrich_hotspot_event
+    from app.pipeline.workers.analyze import score_hotspot_event
+
+    _task_id, event_id, _session_id = _seed_candidate_pass(strong=True)
+    _patch_compute_dependencies(monkeypatch)
+    assert enrich_hotspot_event(event_id) is not None
+    with get_session() as db:
+        event = db.get(HotspotEvent, event_id)
+        assert event is not None
+        event.transcript_text = "主播公布新的比赛赛程。"
+        db.add(event)
+    with pytest.raises(EventEvidenceChangedError, match="已保存的事件补全"):
+        compute_hotspot_clip_draft(event_id)
+    candidate = score_hotspot_event(event_id)
+    assert candidate is not None
+    with get_session() as db:
+        event = db.get(HotspotEvent, event_id)
+        assert event is not None and "新的比赛赛程" in event.summary

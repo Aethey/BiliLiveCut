@@ -26,6 +26,15 @@ from app.db.session import get_session
 
 EVENT_ENRICHER_VERSION = 1
 
+
+class EventTargetUnavailableError(ValueError):
+    """事件已删除、撤销或退出当前待评分状态。"""
+
+
+class EventEvidenceChangedError(ValueError):
+    """计算期间证据快照变化，必须重新计算而不能提交旧结果。"""
+
+
 _ALLOWED_CATEGORIES = {
     "announcement",
     "audio_event",
@@ -203,12 +212,12 @@ def build_event_evidence_bundle(
     cfg = config or EventEnricherConfig()
     raw_event = db.get(HotspotEvent, event_id)
     if raw_event is None:
-        raise ValueError(f"HotspotEvent 不存在: event_id={event_id}")
+        raise EventTargetUnavailableError(f"HotspotEvent 不存在: event_id={event_id}")
     event = resolve_merged_hotspot_event(db, raw_event)
     if event.id is None:
         raise RuntimeError("HotspotEvent 缺少主键")
     if event.status == HotspotStatus.DISMISSED:
-        raise ValueError(f"已 dismissed 的 HotspotEvent 不再 enrichment: event_id={event.id}")
+        raise EventTargetUnavailableError(f"已 dismissed 的 HotspotEvent 不再 enrichment: event_id={event.id}")
 
     evidence = _event_evidence_items(event)
     existing_excerpts = {excerpt.casefold() for item in evidence for excerpt in item.excerpts}
@@ -270,7 +279,7 @@ def compute_event_enrichment(
         bundle = build_event_evidence_bundle(db, event_id, config=cfg)
         event = db.get(HotspotEvent, bundle.event_id)
         if event is None:
-            raise ValueError(f"HotspotEvent 不存在: event_id={bundle.event_id}")
+            raise EventTargetUnavailableError(f"HotspotEvent 不存在: event_id={bundle.event_id}")
         if not force and _enrichment_is_current(event, bundle.fingerprint):
             return None
 
@@ -366,6 +375,10 @@ def enrich_hotspot_event(
     if draft is None:
         return None
     with get_session() as db:
+        connection = db.connection()
+        if connection.dialect.name == "sqlite":
+            # 独立入口同样在写事务内重新读取证据，避免校验与落库之间再被更新。
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
         committed = commit_event_enrichment(db, draft, config=config)
     return draft if committed else None
 
