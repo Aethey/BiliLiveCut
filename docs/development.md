@@ -17,7 +17,7 @@ uv run --locked python -m pytest tests/unit/test_native_parity.py
 uv run --locked pre-commit run --all-files --show-diff-on-failure
 ```
 
-`.python-version` 默认选择 Python 3.12，不改变包的 `>=3.11` 要求；需要其他版本可用 `uv sync --locked --python 3.11`。`uv sync` 创建 `.venv` 并以 editable 方式安装项目，无需手动激活环境。[默认 dev 依赖组](https://docs.astral.sh/uv/concepts/projects/dependencies/#default-groups)复用原有 `dev`、`web` extras，并安装直接编译扩展所需的 setuptools，不默认安装 ASR/LLM 或下载模型。
+`.python-version` 默认选择 Python 3.12，不改变包的 `>=3.11` 要求；需要其他版本可用 `uv sync --locked --python 3.11`。`uv sync` 创建 `.venv` 并以 editable 方式安装项目，无需手动激活环境。[默认 dev 依赖组](https://docs.astral.sh/uv/concepts/projects/dependencies/#default-groups)复用原有 `dev`、`web` extras，并安装直接编译扩展所需的 setuptools。`dev` 包含回归测试所需的 `asr-whisper` 音频解码和 CPU Silero VAD 依赖，不默认安装其他 ASR/LLM extras，也不下载模型。
 
 需要完整业务依赖时，同步与运行都传入所需 extras：
 
