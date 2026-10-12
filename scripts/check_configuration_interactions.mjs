@@ -60,6 +60,9 @@ globalThis.document = {
 };
 element("configuration-group").value = "all";
 const fields = [
+  { key: "asr_primary", label: "ASR 主引擎", group: "asr", type: "string", enum: ["funasr_nano", "paraformer", "whisper", "openai_compatible"], value: "funasr_nano", baseline: "funasr_nano" },
+  { key: "asr_remote_base_url", label: "远程地址", group: "asr", type: "string", value: "", baseline: "" },
+  { key: "asr_remote_model", label: "远程模型", group: "asr", type: "string", value: "", baseline: "" },
   { key: "clip_video_crf", label: "视频质量", group: "output", type: "integer", value: 20, baseline: 20, minimum: 0, maximum: 51 },
   { key: "clip_video_encoder", label: "视频编码设备", group: "output", type: "string", enum: ["cpu", "nvidia", "intel", "amd"], value: "cpu", baseline: "cpu" },
   { key: "clip_danmaku_mode", label: "弹幕模式", group: "output", type: "string", enum: ["scroll", "top", "bottom"], value: "scroll", baseline: "scroll" },
@@ -190,5 +193,12 @@ console.error("configuration check: loading source modules");
   await form.emit("submit");
   assert.deepEqual(requests.at(-1).values, { clip_danmaku_mode: "bottom", clip_danmaku_opacity: 0.5 });
   assert.match(element("configuration-fields").innerHTML, /value="bottom" selected>下方固定/);
-  console.log("PASS: configuration draft, delayed reload/caret, validation focus, save failure, concurrent submit, secret clearing, reset, readonly controls hardware encoder selection and danmaku style settings");
+  await edit("asr_primary", "openai_compatible");
+  await edit("asr_remote_base_url", "https://asr.example.invalid/v1");
+  await edit("asr_remote_model", "user-selected-model");
+  await form.emit("submit");
+  assert.deepEqual(requests.at(-1).values, { asr_primary: "openai_compatible", asr_remote_base_url: "https://asr.example.invalid/v1", asr_remote_model: "user-selected-model" });
+  assert.equal(element("field-asr_remote_base_url").hidden, false);
+  assert.match(element("configuration-fields").innerHTML, /value="openai_compatible" selected>远程转写/);
+  console.log("PASS: configuration draft, delayed reload/caret, validation focus, save failure, concurrent submit, secret clearing, reset, readonly controls hardware encoder selection and danmaku style settings and remote ASR configuration");
 }

@@ -115,7 +115,7 @@ python -m app.cli list-candidates       # 查看高光候选
 python -m app.cli record <db_id> --pipeline
 ```
 
-`RECORDING_PIPELINE_ENABLED=true` 时，Web 手动开始/恢复、预约、崩溃恢复以及未显式传参的 CLI 录制都会启用实时转写与高光分析。可在控制台“设置中心 → 全部参数 → 录制与自动化”覆盖该默认值；CLI 可用 `--pipeline` 或 `--no-pipeline` 对单次录制覆盖。`TRANSCRIPT_LLM_REFINE_ENABLED=true` 时，每个切片完成本地 ASR 后还会调用已配置的大模型补全标点、整理正文并生成片段概括；调用失败时保留原始 ASR，不阻断流水线。录制流水线开关从下一次开始或恢复录制生效，转写整理开关从下一次转写任务生效。
+`RECORDING_PIPELINE_ENABLED=true` 时，Web 手动开始/恢复、预约、崩溃恢复以及未显式传参的 CLI 录制都会启用实时转写与高光分析。可在控制台“设置中心 → 全部参数 → 录制与自动化”覆盖该默认值；CLI 可用 `--pipeline` 或 `--no-pipeline` 对单次录制覆盖。`TRANSCRIPT_LLM_REFINE_ENABLED=true` 时，每个切片完成 ASR 后还会调用已配置的大模型补全标点、整理正文并生成片段概括；调用失败时保留原始 ASR，不阻断流水线。录制流水线开关从下一次开始或恢复录制生效，转写整理开关从下一次转写任务生效。
 
 主播下播、断流或平台暂时无法返回播放地址时，录制器会继续重试，但不会无限挂起。连续失败达到 `RECORDING_RECONNECT_MAX_ATTEMPTS`（默认 20 次）或从断流开始经过 `RECORDING_RECONNECT_MAX_ELAPSED_S`（默认 180 秒）时，任一条件先满足都会自动结束本场录制并正常执行会话收尾。若平台仍报告直播中，自动监控会等待一次真实离线再允许下一次开播，避免立即进入相同失败循环；成功恢复并累计产出至少一个目标分段时长后，次数和计时才会归零，短末片不代表恢复。将某一项设为 `0` 可单独禁用该限制；两项都设为 `0` 时仍保留 20 次安全上限。所有等待（包括来源返回的 retry_after）都受剩余时长预算限制。磁盘、权限、FFmpeg 缺失和参数/编解码器故障直接结束为错误，并暂停自动重新启动；处理原因后手动启动或重新开启自动录制。网络、上游、受损直播输入及未知错误按预算重取流；HTTP 403 不直接解释为 Cookie 过期。
 
@@ -144,6 +144,16 @@ HIGHLIGHT_LLM_MAX_TOKENS=65536      # 高光复核的最大输出预算（含推
 Event-first 热点层会先按 10 秒信号桶、90 秒直播自身滚动基线和 20 秒检测 tick 生成 `provisional HotspotEvent`。弹幕、音频、SenseVoice、可选 ASR 与缓存趋势按可用证据动态归一化，因此尚无 ASR 不会把热点分数拉成零。热点峰值会反向生成默认前 35 秒、后 55 秒的高优先级局部 ASR；完成后仍保留后台完整 ASR，用于历史、搜索、字幕与整场总结。相邻检测结果会在录制连续且语义或信号连续时跨原始分段归并，稳定结束后进入 `confirmed`；代表弹幕会同时保留高频反应和信息量较高的上下文，不再让多条 `???/666` 挤掉事件内容。EventEnricher 仅根据带 ID 的事件证据束生成结构化标题、摘要和类别；未知引用、证据外实体/数字、无归因的弹幕猜测及陈旧结果都会被拒绝并降级为保守说明。随后 ClipScorer 按完整事件的多信号、证据质量和录制连续性计算成片价值；只有达到房间阈值才关联既有候选审核链，动态边界也始终限制在同一连续录像块内，不会跨断流缺口。详细参数、生命周期、评分和证据字段见 [热点检测器说明](hotspot-detector.md)。
 
 > **大模型选型（境内）**：系统采用 **OpenAI 兼容协议**，可在 Web「设置中心 → 大模型服务商」同时配置 DeepSeek / 通义千问 / Kimi / 智谱 GLM，并按优先级执行运行时故障切换。
+
+### OpenAI 兼容远程转写
+
+在「设置中心 → ASR」同时填写远程转写基础地址、模型 ID、服务要求的密钥，并将主引擎切换为 `openai_compatible` 后保存；默认继续使用本地 Fun-ASR-Nano。基础地址包含服务需要的 `/v1` 等前缀，程序追加 `/audio/transcriptions`；不接受 URL 凭据、查询参数和重定向。本机 HTTP 服务可不填密钥，公网服务使用 HTTPS。模型 ID 由服务提供方确定，程序不替换或猜测模型名称。
+
+远程转写独立于 LLM 服务商：选择它会将标准化音频上传到所配服务。默认 `json` 接收正文，字幕使用明确的估算时间；仅在服务支持时选择 `verbose_json`，同时请求词与句的时间戳。程序校验时间戳范围、顺序、句段不重叠、响应格式、单块 2 MiB 及整次任务累计 8 MiB 响应上限，不把服务未提供的置信度当作零或满分。接口格式参考 [OpenAI 官方转写接口](https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create)。
+
+`ASR_REMOTE_CHUNK_S` 默认 300 秒、范围 1~600 秒，音频统一为 16kHz 单声道 PCM16，每块低于 20 MB，串行上传并恢复原窗口时间轴；长录音的分块边界可能截断词句，可按服务要求调整。任一块失败则整个本次转写失败，不保存部分文本。空文本仍需本地 VAD 确认无语音，所以运行环境需保留现有 `asr-whisper` 音频/VAD 依赖；无需下载 Whisper 模型即可做这项核验。
+
+远程主引擎不加载 FunASR、SenseVoice 或局部复核模型；`ASR_PRIMARY_MAX_CONCURRENCY` 控制远程任务并发，主引擎 device/keep_loaded 对 HTTP 调用不生效。`ASR_FALLBACK_WHISPER` 开启时，远程失败或文本退化会按现有机制回退本地 Whisper，需准备本地模型；关闭后保留远程失败，由任务已有的有限重试处理。HTTP 客户端本身不自动重试；`ASR_REMOTE_TIMEOUT_S` 控制读写超时，ASR 总推理预算、取消和租约丢失继续由生产子进程监管。接口响应成功并不代表费用为零，远程 ASR 费用不计入 LLM 文本预算。
 
 ## 自动切片与文案
 

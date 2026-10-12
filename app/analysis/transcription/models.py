@@ -5,7 +5,8 @@
     ├─ Fun-ASR-Nano : 中文语音识别 (默认主引擎)
     ├─ Paraformer-zh : 中文文本、时间戳、标点 (次级回退或可选主引擎)
     ├─ SenseVoice-Small : 情感、笑声、音乐、事件 (辅助特征, 与主引擎并行)
-    └─ Whisper large-v3 / turbo : 保留切换开关, 最终兜底
+    ├─ Whisper large-v3 / turbo : 保留切换开关, 最终兜底
+    └─ OpenAI 兼容远程转写 : 显式选择后上传音频，可按配置回退本地 Whisper
 
 使用方式:
     backend = FunASRBackend()          # Paraformer + SenseVoice + FunASR-Nano
@@ -121,9 +122,9 @@ class ASRTranscriptResult:
     emotions: list[EmotionEvent] = field(default_factory=list)
 
     # V0.1.14.11: 模型 provenance (实际解析后的模型标识)
-    model_source: str = ""  # "local" / "online" / "fallback"
+    model_source: str = ""  # "local" / "online" / "fallback" / "remote"
     model_catalog_id: str = ""  # Engine Pack ID (whisper/paraformer/sensevoice/funasr_nano)
-    loaded_from: str = ""  # 实际加载路径或仓库 ID
+    loaded_from: str = ""  # 实际加载路径、仓库 ID 或远程服务基础地址
 
 
 def _segment_to_confidence(seg: ASRSegmentResult) -> float | None:

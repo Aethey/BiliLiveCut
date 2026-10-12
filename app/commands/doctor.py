@@ -178,7 +178,9 @@ def cmd_doctor(
     # ── 模型目录
     configured_models = _os.environ.get("BLC_MODELS_DIR", "")
     model_dir = _Path(configured_models) if configured_models else None
-    if model_dir and model_dir.exists():
+    if asr_backend == "openai_compatible" and not _cfg.asr_fallback_whisper:
+        report("PASS", "模型目录", "远程转写且未启用本地回退，无需本地转写模型")
+    elif model_dir and model_dir.exists():
         report("PASS", "模型目录", str(model_dir))
     elif model_dir:
         report("WARN", "模型目录", "不存在")

@@ -411,3 +411,42 @@ def test_web_danmaku_settings_reach_next_task_and_invalid_change_is_atomic(temp_
     )
     assert rejected.status_code == 400
     assert ClipOptions.from_settings() == current
+
+
+def test_remote_asr_settings_are_atomic_and_credentials_never_echo(temp_db: None) -> None:
+    from app.web.main import app
+
+    client = TestClient(app)
+    invalid = client.patch("/api/settings/configuration", json={"values": {"asr_primary": "openai_compatible"}})
+    assert invalid.status_code == 400 and settings.asr_primary == "funasr_nano"
+    saved = client.patch(
+        "/api/settings/configuration",
+        json={
+            "values": {
+                "asr_primary": "openai_compatible",
+                "asr_remote_base_url": "https://asr.example.invalid/v1",
+                "asr_remote_model": "operator-selected-model",
+                "asr_remote_api_key": "unique-fixture-asr-credential",
+                "asr_remote_response_format": "verbose_json",
+                "asr_remote_language": "zh",
+                "asr_remote_chunk_s": 120,
+            }
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert "unique-fixture-asr-credential" not in saved.text
+    fields = {item["key"]: item for item in saved.json()["fields"]}
+    assert fields["asr_remote_api_key"]["secret"] and fields["asr_remote_api_key"]["configured"]
+    assert fields["asr_remote_base_url"]["effect"] == "next_task"
+    assert settings.asr_primary == "openai_compatible" and settings.asr_remote_chunk_s == 120
+    preserved = client.patch("/api/settings/configuration", json={"values": {"asr_remote_api_key": ""}})
+    assert preserved.status_code == 200 and settings.asr_remote_api_key == "unique-fixture-asr-credential"
+    rejected = client.patch(
+        "/api/settings/configuration", json={"values": {"asr_remote_base_url": "https://user:password@host/v1"}}
+    )
+    assert rejected.status_code == 400
+    assert settings.asr_remote_base_url == "https://asr.example.invalid/v1"
+    cleared = client.patch("/api/settings/configuration", json={"clear": ["asr_remote_api_key"]})
+    assert cleared.status_code == 200 and settings.asr_remote_api_key == ""
+    back = client.patch("/api/settings/configuration", json={"values": {"asr_primary": "funasr_nano"}})
+    assert back.status_code == 200

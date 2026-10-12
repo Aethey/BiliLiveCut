@@ -155,7 +155,7 @@ function recordCard(record) {
     <div class="head"><h3>${esc(record.title)}</h3><span class="badge ${status.includes("失败") ? "red" : status === "分析完成" ? "green" : "gray"}">${status}</span></div>
     <p class="hint">${esc(record.video_name)} · ${record.comments_name ? esc(record.comments_name) : "无弹幕文件"} · ${esc(new Date(record.created_at).toLocaleString("zh-CN"))}</p>
     ${progress ? `<p>已分析 ${progress.done} / ${progress.total} 段 · 转写记录 ${progress.transcripts} 段${progress.failed ? ` · ${progress.failed} 段需检查` : ""}${progress.retrying ? ` · ${progress.retrying} 段等待重试` : ""}</p>` : ""}
-    ${progress?.asr_unavailable ? `<p class="warn">${progress.asr_unavailable} 段语音证据不可用或质量不足。请检查本地模型设置和任务详情，修复后重新识别。</p>` : ""}
+    ${progress?.asr_unavailable ? `<p class="warn">${progress.asr_unavailable} 段语音证据不可用或质量不足。请检查语音转写设置和任务详情，修复后重新识别。</p>` : ""}
     ${record.session_id ? `<p class="hint">会话 #${record.session_id} · ${record.segment_count} 个分段 · ${record.comment_count} 条文本事件</p>` : ""}
     ${activeJob ? `<progress max="100" value="${Number(job.progress) || 0}" aria-label="预处理进度"></progress><p class="hint">${esc(job.message)}</p>` : ""}
     ${job?.error ? `<p class="warn">${esc(job.error)}</p>` : ""}
@@ -173,7 +173,7 @@ async function refreshImports() {
     records = data.imports;
     videoLimit = data.max_video_bytes;
     commentLimit = data.max_comment_bytes;
-    const engines = { funasr_nano: "Fun-ASR-Nano", funasr: "Fun-ASR-Nano", nano: "Fun-ASR-Nano", paraformer: "Paraformer", whisper: "Whisper" };
+    const engines = { funasr_nano: "Fun-ASR-Nano", funasr: "Fun-ASR-Nano", nano: "Fun-ASR-Nano", paraformer: "Paraformer", whisper: "Whisper", openai_compatible: "远程转写（OpenAI 兼容）" };
     $("#import-engine").textContent = `本地主引擎：${engines[data.engine] || data.engine}`;
     $("#imports-list-error").textContent = actionError;
     if (!busy && draft) {

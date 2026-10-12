@@ -220,7 +220,7 @@ def _next_message(slot: _Slot, timeout: float = 0.2) -> dict[str, Any] | None:
 def _roles(config: Settings) -> tuple[str, ...]:
     roles = {"fallback"} if config.asr_primary == "whisper" else {"primary"}
     if config.asr_primary != "whisper":
-        if config.asr_sensevoice and config.asr_sensevoice_enabled:
+        if config.asr_primary != "openai_compatible" and config.asr_sensevoice and config.asr_sensevoice_enabled:
             roles.add("auxiliary")
         if config.asr_funasr_review and config.asr_primary == "paraformer":
             roles.add("review")

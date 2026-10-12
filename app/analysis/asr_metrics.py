@@ -121,7 +121,7 @@ def _emit(event: str, **values: Any) -> None:
 def record_backend_call(backend: str, duration: float, success: bool = True) -> None:
     """记录一次后端调用。
 
-    :param backend: 后端名 (paraformer/whisper/funasr-nano/sensevoice)。
+    :param backend: 后端名 (paraformer/whisper/funasr-nano/sensevoice/openai_compatible)。
     :param duration: 耗时秒。
     :param success: 是否成功。
     """

@@ -13,8 +13,9 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Literal, cast
+from urllib.parse import urlsplit
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,6 +31,7 @@ class Settings(BaseSettings):
         extra="forbid",
         case_sensitive=False,
         allow_inf_nan=False,
+        hide_input_in_errors=True,
     )
 
     def __repr__(self) -> str:
@@ -97,8 +99,35 @@ class Settings(BaseSettings):
     asr_resource_policy: Literal["strict", "warn"] = "warn"
 
     # ---------- AI:多引擎 ASR 流水线 (V0.1.12) ----------
-    # 主引擎: funasr_nano / paraformer / whisper, 默认 Fun-ASR-Nano
-    asr_primary: Literal["funasr_nano", "paraformer", "whisper"] = "funasr_nano"
+    # 只有显式选择 openai_compatible 才上传音频到远程转写服务。
+    asr_primary: Literal["funasr_nano", "paraformer", "whisper", "openai_compatible"] = "funasr_nano"
+    asr_remote_base_url: str = Field(
+        default="",
+        max_length=2048,
+        description="远程转写基础地址（含 /v1 等前缀）；选择远程主引擎后音频会上传到此服务。",
+    )
+    asr_remote_api_key: str = Field(
+        default="",
+        max_length=4096,
+        pattern=r"^[!-~]*$",
+        repr=False,
+        description="远程转写 Bearer 密钥；无需鉴权的自建服务可留空。",
+    )
+    asr_remote_model: str = Field(
+        default="", max_length=200, pattern=r"^[^\x00-\x1F\x7F]*$", description="服务实际支持的转写模型 ID。"
+    )
+    asr_remote_language: str = Field(
+        default="", pattern=r"^(?:[a-z]{2,3})?$", description="ISO 639 语言码，如 zh；留空由服务识别。"
+    )
+    asr_remote_response_format: Literal["json", "verbose_json"] = Field(
+        default="json", description="默认 json；仅支持词/句时间戳的服务使用 verbose_json。"
+    )
+    asr_remote_timeout_s: float = Field(
+        default=120.0, ge=1.0, le=600.0, description="远程请求读写超时秒数；总时限仍由任务推理预算控制。"
+    )
+    asr_remote_chunk_s: int = Field(
+        default=300, ge=1, le=600, description="远程音频分块秒数，单块最多 600 秒且低于 20 MB。"
+    )
     # 辅助特征提取: SenseVoice-Small (情感/笑声/音乐/事件)
     asr_sensevoice: bool = True
     # 低置信度复核: Fun-ASR-Nano
@@ -285,6 +314,31 @@ class Settings(BaseSettings):
     notify_on_error: bool = True  # 任务永久失败时通知
     disk_alert_threshold_gb: int = 10  # 磁盘告警阈值(GB)
 
+    @field_validator("asr_remote_base_url")
+    @classmethod
+    def validate_asr_remote_base_url(cls, value: str) -> str:
+        """允许显式配置本机或远端服务，拒绝凭据、查询参数和控制字符。"""
+        if not value:
+            return value
+        if any(ord(char) <= 32 or ord(char) == 127 for char in value) or "\\" in value:
+            raise ValueError("asr_remote_base_url 含空白或非法字符")
+        try:
+            parts = urlsplit(value)
+            port = parts.port
+        except ValueError as exc:
+            raise ValueError("asr_remote_base_url 地址无效") from exc
+        if (
+            parts.scheme not in {"http", "https"}
+            or not parts.hostname
+            or parts.username is not None
+            or parts.password is not None
+            or parts.query
+            or parts.fragment
+            or port == 0
+        ):
+            raise ValueError("asr_remote_base_url 必须是无凭据、查询参数和片段的 HTTP(S) 基础地址")
+        return value.rstrip("/")
+
     @model_validator(mode="after")
     def validate_cross_fields(self) -> Settings:
         """跨字段校验,在模型完成字段级别验证后执行。
@@ -295,6 +349,11 @@ class Settings(BaseSettings):
         :returns: 校验通过的 ``self``。
         :raises ValueError: 校验失败时抛出含描述性信息的异常。
         """
+        if self.asr_primary == "openai_compatible" and (
+            not self.asr_remote_base_url or not self.asr_remote_model.strip()
+        ):
+            raise ValueError("openai_compatible 需要同时配置 asr_remote_base_url 和 asr_remote_model")
+
         # asr_review_risk_threshold 必须在 [0, 1] 范围内
         if not (0.0 <= self.asr_review_risk_threshold <= 1.0):
             raise ValueError(

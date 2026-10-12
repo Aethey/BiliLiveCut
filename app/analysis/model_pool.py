@@ -167,6 +167,11 @@ def preload_models(*, refresh: bool = True) -> None:
         if settings.asr_primary == "whisper":
             whisper = FasterWhisperBackend()
             loads.append(("fallback", whisper.model_identity, whisper._load_model))
+        elif settings.asr_primary == "openai_compatible":
+            # 远程主引擎没有本地模型；只按明确的回退开关预加载 Whisper。
+            if settings.asr_fallback_whisper:
+                whisper = FasterWhisperBackend()
+                loads.append(("fallback", whisper.model_identity, whisper._load_model))
         else:
             if settings.asr_primary == "funasr_nano":
                 loads.append(("primary", backend.nano_identity, lambda: backend._load_funasr(for_primary=True)))

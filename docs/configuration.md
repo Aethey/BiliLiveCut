@@ -2,7 +2,7 @@
 
 通过 Web 左侧“设置中心”搜索中文名称或环境变量名，查看有效值、来源和生效时间。下表解释配置范围；实际注册定义位于 `app/core/configuration.py`，运行中的字段以设置中心返回为准。
 
-当前注册表共 158 项：148 项 Settings 与 10 项运行时配置；评分配置含 8 个权重和 6 个标量。表中默认值均来自代码/项目默认，不导出环境凭据。
+当前注册表共 165 项：155 项 Settings 与 10 项运行时配置；评分配置含 8 个权重和 6 个标量。表中默认值均来自代码/项目默认，不导出环境凭据。
 
 业务默认来自环境或项目配置；Web 覆盖以原键保存在 AppSetting。保存先整体校验，再在单一事务中提交；revision 防止旧表单覆盖。字段缺省保持原值，reset 删除覆盖并恢复环境/项目默认；凭据空白保持，clear 明确清空并阻止环境回退。
 
@@ -39,17 +39,24 @@
 | `recording_pipeline_enabled` | 录制后自动转写与分析 | recording/global | True | boolean；不限..不限 | database/next_recording | `app/core/settings_store.py:127`、`app/core/settings_store.py:133`、`app/web/services/settings.py:27`、`app/web/services/settings.py:33` |
 | `require_authorization` | 要求直播间授权 | system/global | True | boolean；不限..不限 | database/immediate | `app/commands/record.py:44`、`app/commands/record.py:163`、`app/web/services/rooms.py:207`、`app/web/services/rooms.py:274`、`app/web/services/rooms.py:286`、`app/web/services/rooms.py:648`、`app/web/services/schedules.py:62` |
 | `bilibili_cookie` | Bilibili Cookie | system/global | 不回显 | string；不限..不限 | database/immediate | `app/core/cookie.py:5`、`app/core/cookie.py:19`、`app/web/login_handler.py:133`、`app/web/routers/auth.py:71` |
-| `whisper_model` | Whisper 模型 | asr/global | small | string；不限..不限 | database/next_task | `app/analysis/model_pool.py:32`、`app/analysis/transcription/backends.py:735`、`app/analysis/transcription/backends.py:737` |
-| `whisper_device` | Whisper 默认设备 | asr/global | cpu | string；不限..不限 | database/next_task | `app/analysis/model_pool.py:34`、`app/analysis/transcription/backends.py:188`、`app/analysis/transcription/backends.py:234`、`app/analysis/transcription/backends.py:241`、`app/analysis/transcription/backends.py:258`、`app/analysis/transcription/backends.py:738` |
-| `whisper_compute_type` | Whisper 计算精度 | asr/global | int8 | string；不限..不限 | database/next_task | `app/analysis/model_pool.py:33`、`app/analysis/transcription/backends.py:739` |
+| `whisper_model` | Whisper 模型 | asr/global | small | string；不限..不限 | database/next_task | `app/analysis/model_pool.py`、`app/analysis/transcription/backends.py:735`、`app/analysis/transcription/backends.py:737` |
+| `whisper_device` | Whisper 默认设备 | asr/global | cpu | string；不限..不限 | database/next_task | `app/analysis/model_pool.py`、`app/analysis/transcription/backends.py:188`、`app/analysis/transcription/backends.py:234`、`app/analysis/transcription/backends.py:241`、`app/analysis/transcription/backends.py:258`、`app/analysis/transcription/backends.py:738` |
+| `whisper_compute_type` | Whisper 计算精度 | asr/global | int8 | string；不限..不限 | database/next_task | `app/analysis/model_pool.py`、`app/analysis/transcription/backends.py:739` |
 | `asr_resource_policy` | 模型资源不足处理 | asr/global | warn | string；['strict', 'warn'] | database/next_task | `app/analysis/transcription/backends.py:829` |
-| `asr_primary` | ASR 主引擎 | asr/global | funasr_nano | string；['funasr_nano', 'paraformer', 'whisper'] | database/next_task | `app/analysis/model_pool.py:36`、`app/analysis/model_pool.py:162`、`app/analysis/model_pool.py:166`、`app/analysis/model_pool.py:173`、`app/analysis/transcription/pipeline.py:140`、`app/analysis/transcription/pipeline.py:280` |
-| `asr_sensevoice` | 加载 SenseVoice 辅助模型 | asr/global | True | boolean；不限..不限 | database/next_task | `app/analysis/model_pool.py:37`、`app/analysis/model_pool.py:171`、`app/analysis/transcription/backends.py:139`、`app/pipeline/workers/analyze.py:1325` |
-| `asr_funasr_review` | FunASR 低质量复核 | asr/global | True | boolean；不限..不限 | database/next_task | `app/analysis/model_pool.py:39`、`app/analysis/model_pool.py:173`、`app/analysis/transcription/backends.py:140`、`app/analysis/transcription/pipeline.py:243` |
-| `asr_fallback_whisper` | Whisper 兜底 | asr/global | True | boolean；不限..不限 | database/next_task | `app/analysis/model_pool.py:40`、`app/analysis/model_pool.py:175`、`app/analysis/transcription/pipeline.py:88` |
-| `asr_review_risk_threshold` | 复核风险阈值 | asr/global | 0.65 | number；不限..不限 | database/next_task | `app/analysis/transcription/pipeline.py:91` |
-| `asr_sensevoice_enabled` | 使用 SenseVoice 辅助特征 | asr/global | True | boolean；不限..不限 | database/next_task | `app/analysis/model_pool.py:38`、`app/analysis/model_pool.py:171`、`app/pipeline/workers/analyze.py:1325` |
-| `asr_vad_max_segment_s` | 语音活动切句上限 | asr/global | 30 | integer；5..120 | database/next_task | `app/analysis/model_pool.py:35`、`app/analysis/transcription/backends.py:259`、`app/analysis/transcription/backends.py:267`、`app/analysis/transcription/backends.py:281` |
+| `asr_primary` | ASR 主引擎 | asr/global | funasr_nano | string；['funasr_nano', 'paraformer', 'whisper', 'openai_compatible'] | database/next_task | `app/analysis/model_pool.py`、`app/analysis/model_pool.py`、`app/analysis/model_pool.py`、`app/analysis/model_pool.py`、`app/analysis/transcription/pipeline.py`、`app/analysis/transcription/pipeline.py` |
+| `asr_remote_base_url` | 远程转写基础地址 | asr/global | 空 | HTTP(S)，无查询参数、凭据和片段 | database/next_task | `app/analysis/transcription/remote.py` |
+| `asr_remote_api_key` | 远程转写密钥 | asr/global | 空 | 敏感字段，不回显 | database/next_task | `app/analysis/transcription/remote.py` |
+| `asr_remote_model` | 远程模型 ID | asr/global | 空 | 启用远程时必填 | database/next_task | `app/analysis/transcription/remote.py` |
+| `asr_remote_language` | 远程语言 | asr/global | 空 | ISO 639 语言码；空为自动 | database/next_task | `app/analysis/transcription/remote.py` |
+| `asr_remote_response_format` | 远程响应格式 | asr/global | json | json/verbose_json | database/next_task | `app/analysis/transcription/remote.py` |
+| `asr_remote_timeout_s` | 远程请求超时 | asr/global | 120.0 | number；1..600 | database/next_task | `app/analysis/transcription/remote.py` |
+| `asr_remote_chunk_s` | 远程分块秒数 | asr/global | 300 | integer；1..600 | database/next_task | `app/analysis/transcription/remote.py` |
+| `asr_sensevoice` | 加载 SenseVoice 辅助模型 | asr/global | True | boolean；不限..不限 | database/next_task | `app/analysis/model_pool.py`、`app/analysis/model_pool.py`、`app/analysis/transcription/backends.py:139`、`app/pipeline/workers/analyze.py:1325` |
+| `asr_funasr_review` | FunASR 低质量复核 | asr/global | True | boolean；不限..不限 | database/next_task | `app/analysis/model_pool.py`、`app/analysis/model_pool.py`、`app/analysis/transcription/backends.py:140`、`app/analysis/transcription/pipeline.py` |
+| `asr_fallback_whisper` | Whisper 兜底 | asr/global | True | boolean；不限..不限 | database/next_task | `app/analysis/model_pool.py`、`app/analysis/model_pool.py`、`app/analysis/transcription/pipeline.py` |
+| `asr_review_risk_threshold` | 复核风险阈值 | asr/global | 0.65 | number；不限..不限 | database/next_task | `app/analysis/transcription/pipeline.py` |
+| `asr_sensevoice_enabled` | 使用 SenseVoice 辅助特征 | asr/global | True | boolean；不限..不限 | database/next_task | `app/analysis/model_pool.py`、`app/analysis/model_pool.py`、`app/pipeline/workers/analyze.py:1325` |
+| `asr_vad_max_segment_s` | 语音活动切句上限 | asr/global | 30 | integer；5..120 | database/next_task | `app/analysis/model_pool.py`、`app/analysis/transcription/backends.py:259`、`app/analysis/transcription/backends.py:267`、`app/analysis/transcription/backends.py:281` |
 | `asr_task_max_concurrency` | 同时转写任务数 | asr/global | 1 | integer；1..8 | database/next_poll | `app/core/settings_store.py:155`、`app/core/settings_store.py:164`、`app/web/services/settings.py:29`、`app/web/services/settings.py:39`、`app/analysis/model_pool.py`（按角色动态读取） |
 | `asr_primary_device` | 主引擎设备 | asr/global | cpu | string；不限..不限 | database/next_task | `app/analysis/transcription/backends.py:188`、`app/analysis/transcription/backends.py:258`、`app/analysis/model_pool.py`（按角色动态读取） |
 | `asr_auxiliary_device` | 辅助引擎设备 | asr/global | cpu | string；不限..不限 | database/next_task | `app/analysis/transcription/backends.py:234`、`app/analysis/transcription/backends.py:241`、`app/analysis/model_pool.py`（按角色动态读取） |
@@ -63,7 +70,7 @@
 | `asr_auxiliary_keep_loaded` | 辅助引擎模型常驻 | asr/global | False | boolean；不限..不限 | database/next_poll | `app/analysis/model_pool.py`（按角色动态读取） |
 | `asr_review_keep_loaded` | 复核引擎模型常驻 | asr/global | False | boolean；不限..不限 | database/next_poll | `app/analysis/model_pool.py`（按角色动态读取） |
 | `asr_fallback_keep_loaded` | 兜底引擎模型常驻 | asr/global | False | boolean；不限..不限 | database/next_poll | `app/analysis/model_pool.py`（按角色动态读取） |
-| `asr_model_idle_unload_seconds` | 非驻留模型空闲卸载时间（0 关闭） | asr/global | 900 | integer；0..86400 | database/next_poll | `app/analysis/model_pool.py:109` |
+| `asr_model_idle_unload_seconds` | 非驻留模型空闲卸载时间（0 关闭） | asr/global | 900 | integer；0..86400 | database/next_poll | `app/analysis/model_pool.py` |
 | `asr_preload_on_start` | 启动预加载模型 | asr/global | False | boolean；不限..不限 | database/restart | `app/pipeline/task_worker.py:244` |
 | `asr_inference_base_timeout_s` | ASR 加载及推理基础超时（秒） | asr/global | 600 | integer；30..7200 | database/next_task | `app/analysis/transcription/isolated.py` |
 | `asr_inference_timeout_rtf` | 每秒音频追加预算（秒） | asr/global | 10 | number；1..100 | database/next_task | `app/analysis/transcription/isolated.py` |

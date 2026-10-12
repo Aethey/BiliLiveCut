@@ -5,7 +5,8 @@
     ├─ Fun-ASR-Nano : 中文语音识别 (默认主引擎)
     ├─ Paraformer-zh : 中文文本、时间戳、标点 (次级回退或可选主引擎)
     ├─ SenseVoice-Small : 情感、笑声、音乐、事件 (辅助特征, 与主引擎并行)
-    └─ Whisper large-v3 / turbo : 保留切换开关, 最终兜底
+    ├─ Whisper large-v3 / turbo : 保留切换开关, 最终兜底
+    └─ OpenAI 兼容远程转写 : 显式选择后上传音频，可按配置回退本地 Whisper
 
 使用方式:
     backend = FunASRBackend()          # Paraformer + SenseVoice + FunASR-Nano
@@ -77,6 +78,7 @@ class ASRPipeline:
     调用流程:
         ``ASR_PRIMARY=paraformer`` 时保留 Paraformer 主识别、FunASR 局部复核和
         Whisper 兜底；``ASR_PRIMARY=whisper`` 时直接使用 Whisper。
+        ``openai_compatible`` 上传到配置的文件转写服务，仅按开关回退本地 Whisper。
     """
 
     def __init__(
@@ -169,6 +171,9 @@ class ASRPipeline:
     ) -> ASRTranscriptResult:
         """对标准化音频执行多引擎识别与质量回退。"""
         primary_name = settings.asr_primary.strip().lower().replace("-", "_")
+
+        if primary_name == "openai_compatible":
+            return self._run_remote(audio_path, initial_prompt)
 
         if primary_name == "funasr_nano":
             try:
@@ -323,6 +328,46 @@ class ASRPipeline:
             return self._get_whisper().transcribe(audio_path, initial_prompt)
 
         raise ValueError(f"ASR 主引擎配置无效: {settings.asr_primary}")
+
+    def _run_remote(self, audio_path: str, initial_prompt: str | None) -> ASRTranscriptResult:
+        """远程失败复用已配置的 Whisper 回退；没有回退时保留原始异常。"""
+        from app.analysis.transcription.remote import OpenAICompatibleBackend, RemoteTranscriptionError
+
+        try:
+            result = OpenAICompatibleBackend().transcribe(audio_path, initial_prompt)
+        except (RemoteTranscriptionError, OSError, ValueError) as exc:
+            self._last_backend_error = exc
+            if not self._use_fallback:
+                raise
+            result = ASRTranscriptResult(
+                text="",
+                backend="openai_compatible",
+                model_id=settings.asr_remote_model,
+                primary_backend="openai_compatible",
+                primary_status="failed",
+                primary_error_type=type(exc).__name__,
+                primary_error_message=safe_exception_summary(exc, limit=500),
+            )
+        if result.result_type == "no_speech":
+            return result
+        quality = assess_transcript_quality(result.final_text or result.text)
+        if quality.usable:
+            return result
+        _record_quality_failure(result, quality)
+        if not self._use_fallback:
+            raise RemoteTranscriptionError("远程 ASR 返回退化或不可用文本")
+        trigger = _fallback_trigger_reason(result, quality)
+        logger.warning("远程 ASR 输出不可用（{}），按配置切换本地 Whisper", trigger)
+        fallback = self._get_whisper().transcribe(audio_path, initial_prompt)
+        fallback.primary_backend = "openai_compatible"
+        fallback.primary_status = "failed"
+        fallback.primary_error_type = result.primary_error_type
+        fallback.primary_error_message = result.primary_error_message
+        fallback.fallback_backend = "whisper"
+        fallback.fallback_trigger_reason = trigger
+        fallback.final_text = fallback.text
+        fallback.final_text_source = "fallback"
+        return fallback
 
     def _review_loop(
         self,
