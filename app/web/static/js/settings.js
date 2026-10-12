@@ -124,7 +124,7 @@ async function loadTasks() {
         <td>${esc(t.id)}</td>
         <td title="${esc(t.room_title || "")}">${esc(t.source_label || "未知来源")}<br>${esc(sessionTitle(t))}<br><span class="muted">会话 #${esc(t.session_id)}</span></td>
         <td>${esc(t.segment_id)}</td>
-        <td><span class="badge badge-${esc(t.stage.replace(/_/g,'-'))}">${esc(t.stage)}</span></td>
+        <td><span class="badge badge-${esc(t.stage.replace(/_/g,'-'))}">${esc(t.stage === "cancelling" ? "取消中（等待执行收尾）" : t.stage)}</span></td>
         <td>${t.attempts}/${t.max_retries}</td>
         <td>${t.processing_time_ms != null ? t.processing_time_ms : "-"}</td>
         <td title="${esc(t.last_error || "")}">${esc((t.last_error || "").substring(0,40))}</td>
@@ -132,7 +132,7 @@ async function loadTasks() {
         <td>
           ${t.stage === "failed" || t.stage === "cancelled"
             ? `<button class="small" onclick="retryTask(${t.id})">\u91cd\u8bd5</button>`
-            : t.stage === "completed" || t.stage === "failed" || t.stage === "cancelled"
+            : ["completed", "failed", "cancelled", "cancelling", "publishing"].includes(t.stage)
               ? "-"
               : `<button class="small danger" onclick="cancelTask(${t.id})">\u53d6\u6d88</button>`
           }
@@ -147,7 +147,11 @@ async function retryTask(id) {
 }
 
 async function cancelTask(id) {
-  try { await api("POST", `/api/tasks/${id}/cancel`); toast("\u4efb\u52a1\u5df2\u53d6\u6d88"); loadTasks(); }
+  try {
+    const result = await api("POST", `/api/tasks/${id}/cancel`);
+    toast(result.status === "cancelling" ? "取消请求已发送，等待执行收尾" : "任务已取消");
+    loadTasks();
+  }
   catch (e) { toast("\u53d6\u6d88\u5931\u8d25:" + e.message); }
 }
 

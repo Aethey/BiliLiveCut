@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.db.entities import (
     CandidateStatus,
@@ -98,3 +98,13 @@ def approved_task_candidate(db: Session, task: SegmentTask) -> HighlightCandidat
     ):
         raise ValueError("任务来源不一致或候选未批准")
     return candidate
+
+
+def require_current_lease(db: Session, lease: TaskLease) -> None:
+    """在新写事务的首次查询前锁定任务并复验租约，阻止人工出片的迟到结果。"""
+    if db.get_bind().dialect.name == "sqlite":
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+    else:
+        db.exec(select(SegmentTask).where(SegmentTask.id == lease.task_id).with_for_update()).first()
+    if not still_owns_lease(db, lease):
+        raise LeaseLostError(f"结果提交前租约已失效: task={lease.task_id}")

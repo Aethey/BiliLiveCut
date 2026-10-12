@@ -138,6 +138,7 @@ class TaskStatus:
     PUBLISHING = "publishing"  # 正在发布
     COMPLETED = "completed"  # 最终完成
     FAILED = "failed"  # 永久失败(不可重试)
+    CANCELLING = "cancelling"  # 已请求取消,等待执行与资源收尾
     CANCELLED = "cancelled"  # 已取消
     STALE = "stale"  # 心跳超时,待恢复
 

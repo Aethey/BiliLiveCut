@@ -21,6 +21,7 @@ import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from loguru import logger
 from sqlmodel import select
@@ -46,6 +47,9 @@ from app.db.entities import (
     Transcript,
 )
 from app.db.session import get_session
+
+if TYPE_CHECKING:
+    from app.pipeline.lease import TaskLease
 
 # 竖屏目标分辨率(适合手机端短视频)。
 _VERT_W, _VERT_H = 1080, 1920
@@ -791,6 +795,7 @@ def produce_clip(
     progress_callback: Callable[[int, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
     render_variants: bool = True,
+    task_lease: TaskLease | None = None,
 ) -> FinalClip:
     """把一个高光候选生成为成品 MP4 并入库。
 
@@ -802,6 +807,7 @@ def produce_clip(
     :param progress_callback: 可选的进度回调。
     :param cancel_check: 可选的协作取消检查。
     :param render_variants: 是否继续生成派生版本。
+    :param task_lease: 人工任务的原租约，提交前在写事务内复验。
     :returns: 新建的 :class:`FinalClip`。
     :raises ValueError: 候选不存在或找不到覆盖片段时。
     :raises RuntimeError: FFmpeg 执行失败时。
@@ -837,9 +843,13 @@ def produce_clip(
     duration = (resolved_end_ts - resolved_start_ts).total_seconds()
     peak_rel = max(0.0, (peak_ts - resolved_start_ts).total_seconds())
 
+    if task_lease is not None and output_suffix is None:
+        output_suffix = f"lease_{task_lease.lease_token}"
     output_stem = f"clip_{candidate_id}{_normalize_output_suffix(output_suffix)}"
     out_path = clips_dir() / f"{output_stem}.mp4"
     cover_path = clips_dir() / f"{output_stem}.jpg"
+    if task_lease is not None and (out_path.exists() or cover_path.exists()):
+        raise FileExistsError("当前租约的成片或封面路径已存在，拒绝覆盖")
 
     with tempfile.TemporaryDirectory(prefix="blc_clip_") as tmp:
         work_dir = Path(tmp)
@@ -896,6 +906,15 @@ def produce_clip(
         status=ClipStatus.GENERATED,
     )
     with get_session() as db:
+        if task_lease is not None:
+            from app.pipeline.lease import LeaseLostError, require_current_lease
+
+            try:
+                require_current_lease(db, task_lease)
+            except LeaseLostError:
+                out_path.unlink(missing_ok=True)
+                cover_path.unlink(missing_ok=True)
+                raise
         db.add(clip)
         db.flush()
         db.refresh(clip)

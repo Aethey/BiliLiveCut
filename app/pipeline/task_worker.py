@@ -54,9 +54,8 @@ from app.pipeline.scheduler import (
 )
 from app.pipeline.stage_result import (
     active_stage,
-    can_transition,
-    enqueue_next,
     make_stage_key,
+    request_cancellation,
 )
 from app.pipeline.stale_recovery import (
     recover_orphans,
@@ -177,7 +176,7 @@ def retry_task(task_id: int) -> bool:
 
 
 def cancel_task(task_id: int) -> bool:
-    """取消任务。
+    """请求取消任务，活跃执行完成收尾后才进入已取消状态。
 
     :param task_id: SegmentTask ID。
     :returns: 是否成功。
@@ -186,11 +185,12 @@ def cancel_task(task_id: int) -> bool:
         if db.get_bind().dialect.name == "sqlite":
             db.connection().exec_driver_sql("BEGIN IMMEDIATE")
         task = db.get(SegmentTask, task_id)
-        if task is None or not can_transition(task.stage, TaskStatus.CANCELLED):
+        if task is None:
             return False
-        if task.stage not in {TaskStatus.TRANSIENT_FAILED, TaskStatus.STALE}:
-            task.failed_stage = task.stage
-        enqueue_next(task, TaskStatus.CANCELLED)
+        if task.stage == TaskStatus.CANCELLING:
+            return True
+        if not request_cancellation(task):
+            return False
         db.add(task)
         from app.analysis.session_summary import request_session_timeline_summary_in_session
 

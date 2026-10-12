@@ -15,12 +15,14 @@ from app.db.entities import SegmentTask, TaskStatus
 _RETRY_BASE_S = 10
 _RETRY_MAX_S = 600
 _RETRY_JITTER_S = 5
+_CANCELLABLE_ACTIVE_STAGES = frozenset({TaskStatus.TRANSCRIBING, TaskStatus.ANALYZING, TaskStatus.RENDERING})
 
 # ═══════════════════════════════════════════════════
 # 状态转换矩阵
 # ═══════════════════════════════════════════════════
 
 _VALID_TRANSITIONS: dict[str, set[str]] = {
+    TaskStatus.CANCELLING: {TaskStatus.CANCELLED},
     TaskStatus.RECORDED: {TaskStatus.QUEUED_FOR_TRANS, TaskStatus.QUEUED_FOR_ANALYSIS},
     TaskStatus.QUEUED_FOR_TRANS: {TaskStatus.TRANSCRIBING},
     TaskStatus.TRANSCRIBING: {
@@ -95,11 +97,14 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
 
 def can_transition(current: str, target: str) -> bool:
     """判断状态转换是否合法。"""
+    if target == TaskStatus.CANCELLING:
+        return current in _CANCELLABLE_ACTIVE_STAGES
     if target == TaskStatus.CANCELLED:
         return current not in {
             TaskStatus.COMPLETED,
             TaskStatus.CANCELLED,
             TaskStatus.FAILED,
+            TaskStatus.PUBLISHING,
         }
     return target in _VALID_TRANSITIONS.get(current, set())
 
@@ -202,6 +207,19 @@ def release_lease(task: SegmentTask) -> None:
     task.lease_token = None
 
 
+def request_cancellation(task: SegmentTask) -> bool:
+    """请求取消；活跃执行保留租约到收尾完成，未开始任务直接取消。"""
+    if task.stage == TaskStatus.CANCELLING:
+        return True
+    if not can_transition(task.stage, TaskStatus.CANCELLED):
+        return False
+    if task.stage not in {TaskStatus.TRANSIENT_FAILED, TaskStatus.STALE}:
+        task.failed_stage = task.stage
+    pending = task.stage in _CANCELLABLE_ACTIVE_STAGES and bool(task.claimed_by and task.lease_token)
+    enqueue_next(task, TaskStatus.CANCELLING if pending else TaskStatus.CANCELLED)
+    return True
+
+
 def enqueue_next(
     task: SegmentTask,
     next_stage: str,
@@ -223,10 +241,10 @@ def enqueue_next(
     task.last_error = None
     task.error_is_permanent = False
     task.next_retry_at = None
-    task.claimed_by = None
-    task.claimed_at = None
-    task.heartbeat_at = None
-    task.lease_token = None
+    if next_stage != TaskStatus.CANCELLING:
+        release_lease(task)
+    else:
+        task.completed_at = None
     if next_stage in (TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.FAILED):
         task.completed_at = _now()
         if task.created_at:

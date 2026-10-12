@@ -501,6 +501,15 @@ class ASRProcessPool:
                 ):
                     self._kill(slot)
 
+    def has_active_task(self, task_id: int, lease_token: str) -> bool:
+        """核对原任务是否仍占用进程、IPC 或标准化操作，不能提前结算取消。"""
+        with self._condition:
+            contexts = [slot.context for slot in self._slots if slot.busy]
+            contexts.extend(self._operations.values())
+            return any(
+                context.get("task_id") == task_id and context.get("lease_token") == lease_token for context in contexts
+            )
+
     def infos(self) -> list[dict[str, object]]:
         """返回子进程实测模型状态及监管阶段，不在父进程加载模型。"""
         with self._condition:

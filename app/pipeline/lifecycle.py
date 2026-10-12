@@ -22,8 +22,28 @@ _subprocesses_lock: threading.Lock = threading.Lock()
 # V0.1.13: Task-level resource tracking (ResourceBudget integration)
 _task_resources: dict[tuple[int, str | None], dict[str, int | float]] = {}
 _task_resources_lock: threading.Lock = threading.Lock()
+_executions: set[tuple[int, str]] = set()
+_executions_lock = threading.Lock()
 
 _RETRY_JITTER_S: float = 5.0
+
+
+def register_execution(task_id: int, lease_token: str) -> None:
+    """登记本实例仍在执行的租约，取消不能在同步调用收尾前结算。"""
+    with _executions_lock:
+        _executions.add((task_id, lease_token))
+
+
+def finish_execution(task_id: int, lease_token: str) -> None:
+    """执行及资源清理结束后撤销本地登记，不影响同任务的新租约。"""
+    with _executions_lock:
+        _executions.discard((task_id, lease_token))
+
+
+def execution_active(task_id: int, lease_token: str) -> bool:
+    """确认原执行是否仍在本实例中，包括尚未返回的同步 LLM/媒体调用。"""
+    with _executions_lock:
+        return (task_id, lease_token) in _executions
 
 
 def now_utc() -> datetime:

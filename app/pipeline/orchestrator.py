@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
@@ -19,6 +20,9 @@ from app.analysis.transcription.pipeline import transcribe_segment
 from app.core.config import settings
 from app.core.runtime_settings import configured_task
 from app.db.entities import FinalClip, HighlightCandidate, RawSegment
+
+if TYPE_CHECKING:
+    from app.pipeline.lease import TaskLease
 
 
 @configured_task
@@ -91,6 +95,7 @@ def produce_clip(
     progress_callback: Callable[[int, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
     render_variants: bool = True,
+    task_lease: TaskLease | None = None,
 ) -> FinalClip | None:
     """把一个高光候选生成成品切片并配上文案。
 
@@ -102,9 +107,11 @@ def produce_clip(
     :param progress_callback: 可选的进度回调。
     :param cancel_check: 可选的取消检查。
     :param render_variants: 是否生成派生版本。
+    :param task_lease: 可选的人工任务租约，成片和文案提交前复验。
     """
     from app.clipping.core import produce_clip as _cut_clip
     from app.core.process_control import ProcessCancelledError
+    from app.pipeline.lease import LeaseLostError
     from app.publishing.copywriter import generate_copy
 
     try:
@@ -116,8 +123,9 @@ def produce_clip(
             progress_callback=progress_callback,
             cancel_check=cancel_check,
             render_variants=render_variants,
+            task_lease=task_lease,
         )
-    except ProcessCancelledError:
+    except (ProcessCancelledError, LeaseLostError):
         raise
     except Exception as exc:  # noqa: BLE001
         logger.error("候选 {} 切片失败: {}", candidate_id, exc)
@@ -128,7 +136,9 @@ def produce_clip(
     if progress_callback is not None:
         progress_callback(92, "正在生成文案")
     try:
-        clip = generate_copy(clip.id)
+        clip = generate_copy(clip.id, task_lease=task_lease) if task_lease is not None else generate_copy(clip.id)
+    except LeaseLostError:
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.error("切片 {} 文案生成失败: {}", clip.id, exc)
         return clip

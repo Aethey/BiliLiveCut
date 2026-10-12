@@ -9,8 +9,10 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from multiprocessing.connection import Connection
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import psutil
 import pytest
@@ -19,6 +21,10 @@ from app.analysis.transcription.process_pool import ASRProcessPool, ASRShutdownE
 from app.core.config import settings
 from app.core.runtime_settings import effective_settings
 from app.pipeline.lease import LeaseLostError
+
+if TYPE_CHECKING:
+    from app.analysis.transcription.process_pool import _Slot
+    from app.pipeline.lease import TaskLease
 
 
 def sdk_process(connection: Connection) -> None:
@@ -194,6 +200,149 @@ def test_blocked_sdk_times_out_and_replacement_process_works(mode: str) -> None:
         after = pool.execute(request(), timeout_s=15, check_cancelled=no_cancel)
         assert after["pid"] != before["pid"]
     finally:
+        pool.shutdown(0)
+
+
+def test_task_cancel_waits_for_real_process_cleanup_before_retry(
+    temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.analysis.transcription import process_pool
+    from app.db.entities import SegmentTask, TaskStatus
+    from app.db.session import get_session
+    from app.pipeline import scheduler, task_worker
+    from app.pipeline.lease import still_owns_lease
+    from app.web.routers.tasks import cancel_task as api_cancel
+
+    pool = ASRProcessPool(sdk_process)
+    monkeypatch.setattr(process_pool, "get_process_pool", lambda: pool)
+    cleanup_started, allow_cleanup = threading.Event(), threading.Event()
+    kill = pool._kill
+
+    def gated_kill(slot: _Slot) -> None:
+        cleanup_started.set()
+        assert allow_cleanup.wait(15)
+        kill(slot)
+
+    def infer(lease: TaskLease) -> None:
+        def check() -> None:
+            with get_session() as db:
+                if not still_owns_lease(db, lease):
+                    raise LeaseLostError("cancel requested")
+
+        pool.execute(
+            request(mode="call", pid_file=str(tmp_path / "pid"), task_id=lease.task_id, lease_token=lease.lease_token),
+            timeout_s=30,
+            check_cancelled=check,
+        )
+
+    monkeypatch.setattr(pool, "_kill", gated_kill)
+    monkeypatch.setattr(scheduler, "run_transcribe", infer)
+    with get_session() as db:
+        task = SegmentTask(
+            segment_id=1,
+            session_id=1,
+            stage=TaskStatus.TRANSCRIBING,
+            claimed_by=scheduler._WORKER_ID,
+            lease_token="cancel-proof",
+        )
+        db.add(task)
+        db.flush()
+        task_id = task.id
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(scheduler.execute_task, task_id, TaskStatus.TRANSCRIBING, "cancel-proof")
+            try:
+                pid = wait_for_file(tmp_path / "pid")
+                assert api_cancel(task_id)["status"] == TaskStatus.CANCELLING
+                assert cleanup_started.wait(5)
+                assert psutil.pid_exists(pid)
+                assert not task_worker.retry_task(task_id)
+                with get_session() as db:
+                    task = db.get(SegmentTask, task_id)
+                    assert task.completed_at is None and task.lease_token == "cancel-proof"
+            finally:
+                allow_cleanup.set()
+            future.result(timeout=15)
+        assert not psutil.pid_exists(pid)
+        assert not pool.has_active_task(task_id, "cancel-proof")
+        with get_session() as db:
+            task = db.get(SegmentTask, task_id)
+            assert task.stage == TaskStatus.CANCELLED and task.completed_at is not None
+            assert task.lease_token is task.claimed_by is None
+        assert task_worker.retry_task(task_id)
+        assert pool.execute(request(), timeout_s=15, check_cancelled=no_cancel)["pid"] != pid
+    finally:
+        allow_cleanup.set()
+        pool.shutdown(0)
+
+
+def test_cleanup_failure_does_not_report_cancelled_or_requeue(
+    temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.analysis.transcription import process_pool
+    from app.db.entities import SegmentTask, TaskStatus
+    from app.db.session import get_session
+    from app.pipeline import scheduler, stale_recovery, task_worker
+    from app.pipeline.lease import still_owns_lease
+
+    pool = ASRProcessPool(sdk_process)
+    monkeypatch.setattr(process_pool, "get_process_pool", lambda: pool)
+    kill = pool._kill
+
+    def fail_cleanup(slot: _Slot) -> None:
+        raise RuntimeError("injected OS termination failure")
+
+    def infer(lease: TaskLease) -> None:
+        def check() -> None:
+            with get_session() as db:
+                if not still_owns_lease(db, lease):
+                    raise LeaseLostError("cancel requested")
+
+        pool.execute(
+            request(mode="call", pid_file=str(tmp_path / "pid"), task_id=lease.task_id, lease_token=lease.lease_token),
+            timeout_s=30,
+            check_cancelled=check,
+        )
+
+    monkeypatch.setattr(pool, "_kill", fail_cleanup)
+    monkeypatch.setattr(scheduler, "run_transcribe", infer)
+    recovery_time = datetime.now(UTC) + timedelta(seconds=settings.stale_timeout_s + 60)
+    monkeypatch.setattr(stale_recovery, "now_utc", lambda: recovery_time)
+    with get_session() as db:
+        task = SegmentTask(
+            segment_id=1,
+            session_id=1,
+            stage=TaskStatus.TRANSCRIBING,
+            claimed_by=scheduler._WORKER_ID,
+            lease_token="cleanup-failure",
+        )
+        db.add(task)
+        db.flush()
+        task_id = task.id
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(scheduler.execute_task, task_id, TaskStatus.TRANSCRIBING, "cleanup-failure")
+            try:
+                pid = wait_for_file(tmp_path / "pid")
+                assert task_worker.cancel_task(task_id)
+                future.result(timeout=15)
+                stale_recovery.recover_stale()
+                with get_session() as db:
+                    task = db.get(SegmentTask, task_id)
+                    assert task.stage == TaskStatus.CANCELLING and task.completed_at is None
+                    assert "IPC" in task.last_error
+                assert psutil.pid_exists(pid)
+                assert not task_worker.retry_task(task_id)
+            finally:
+                with pool._condition:
+                    for slot in list(pool._slots):
+                        kill(slot)
+        assert not psutil.pid_exists(pid)
+        stale_recovery.recover_stale()
+        with get_session() as db:
+            assert db.get(SegmentTask, task_id).stage == TaskStatus.CANCELLED
+    finally:
+        monkeypatch.setattr(pool, "_kill", kill)
         pool.shutdown(0)
 
 
