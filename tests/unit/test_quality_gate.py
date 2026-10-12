@@ -176,11 +176,12 @@ def test_release_rejects_injected_tag_without_executing_it(tmp_path: Path, tag: 
         ("workflow_dispatch", "success", True),
         ("workflow_dispatch", "failure", False),
         ("workflow_dispatch", "skipped", False),
-        ("pull_request", "skipped", True),
+        ("pull_request", "success", True),
+        ("pull_request", "skipped", False),
         ("pull_request", "failure", False),
     ],
 )
-def test_ci_status_requires_macos_for_manual_verification(
+def test_ci_status_requires_macos_for_all_source_events(
     tmp_path: Path, event_name: str, macos_result: str, succeeds: bool
 ) -> None:
     workflow = yaml.safe_load((ci_gate.REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
