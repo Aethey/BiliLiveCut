@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "bili-live-cut-rust"
-version = "0.1.18-alpha.8"
+version = "0.1.18-alpha.9"
 dependencies = [
  "pyo3",
  "rayon",

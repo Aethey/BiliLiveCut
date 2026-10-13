@@ -1,6 +1,6 @@
 # 原生加速模块
 
-适用版本：`0.1.18.8-alpha`。
+适用版本：`0.1.18.9-alpha`。
 
 Rust 构建通过 `CARGO_ENCODED_RUSTFLAGS` 传递路径映射，保留显式编译选项，避免用户目录或 Cargo 缓存路径嵌入原生模块；含空格的路径保持完整。Payload 在收录原生模块前检查 UTF-8/UTF-16 本机构建路径，发现残留则拒绝构建。
 
@@ -18,12 +18,14 @@ BiliLiveCut 只保留当前 `app.accelerators` 原生接口。业务代码统一
 |---|---|---|---|
 | 并查集与簇内平均相似度 | Rust | 独立 CPU 内核 | 保留连接顺序、根编号、簇顺序与浮点累加顺序；计算期间释放 GIL |
 | 文本词项、实体与新颖度 | Cython | 独立 CPU 字符内核 | 保留 Python Unicode 小写规则与原 ASCII/CJK 分词范围，避免创建临时差集/并集 |
+| ASR 连续重复检测 | Cython | 独立 CPU 字符内核 | O(32N) 有界周期扫描，保留最早平局与原阈值；casefold 展开保留原文映射 |
+| ASR 复核风险统计 | Cython | 字符计数与首个热词冲突 | 保留 Python 风险权重、原因顺序及模型调用条件 |
 | PCM16 采样计数、精确平方和与峰值 | Cython | 独立 CPU 字节内核 | 单遍整数计算，保留取消与 WAV 完整性检查；分块累积避免长音频溢出 |
-| 候选聚类 N×N 相似度矩阵 | Rust + rayon | 归入 `_rust_speedups` | 两两计算独立，适合 rayon 并行 |
+| 候选聚类 N×N 相似度矩阵 | Rust + rayon | 归入 `_rust_speedups` | 预计算关键词并直接累计加权余弦；按行生成矩阵，拥有数据后释放 GIL，128 项起按行并行 |
 | 弹幕复读率、标点强度、高情绪命中率、代表消息 | Rust | 新增 | 单遍字符串扫描和计数，Python 对象循环占比高 |
 | 音频局部峰值筛选与间距去重 | Cython | 新增 | 五分钟 RMS 包络上的排序与逐点筛选是稳定数值热循环 |
 | RMS 连续静音区间提取 | Cython | 新增 | 单遍阈值状态机，可避免 Python 逐帧分支 |
-| 热点滚动历史稳健增幅（中位数、MAD） | Cython | 新增 | 检测器每个 tick 对多个模态重复执行相同数值流程 |
+| 热点滚动历史稳健增幅（中位数、MAD） | Cython | 新增 | 有界独立数值缓冲区，原地排序并释放 GIL；不修改输入，列表/元组避免 NumPy 往返 |
 
 已有的 C Aho-Corasick、字符 bigram、余弦相似度、梗词计数，以及已有的
 Cython 弹幕基线、SRT 组装继续保留在同一命名空间。
@@ -31,7 +33,7 @@ Cython 弹幕基线、SRT 组装继续保留在同一命名空间。
 ## 当前模块边界
 
 - `app.accelerators._c_speedups`：文本匹配与向量小核。
-- `app.accelerators._cython_speedups`：PCM16 统计、文本新颖度、音频包络后处理、稳健滚动基线、弹幕基线、SRT、聚类后备。
+- `app.accelerators._cython_speedups`：PCM16 统计、文本新颖度、ASR 重复/复核统计、音频包络后处理、稳健滚动基线、弹幕基线、SRT、聚类后备。
 - `app.accelerators._rust_speedups`：rayon 聚类矩阵、并查集/簇内统计与弹幕文本特征。
 - `app.accelerators.python_fallback`：与每个原生函数逐项等价的可测试参考实现。
 
@@ -70,3 +72,5 @@ C 字符 bigram 按 Python Unicode 码点处理；单汉字、空白和孤立代
 并查集内核仅接收有限数值的方阵与阈值，返回根编号、成员索引和簇内均值；主题、关联及事务仍由 Python 业务层维护。文本内核只接收字符串，保留空文本、新颖度/主题变化/实体变化评分公式；证据无需实体统计时显式返回 `None`，不会假造统计值。
 
 完整调用边界基准：`python scripts/benchmark_cpu_kernels.py --output benchmark.json`。测量包括参数转换和结果返回，先逐项校验等价，再记录七轮中位数。合成 CPU 基准不代表 ASR/CUDA 或数据库端到端吞吐，也不保证未测平台及所有输入均加速。
+
+Rust 依赖的完整许可证文本随源码、Docker 和 Windows Payload 分发；Payload 内路径为 `tools/native/rust/THIRD_PARTY_NOTICES.md`。发行验收逐字节核对该文件与源码一致。
