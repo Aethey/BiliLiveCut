@@ -287,8 +287,10 @@ Portable Web 控制台可在“设置中心 → 房间自动化与端口”中�
 
 ```bash
 test -f .env || cp .env.example .env
+# 先在 .env 设置非空 ADMIN_PASSWORD；容器用户名为 admin。
+# storage 目录需允许容器用户 UID/GID 1000 写入，完整说明见 packaging/docker/README.md。
 # Docker 构建上下文为仓库根目录，Compose 文件位于 packaging/docker/
-docker compose -f packaging/docker/compose.yaml up --build -d
+docker compose -f packaging/docker/compose.yaml up --build -d --wait --wait-timeout 180
 # 打开 http://localhost:8000
 ```
 

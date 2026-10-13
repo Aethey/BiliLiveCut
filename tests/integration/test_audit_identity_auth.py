@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import subprocess
 import tomllib
 from datetime import UTC, datetime, timedelta
@@ -79,9 +80,19 @@ def test_docker_extras_cover_default_asr_and_llm() -> None:
     root = Path(__file__).resolve().parents[2]
     project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     dockerfile = (root / "packaging/docker/Dockerfile").read_text(encoding="utf-8")
-    extras = dockerfile.split('pip install ".[', 1)[1].split(']"', 1)[0].split(",")
-    assert set(extras) <= project["optional-dependencies"].keys()
-    assert {"asr-whisper", "asr-funasr", "web", "llm"} <= set(extras)
+    extras = set(re.findall(r"--extra ([a-z0-9-]+)", dockerfile))
+    assert extras and extras <= project["optional-dependencies"].keys()
+    pending = list(extras)
+    while pending:
+        extra = pending.pop()
+        for requirement in project["optional-dependencies"][extra]:
+            match = re.fullmatch(r"bili-live-cut\[([^]]+)\]", requirement)
+            if match:
+                for child in match[1].split(","):
+                    if child not in extras:
+                        extras.add(child)
+                        pending.append(child)
+    assert {"asr-whisper", "asr-funasr", "web", "llm"} <= extras
 
 
 @pytest.fixture
