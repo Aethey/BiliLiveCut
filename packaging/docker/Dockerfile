@@ -27,7 +27,7 @@ COPY tools/native/cython ./tools/native/cython
 RUN uv sync --locked --no-dev --extra asr-all --extra llm --extra web --no-editable \
     --inexact \
     && uv pip check --python /app/.venv/bin/python \
-    && /app/.venv/bin/python -c "from app.accelerators import _c_speedups, _cython_speedups; import torch, torchaudio; from funasr import AutoModel; assert torch.version.cuda is None"
+    && /app/.venv/bin/python -I -c "from app.accelerators import _c_speedups, _cython_speedups; import torch, torchaudio; from funasr import AutoModel; assert torch.version.cuda is None"
 
 FROM python:3.12-slim-bookworm AS runtime
 RUN apt-get update \

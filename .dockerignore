@@ -47,6 +47,11 @@ app/analysis/_rust_cluster.dll
 *.pyd
 *.so
 *.dll
+**/*.pyd
+**/*.so
+**/*.dll
+**/__pycache__/
+tools/native/cython/*.c
 *.exp
 *.lib
 *.obj
