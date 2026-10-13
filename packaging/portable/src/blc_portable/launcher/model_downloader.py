@@ -22,11 +22,11 @@ from typing import Any
 
 from blc_portable.launcher.progress import emit_progress
 from blc_portable.model_download import (
-    HF_MIRRORS,
     MODELSCOPE_MIRRORS,
     download_hf_snapshot,
     download_ms_snapshot,
     download_with_retry,
+    get_hf_endpoints,
     redact_diagnostic,
 )
 from blc_portable.payload.manifest import RELEASE_VERSION, SOURCE_COMMIT_FULL
@@ -200,7 +200,7 @@ def _print_progress(current: int, total: int, name: str) -> None:
 def _download_locked_model(engine_id: str, hub: str, model_id: str, target_dir: Path, revision: str | None) -> None:
     """围绕 SDK 调用进行有限重试，固定内容身份并保留本地续传目录。"""
     if hub == "huggingface":
-        endpoints = HF_MIRRORS
+        endpoints = get_hf_endpoints()
 
         def download(endpoint: str) -> None:
             _download_hf_model(model_id, target_dir, revision, endpoint)

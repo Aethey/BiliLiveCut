@@ -214,13 +214,13 @@ def download_engine(engine: dict[str, Any]) -> bool:
 
             download_ms_model(str(engine["engine_id"]), model_id, engine_dir, str(revision) if revision else None)
         elif hub == "huggingface":
-            from blc_portable.model_download import HF_MIRRORS, download_hf_snapshot, download_with_retry
+            from blc_portable.model_download import download_hf_snapshot, download_with_retry, get_hf_endpoints
 
             download_with_retry(
                 engine=str(engine["engine_id"]),
                 model=model_id,
                 revision=str(revision) if revision else None,
-                endpoints=HF_MIRRORS,
+                endpoints=get_hf_endpoints(),
                 operation=lambda endpoint: download_hf_snapshot(
                     model_id, engine_dir, str(revision) if revision else None, endpoint
                 ),

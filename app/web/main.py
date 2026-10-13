@@ -107,7 +107,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # V0.1.13: Web 安全兜底 — 启动时检查 host+password 配置
     from app.core.config import settings as _cfg_startup
 
-    if not _cfg_startup.admin_password:
+    if _cfg_startup.docker_auth_enabled:
+        auth_state = await asyncio.to_thread(AuthStore(runtime_app_root()).state)
+        logger.info(
+            "Docker 后台认证：{}",
+            "等待使用一次性初始化码设置管理员密码" if auth_state["setup_required"] else "网页登录已启用",
+        )
+    elif not _cfg_startup.admin_password:
         try:
             non_loopback_ips = await asyncio.to_thread(_non_loopback_interface_addresses)
         except OSError as exc:
@@ -286,6 +292,18 @@ from starlette.responses import Response as _Response  # noqa: E402
 from app.core.config import settings as _cfg  # noqa: E402
 
 _ADMIN_PASSWORD = _cfg.admin_password
+
+from app.core.docker_auth import AuthStore  # noqa: E402
+from app.web import docker_auth as _docker_auth  # noqa: E402
+from config.launcher_settings import runtime_app_root  # noqa: E402
+
+_DOCKER_AUTH = (
+    AuthStore(
+        runtime_app_root(), idle_seconds=_cfg.docker_auth_idle_seconds, session_seconds=_cfg.docker_auth_session_seconds
+    )
+    if _cfg.docker_auth_enabled
+    else None
+)
 
 
 def _load_reviewer_passwords(raw: str) -> dict[str, str]:
@@ -499,6 +517,12 @@ class _AuthMiddleware(_BaseMiddleware):
         path = request.url.path
         request.state.auth_user = "anonymous"
         request.state.auth_role = "anonymous"
+        if _DOCKER_AUTH is not None:
+            return await _docker_auth.dispatch(
+                request, call_next, _DOCKER_AUTH, _REVIEWER_PASSWORDS, self._check_csrf, self._reviewer_path_allowed
+            )
+        if path == "/auth/status" and request.method == "GET":
+            return _JSONResponse({"enabled": False}, headers={"Cache-Control": "no-store"})
         protected = any(path.startswith(p) for p in _AUTH_PROTECTED_PREFIXES)
         if not protected:
             return await call_next(request)

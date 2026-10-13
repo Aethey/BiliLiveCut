@@ -44,7 +44,10 @@ class Settings(BaseSettings):
     # ---------- 通用 ----------
     app_env: Literal["dev", "prod"] = "dev"
     log_level: str = "INFO"
-    admin_password: str = Field(default="", repr=False)  # V0.1.8.2: Web 管理后台认证密码(空则无认证)
+    admin_password: str = Field(default="", repr=False)  # Web 后台显式密码；Docker 可使用网页初始化
+    docker_auth_enabled: bool = False  # 由容器入口启用，源码和 Portable 默认关闭
+    docker_auth_idle_seconds: int = Field(default=1800, ge=60, le=86400)
+    docker_auth_session_seconds: int = Field(default=43200, ge=300, le=604800)
     reviewer_accounts_json: str = Field(
         default="",
         repr=False,

@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from blc_portable.diagnostics import redact_diagnostic, safe_host
 from blc_portable.launcher.progress import ModelScopeProgress, emit_progress, hf_progress_class
@@ -22,11 +23,45 @@ HF_MIRRORS = ["https://hf-mirror.com", "https://huggingface.co"]
 MODELSCOPE_MIRRORS = ["https://www.modelscope.cn"]
 
 
+def _validate_hf_endpoint(endpoint: str) -> str:
+    """只接受不含凭据、查询参数或片段的 HTTPS Hub 地址，不回显无效配置。"""
+    invalid = "HF_ENDPOINT 必须是 HTTPS Hub 地址，不能包含凭据、查询参数、片段或控制字符"
+    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in endpoint) or "\\" in endpoint:
+        raise ValueError(invalid)
+    try:
+        parsed = urlsplit(endpoint)
+        port = parsed.port
+        valid = (
+            parsed.scheme == "https"
+            and bool(parsed.hostname)
+            and parsed.username is None
+            and parsed.password is None
+            and "?" not in endpoint
+            and "#" not in endpoint
+            and port != 0
+            and not any(part in {".", ".."} for part in parsed.path.split("/"))
+        )
+    except ValueError:
+        raise ValueError(invalid) from None
+    if not valid:
+        raise ValueError(invalid)
+    return endpoint.rstrip("/")
+
+
+def get_hf_endpoints() -> list[str]:
+    """每次下载读取显式 HF_ENDPOINT；指定后只用该源，否则沿用默认有限回退。"""
+    configured = os.environ.get("HF_ENDPOINT", "")
+    if configured:
+        return [_validate_hf_endpoint(configured)]
+    return list(HF_MIRRORS)
+
+
 def download_hf_snapshot(repo_id: str, target_dir: Path, revision: str | None, endpoint: str | None) -> None:
     """显式绑定 SDK 支持的端点，禁止将本机缓存令牌发送给模型镜像。"""
     from huggingface_hub import snapshot_download
 
-    # SDK 1.26 的请求/退避日志也会输出签名 URL；在来源 logger 处脱敏，
+    endpoint = _validate_hf_endpoint(endpoint) if endpoint is not None else get_hf_endpoints()[0]
+    # SDK 的请求/退避日志也会输出签名 URL；在来源 logger 处脱敏，
     # 使其自身 handler 和向上传播的 handler 都只接收安全诊断。
     with _safe_sdk_logs():
         emit_progress("prepare", repo_id + "：获取文件清单")
@@ -164,7 +199,8 @@ def _failure_kind(error: Exception) -> tuple[str, bool, str]:
         return (
             "metadata",
             True,
-            "端点未提供 SDK 要求的固定 revision 文件元数据；切换下一已配置端点，或使用内容兼容的 Engine Pack",
+            "端点缺少固定 revision、ETag 或 Content-Length；"
+            "检查 HF_ENDPOINT 是否提供完整 Hub 元数据，或使用内容兼容的 Engine Pack",
         )
     if any(
         isinstance(
@@ -172,7 +208,12 @@ def _failure_kind(error: Exception) -> tuple[str, bool, str]:
         )
         for item in chain
     ):
-        return "network", True, "检查网络和代理，或提供当前版本的 Engine Pack"
+        return (
+            "network",
+            True,
+            "检查实际 failed_host 的网络和代理；镜像跳回官方站点仍需能访问官方，"
+            "可配置独立 HF_ENDPOINT 或使用当前版本的 Engine Pack",
+        )
     return "non_retryable", False, "根据根异常检查依赖、模型/revision 和本地文件；修复后重新启动"
 
 

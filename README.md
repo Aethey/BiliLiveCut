@@ -64,7 +64,7 @@ python -m app.cli serve
 - **不迁移旧版本数据库、配置别名、接口或运行时。** 升级请保留旧目录，在全新目录初始化 Schema 6 数据库，按当前 `.env.example` 和 Web 设置重新配置。模型内容可独立复用：支持 schema 5 Engine Pack 及 schema 7 安装清单，发行版本或源码提交不同仅提示来源差异，仍须通过当前模型仓库、revision、格式和文件完整性检查；不支持的 schema 不会自动升级。不要直接复制旧数据库、配置或运行时覆盖新目录。
 - 自动开播检测需要服务持续运行；程序退出或系统休眠期间不会检测。
 - 本地模型处理需要相应计算资源；录直播、采集弹幕、远程转写及调用远程大模型需要联网。大模型与自动上传均可按需启用。
-- Web 业务设置持久化保存，具体生效时间可在设置中心查看。数据库、存储路径和登录身份等启动配置仍通过环境配置管理；远程部署必须设置 `ADMIN_PASSWORD`。
+- Web 业务设置持久化保存，具体生效时间可在设置中心查看。数据库、存储路径和登录身份等启动配置仍通过环境配置管理；源码/Portable 远程部署必须设置 `ADMIN_PASSWORD`；Docker 可通过一次性初始化码在网页设置管理员密码。
 - 仅录制你拥有授权的内容，遵守平台条款。默认手动上传模式只生成待上传材料；启用自动投稿前需配置上传工具和对应开关。
 
 ## 文档
@@ -87,6 +87,8 @@ python -m app.cli serve
 
 - GitHub：[shuangyiliu211126com](https://github.com/shuangyiliu211126com)（[#61](https://github.com/StarGazerQQD/BiliLiveCut/issues/61)、[#62](https://github.com/StarGazerQQD/BiliLiveCut/issues/62)）
 - GitHub：[xiu1zi3](https://github.com/xiu1zi3)（[#60](https://github.com/StarGazerQQD/BiliLiveCut/issues/60)）
+- GitHub：[StarGazerQQD](https://github.com/StarGazerQQD)（[#68](https://github.com/StarGazerQQD/BiliLiveCut/issues/68)）
+- GitHub：[BEIJUUUUU](https://github.com/BEIJUUUUU)（[#68 定位反馈](https://github.com/StarGazerQQD/BiliLiveCut/issues/68#issuecomment-6108960218)，提供镜像重定向和 SDK 兼容性复现）
 - GitHub：[GEYUANwuqi](https://github.com/GEYUANwuqi)（[PR #73](https://github.com/StarGazerQQD/BiliLiveCut/pull/73)，贡献 uv 支持与 pre-commit 钩子）
 
 - Bilibili：[大口径喷子](https://space.bilibili.com/13886027)

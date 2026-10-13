@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import subprocess as _subprocess
 
 import typer
@@ -123,7 +124,19 @@ def cmd_doctor(
         report("FAIL", "数据目录权限", f"无法写入 {data_dir}: {safe_exception_summary(exc)}")
 
     # ── ADMIN_PASSWORD 安全
-    if not _cfg.admin_password:
+    if _cfg.docker_auth_enabled:
+        from app.core.docker_auth import AuthStore
+        from config.launcher_settings import runtime_app_root
+
+        try:
+            auth_state = AuthStore(runtime_app_root()).state()
+            if auth_state["setup_required"]:
+                report("WARN", "Web 安全", "Docker 管理员尚未初始化，请使用容器日志中的一次性初始化码在网页设密")
+            else:
+                report("PASS", "Web 安全", "Docker 网页登录已启用，管理接口受认证保护")
+        except (OSError, RuntimeError, sqlite3.Error) as exc:
+            report("FAIL", "Web 安全", f"Docker 认证存储不可用：{safe_exception_summary(exc)}")
+    elif not _cfg.admin_password:
         import socket
 
         hostname = socket.gethostname()

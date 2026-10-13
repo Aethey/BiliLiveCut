@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>后台账号 — BiliLiveCut</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/admin-auth.css" />
+  <script defer src="/static/js/admin-auth.js"></script>
+</head>
+<body class="blc-auth-page" data-password-page="{{ 'true' if password_page else 'false' }}">
+  <main class="blc-auth-card">
+    <p class="blc-auth-brand">BiliLiveCut · Docker</p>
+    <h1 id="auth-title">正在读取登录状态…</h1>
+    <p id="auth-description">这是管理后台账号，与 Bilibili 账号登录无关。</p>
+    <p id="auth-message" role="status" aria-live="polite"></p>
+    <form id="auth-form" hidden>
+      <label id="username-row">账号
+        <input id="username" name="username" value="admin" autocomplete="username" maxlength="128" required />
+      </label>
+      <label id="code-row" hidden>一次性初始化码
+        <input id="setup-code" name="code" autocomplete="one-time-code" maxlength="128" spellcheck="false" />
+      </label>
+      <label id="current-row" hidden>当前密码
+        <input id="current-password" name="current_password" type="password" autocomplete="current-password" />
+      </label>
+      <label><span id="password-label">密码</span>
+        <input id="password" name="password" type="password" autocomplete="current-password" maxlength="1024" required />
+      </label>
+      <label id="confirm-row" hidden>确认新密码
+        <input id="confirm-password" type="password" autocomplete="new-password" maxlength="128" />
+      </label>
+      <label class="blc-auth-toggle"><input id="show-password" type="checkbox" />显示密码</label>
+      <button id="auth-submit" type="submit">登录</button>
+    </form>
+    <p id="setup-help" hidden>在服务器运行以下命令，复制当前启动日志中最后一条初始化码。初始化码有效期为 30 分钟，使用后立即失效；过期可重启容器生成新码。</p>
+    <code id="setup-command" hidden>docker compose -f packaging/docker/compose.yaml logs --tail=100 app</code>
+    <details id="reset-help">
+      <summary>忘记后台密码？</summary>
+      <p>在运行 Docker 的服务器执行以下命令，再使用输出的一次性初始化码重新设置。此操作会退出所有浏览器，保留录制与业务数据。</p>
+      <code>docker compose -f packaging/docker/compose.yaml exec app python -m app.core.docker_auth reset</code>
+      <p>如已配置 ADMIN_PASSWORD，请修改 .env 后重建容器，网页不能覆盖部署密码。</p>
+    </details>
+    <p id="auth-return" hidden><a href="/">返回控制台</a></p>
+    <p class="blc-auth-note">从其他机器访问时，请通过 HTTPS 反向代理连接。仅将初始化码提供给可信任的管理员。</p>
+  </main>
+</body>
+</html>

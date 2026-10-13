@@ -209,7 +209,7 @@ pip install -e ".[web]" `
 python -m app.cli serve              # 默认 http://127.0.0.1:8000
 ```
 
-Portable Launcher 的 Web 端口可在“设置中心 → 房间自动化与端口”保存，范围为 `1..65535`。配置写入安装根目录的 `config/launcher.json`，只在下次启动 Web 时生效；源码 CLI 未传 `--port` 时也使用该保存值，显式参数优先；页面会同时显示已保存端口、当前实际端口和是否需要重启。端口被占用时会明确失败，不会随机切换端口。无密码模式仍只监听并接受 `localhost`、`127.0.0.0/8` 或 `[::1]` authority；远程部署必须设置 `ADMIN_PASSWORD`。
+Portable Launcher 的 Web 端口可在“设置中心 → 房间自动化与端口”保存，范围为 `1..65535`。配置写入安装根目录的 `config/launcher.json`，只在下次启动 Web 时生效；源码 CLI 未传 `--port` 时也使用该保存值，显式参数优先；页面会同时显示已保存端口、当前实际端口和是否需要重启。端口被占用时会明确失败，不会随机切换端口。无密码模式仍只监听并接受 `localhost`、`127.0.0.0/8` 或 `[::1]` authority；源码/Portable 远程部署必须设置 `ADMIN_PASSWORD`；Docker 可使用一次性初始化码在网页设密。
 
 功能概览：**直播间管理 / 录制状态 / 实时转写 / 候选审核（横屏审片工作台）/ 成品切片 / 主题管理 / 合集编辑 / 插件中心 / 运维面板 / 任务队列监控 / 上传设置**。
 
@@ -247,7 +247,7 @@ python -m pytest scripts/external_tests/test_highlight_plugin_external.py
 
 独立参考实现、训练 CLI 和模型注册表位于 [StarGazerQQD/BiliLiveCut_Highlight](https://github.com/StarGazerQQD/BiliLiveCut_Highlight)。
 
-多人审核入口为 `/review/queue`。管理员仍使用 `ADMIN_PASSWORD`；审核员账号在 `.env` 中配置；领取租约和盲审开关也可在设置中心的“审核”分类保存覆盖。部署默认示例：
+多人审核入口为 `/review/queue`。管理员使用显式 `ADMIN_PASSWORD` 或 Docker 网页初始化密码；审核员账号在 `.env` 中配置；领取租约和盲审开关也可在设置中心的“审核”分类保存覆盖。部署默认示例：
 
 ```env
 ADMIN_PASSWORD=change-admin-password
@@ -256,7 +256,7 @@ REVIEW_CLAIM_TTL_S=900
 REVIEW_BLIND_MODE=true
 ```
 
-审核员只能访问 `/review/*` 和审片所需的视频/封面接口；管理员可显式强制接管他人的有效领取。远程部署必须同时设置 `ADMIN_PASSWORD`，真实密码不得提交到仓库。
+审核员只能访问 `/review/*` 和审片所需的视频/封面接口；管理员可显式强制接管他人的有效领取。源码/Portable 远程部署必须同时设置 `ADMIN_PASSWORD`；Docker 须先完成管理员初始化。真实密码不得提交到仓库。
 
 批准出片、审核重渲染、合集渲染和上传/重试会立即返回后台作业，不再长时间占用 HTTP 请求。作业状态持久化，可在控制台“任务队列”查看进度、错误和结果，也可通过 `GET /api/jobs`、`GET /api/jobs/{job_id}` 查询，通过 `POST /api/jobs/{job_id}/cancel` 或 `/retry` 取消、重试。服务重启会恢复安全可重跑的渲染作业；已开始的上传不会自动重放，避免平台已收件但本地未知时重复投稿。FFmpeg 渲染取消会主动终止当前外部进程并清理未完成输出。
 
@@ -287,8 +287,11 @@ Portable Web 控制台可在“设置中心 → 房间自动化与端口”中�
 
 ```bash
 test -f .env || cp .env.example .env
+# 管理员账号为 admin；ADMIN_PASSWORD 留空时，通过初始化码在网页设置密码。
+# 查看当前初始化码：docker compose -f packaging/docker/compose.yaml logs --tail=100 app
+# storage 目录需允许容器用户 UID/GID 1000 写入，完整说明见 packaging/docker/README.md。
 # Docker 构建上下文为仓库根目录，Compose 文件位于 packaging/docker/
-docker compose -f packaging/docker/compose.yaml up --build -d
+docker compose -f packaging/docker/compose.yaml up --build -d --wait --wait-timeout 180
 # 打开 http://localhost:8000
 ```
 
@@ -346,3 +349,17 @@ Nano 与 Paraformer 的 FSMN-VAD 固定使用 FP32 浮点参数，Nano 的语言
 Windows 静态 JS/MJS/CSS 响应不依赖系统 MIME 映射。白屏或“添加直播间”无响应时记录浏览器控制台错误、失败资源 URL 和响应 Content-Type；服务端仍保留 HEAD、Range、缓存与 404 语义。
 
 关闭服务时先通知计算停止，再依次收尾监控、录制、Web 作业、Worker、插件及指标采样。启动失败或某一服务关闭失败仍会执行其余资源清理，并保留异常。受监管媒体命令使用独占进程树，取消、超时及主命令退出都会清理后代，不影响其他程序；关闭期间不再启动新媒体命令，中断的任务重新排队且不消耗业务重试次数。Web 作业关闭等待超时会保留运行/取消中的处理器登记并阻止新作业，不会把尚未退出的同步线程当作已完成；需要等外部请求的有限超时或处理器实际返回。`Finished server process` 仅表示服务器生命周期结束，须以实际 Python 进程退出及命令行返回确认关闭。
+
+#### Docker 后台账号与重新登录
+
+首次访问会进入管理员初始化页。复制当前容器日志中的一次性初始化码，设置 12–128 字符密码后登录；
+初始化码 30 分钟有效，重启使未使用的旧码失效。已初始化的密码保存在私有哈希库中，保留 storage 即可跨容器重建复用。
+
+网页顶部提供密码管理、退出登录和退出所有设备。会话默认空闲 30 分钟或最长 12 小时后失效，
+容器重启也要求重新登录；录制和后台任务继续由服务运行，浏览器退出不会主动停止它们。
+会话失效时原地弹出登录框，保留当前页面草稿；失败的保存、上传等请求不会自动重发，请登录后确认再操作。
+显式退出则返回登录页，退出前请保存草稿。其他标签页重新登录后，首次写入可能提示登录状态已更新，确认后重试即可。
+
+网页管理密码与 Bilibili Cookie、模型 API Key 相互独立。显式 ADMIN_PASSWORD 不受网页改密覆盖；
+审核员继续使用部署配置中的独立账号。API 脚本仍支持 Basic Auth，初始化码不能用作 API 密码。
+忘记密码的恢复命令、HTTPS 反向代理和迁移说明见 [Docker 说明](../packaging/docker/README.md)。

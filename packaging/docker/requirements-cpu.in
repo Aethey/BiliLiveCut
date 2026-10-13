@@ -1,0 +1,3 @@
+# CPU 镜像的 PyTorch/TorchAudio 配套运行时，使用官方 CPU wheel。
+torch==2.13.0+cpu
+torchaudio==2.11.0+cpu
