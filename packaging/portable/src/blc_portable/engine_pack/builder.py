@@ -312,13 +312,13 @@ def download_real_models(staging: Path) -> None:
         if hub == "huggingface":
             repo_id = str(engine["repo_id"])
             try:
-                from blc_portable.model_download import HF_MIRRORS, download_hf_snapshot, download_with_retry
+                from blc_portable.model_download import download_hf_snapshot, download_with_retry, get_hf_endpoints
 
                 download_with_retry(
                     engine=engine_id,
                     model=repo_id,
                     revision=str(revision) if revision else None,
-                    endpoints=HF_MIRRORS,
+                    endpoints=get_hf_endpoints(),
                     operation=partial(download_hf_snapshot, repo_id, target, str(revision) if revision else None),
                 )
             except ImportError:

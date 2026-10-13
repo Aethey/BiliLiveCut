@@ -397,6 +397,23 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 
 ---
 
+## Hugging Face 在线供给与镜像配置
+
+启动器、Engine Pack 构建器及缓存下载器使用锁定的 `huggingface-hub==1.30.0`。SDK 支持镜像向官方 Hub 的绝对 308，以及带查询参数的相对跳转；文件元数据校验、固定 revision 和断点续传保持生效。
+
+默认按 `hf-mirror.com`、`huggingface.co` 有限回退。镜像若委派回官方，最终仍需要能访问官方站点；主页能打开并不能证明模型文件可下载。若有独立且可信的 Hub 镜像，可在启动前设置进程环境变量：
+
+```powershell
+$env:HF_ENDPOINT = "https://your-trusted-hub.example"
+.\launcher.exe
+```
+
+自定义地址覆盖默认列表，不会在失败后悄悄改用其他配置源；该服务器自身仍可能通过重定向委派到其他主机。允许 HTTPS 地址及必要的路径前缀，拒绝内嵌账号密码、查询参数、片段、控制字符及无效端口。Portable 下载不会向任何源发送本机缓存的 Hugging Face Token。不要填写不受信任的第三方地址。
+
+在线供给发生在业务 `.env` 加载之前，因此仅在 `.env` 写入此项不会影响 Portable 下载；Docker 的 `env_file` 会将它传入容器进程。修改后重新启动；清除 `$env:HF_ENDPOINT` 可恢复默认策略。失败诊断会区分配置、网络、HTTP、文件元数据和本地磁盘问题，并保留实际失败主机名。
+
+自定义镜像必须支持 Hub API、固定 revision、ETag 和 Content-Length；缺少必要元数据时明确失败，不伪造大小或跳过完整性检查。可换用满足协议的可信源、为实际下载主机配置代理，或提供当前内容兼容的 Engine Pack。更换端点复用已有逐引擎 staging 目录，不要求删除已经下载的模型文件。
+
 ## 配置文件 .env 详解
 
 `launcher.exe` 首次运行会**自动生成**一份含默认值的 `.env`。以下逐段说明每个配置项的含义及何时需要修改。

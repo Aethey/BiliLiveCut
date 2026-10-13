@@ -98,10 +98,10 @@ def test_wrapped_metadata_failures_exhaust_each_source_once(no_download_wait: li
             engine="whisper",
             model="fixture/model",
             revision=REVISION,
-            endpoints=model_downloader.HF_MIRRORS,
+            endpoints=model_download.HF_MIRRORS,
             operation=download,
         )
-    assert calls == list(model_downloader.HF_MIRRORS)
+    assert calls == list(model_download.HF_MIRRORS)
     assert isinstance(caught.value.__cause__.__cause__, FileMetadataError)
     assert no_download_wait == []
 
@@ -156,10 +156,10 @@ def test_preimported_sdk_uses_explicit_endpoint_for_tree_and_file_without_token(
 ) -> None:
     import huggingface_hub  # 已导入 SDK 后才指定端点，不能依赖环境变量的导入时机。
 
-    assert huggingface_hub.__version__ == "1.26.0"
+    assert huggingface_hub.__version__ == "1.30.0"
     monkeypatch.setenv("HF_ENDPOINT", "https://unrelated.invalid")
     monkeypatch.setenv("BLC_MODEL_PROGRESS", "1" if show_progress else "0")
-    for index, endpoint in enumerate(model_downloader.HF_MIRRORS):
+    for index, endpoint in enumerate(model_download.HF_MIRRORS):
         target = tmp_path / str(index)
         model_downloader._download_hf_model("fixture/model", target, REVISION, endpoint)
         assert (target / "config.json").read_bytes() == b'{"fixture":true}'
@@ -181,14 +181,14 @@ def test_first_source_timeout_falls_back_with_same_revision_and_directory(
 
     def download(repo: str, target: Path, revision: str | None, endpoint: str | None) -> None:
         calls.append((repo, target, revision, endpoint))
-        if endpoint == model_downloader.HF_MIRRORS[0]:
+        if endpoint == model_download.HF_MIRRORS[0]:
             raise httpx.ConnectTimeout("connect failed", request=httpx.Request("GET", endpoint + "/?signature=secret"))
         target.mkdir(exist_ok=True)
         (target / "config.json").write_bytes(b"complete")
 
     monkeypatch.setattr(model_downloader, "_download_hf_model", download)
     model_downloader._download_locked_model("whisper", "huggingface", "fixture/model", tmp_path, REVISION)
-    assert [call[3] for call in calls] == [*model_downloader.HF_MIRRORS[:1]] * 2 + model_downloader.HF_MIRRORS[1:]
+    assert [call[3] for call in calls] == [*model_download.HF_MIRRORS[:1]] * 2 + model_download.HF_MIRRORS[1:]
     assert all(call[:3] == ("fixture/model", tmp_path, REVISION) for call in calls)
     assert len(no_download_wait) == 1
 
@@ -238,7 +238,7 @@ def test_local_io_failure_never_switches_source(code: int, no_download_wait: lis
 
     with pytest.raises(RuntimeError, match="kind=local_io"):
         model_download.download_with_retry(
-            engine="whisper", model="a/b", revision=REVISION, endpoints=model_downloader.HF_MIRRORS, operation=download
+            engine="whisper", model="a/b", revision=REVISION, endpoints=model_download.HF_MIRRORS, operation=download
         )
     assert len(calls) == 1 and not no_download_wait
 
@@ -256,7 +256,7 @@ def test_http_error_classification_preserves_status_and_budget(
 
     with pytest.raises(RuntimeError, match=f"kind=http_{status}"):
         model_download.download_with_retry(
-            engine="whisper", model="a/b", revision=REVISION, endpoints=model_downloader.HF_MIRRORS, operation=download
+            engine="whisper", model="a/b", revision=REVISION, endpoints=model_download.HF_MIRRORS, operation=download
         )
     assert len(calls) == (4 if retry else 1)
 
@@ -408,6 +408,6 @@ def test_protocol_configuration_does_not_retry(error: Exception, no_download_wai
 
     with pytest.raises(RuntimeError, match="kind=configuration"):
         model_download.download_with_retry(
-            engine="whisper", model="a/b", revision=REVISION, endpoints=model_downloader.HF_MIRRORS, operation=download
+            engine="whisper", model="a/b", revision=REVISION, endpoints=model_download.HF_MIRRORS, operation=download
         )
     assert len(calls) == 1 and not no_download_wait

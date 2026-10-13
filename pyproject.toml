@@ -30,6 +30,7 @@ dependencies = [
 # 若当前 Python 版本无预编译 wheel,请改用 Python 3.11/3.12 虚拟环境。
 asr-whisper = [
     "faster-whisper>=1.0",
+    "huggingface-hub==1.30.0", # 修复 Hub 绝对重定向；与 Portable 和真实 SDK 回归测试一致
     "av>=11,<19", # faster-whisper 1.2.1 仍使用 PyAV 19 已移除的 metadata_errors 参数
 ]
 # V0.1.12.2: Paraformer-zh / SenseVoice-Small / Fun-ASR-Nano 所需依赖。
@@ -57,7 +58,6 @@ web = [
 # 开发与测试工具。
 dev = [
     "bili-live-cut[asr-whisper]", # 回归测试使用真实 CPU VAD/音频解码，不下载转写模型
-    "huggingface-hub==1.26.0", # 与 Portable 锁一致；用真实 SDK + 本地 HTTP 夹具验证端点，不下载模型
     "modelscope-hub==0.2.0", # 验证锁定 SDK 的文件清单与半下载失败边界
     "Cython==3.2.9",
     "pytest>=8.2",

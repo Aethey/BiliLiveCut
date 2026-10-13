@@ -87,6 +87,7 @@ def test_runtime_locks_keep_security_upgrades_pinned() -> None:
         "faster-whisper": "1.2.1",
         "funasr": "1.3.30",
         "hydra-core": "1.3.7",
+        "huggingface-hub": "1.30.0",
         "jinja2": "3.1.6",
         "modelscope": "1.39.0",
         "openai": "2.51.0",
