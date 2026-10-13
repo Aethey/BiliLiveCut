@@ -87,7 +87,6 @@ python -m app.cli serve
 
 - GitHub：[shuangyiliu211126com](https://github.com/shuangyiliu211126com)（[#61](https://github.com/StarGazerQQD/BiliLiveCut/issues/61)、[#62](https://github.com/StarGazerQQD/BiliLiveCut/issues/62)）
 - GitHub：[xiu1zi3](https://github.com/xiu1zi3)（[#60](https://github.com/StarGazerQQD/BiliLiveCut/issues/60)）
-- GitHub：[StarGazerQQD](https://github.com/StarGazerQQD)（[#68](https://github.com/StarGazerQQD/BiliLiveCut/issues/68)）
 - GitHub：[BEIJUUUUU](https://github.com/BEIJUUUUU)（[#68 定位反馈](https://github.com/StarGazerQQD/BiliLiveCut/issues/68#issuecomment-6108960218)，提供镜像重定向和 SDK 兼容性复现）
 - GitHub：[GEYUANwuqi](https://github.com/GEYUANwuqi)（[PR #73](https://github.com/StarGazerQQD/BiliLiveCut/pull/73)，贡献 uv 支持与 pre-commit 钩子）
 
