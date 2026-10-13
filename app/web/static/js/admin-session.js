@@ -6,12 +6,17 @@
   let dialog;
   let message;
   let ready;
+  let loginButton;
+  let identity;
+  let postponed = false;
   const domReady = document.readyState === "loading"
     ? new Promise(resolve => document.addEventListener("DOMContentLoaded", resolve, { once: true })) : Promise.resolve();
   async function status() {
     const response = await originalFetch("/auth/status", { credentials: "same-origin", cache: "no-store" });
     if (!response.ok) throw new Error("无法读取登录状态，请稍后重试。");
     state = await response.json();
+    if (loginButton) loginButton.hidden = state.authenticated;
+    if (identity) identity.textContent = "后台账号：" + (state.username || "未登录");
     return state;
   }
   async function post(path, body) {
@@ -21,11 +26,20 @@
       }, body: JSON.stringify(body)
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || "登录操作失败。");
+    if (!response.ok) {
+      if (response.status === 403 && response.headers.get("X-BLC-CSRF-Required") === "1") await status();
+      const error = new Error(payload.detail || "登录操作失败。");
+      error.status = response.status;
+      throw error;
+    }
     return payload;
   }
-  async function promptLogin() {
+  async function promptLogin(force = false) {
     await domReady;
+    state.authenticated = false;
+    if (loginButton) loginButton.hidden = false;
+    if (postponed && !force) return;
+    postponed = false;
     if (dialog) { if (!dialog.open) dialog.showModal(); return; }
     dialog = document.createElement("dialog");
     dialog.className = "blc-auth-card";
@@ -40,7 +54,9 @@
       <p><a href="/auth/login" target="_blank" rel="noopener">首次设置或忘记密码</a></p>`;
     const form = dialog.querySelector("form");
     form.elements.username.value = state.username || "admin";
-    dialog.querySelector("[data-close]").addEventListener("click", () => dialog.close());
+    const postpone = () => { postponed = true; form.elements.password.value = ""; };
+    dialog.addEventListener("cancel", postpone);
+    dialog.querySelector("[data-close]").addEventListener("click", () => { postpone(); dialog.close(); });
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const button = form.querySelector("[type=submit]");
@@ -52,6 +68,8 @@
         form.elements.password.value = "";
         await status();
         dialog.close();
+        postponed = false;
+        loginButton.hidden = true;
         message.textContent = "已重新登录。未自动重试任何操作，请确认页面内容后手动继续。";
         window.dispatchEvent(new Event("blc:reauthenticated"));
       } catch (failure) { error.textContent = failure.message; }
@@ -67,13 +85,18 @@
     const bar = document.createElement("nav");
     bar.className = "blc-session-bar";
     bar.setAttribute("aria-label", "后台账号");
-    const identity = document.createElement("span");
+    identity = document.createElement("span");
     identity.textContent = "后台账号：" + (state.username || "未登录");
     message = document.createElement("span");
     message.setAttribute("role", "status");
     const password = document.createElement("a");
     password.href = "/auth/password";
     password.textContent = "密码管理";
+    loginButton = document.createElement("button");
+    loginButton.type = "button";
+    loginButton.textContent = "重新登录";
+    loginButton.hidden = state.authenticated;
+    loginButton.addEventListener("click", () => promptLogin(true));
     const logout = document.createElement("button");
     logout.type = "button";
     logout.textContent = "退出登录";
@@ -87,12 +110,15 @@
         state.csrf_token = "";
         message.textContent = "已退出。当前草稿仍保留，重新登录后可以继续。";
         location.assign("/auth/login");
-      } catch (error) { message.textContent = error.message; }
+      } catch (error) {
+        if (error.status === 401) { location.assign("/auth/login"); return; }
+        message.textContent = error.message;
+      }
     };
     logout.addEventListener("click", () => leave(false));
     all.addEventListener("click", () => leave(true));
     window.addEventListener("blc:reauthenticated", () => { identity.textContent = "后台账号：" + state.username; });
-    bar.append(identity, password, logout, all, message);
+    bar.append(identity, password, loginButton, logout, all, message);
     document.body.prepend(bar);
     if (!state.authenticated) await promptLogin();
   }
@@ -117,7 +143,11 @@
     const request = new Request(input, options);
     if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) request.headers.set("X-BLC-CSRF", state.csrf_token || "");
     const response = await originalFetch(request);
-    if (response.status === 401 && response.headers.get("X-BLC-Auth-Required") === "1") await promptLogin();
+    if (response.status === 401 && response.headers.get("X-BLC-Auth-Required") === "1") {
+      await status();
+      if (!state.authenticated) await promptLogin();
+      else message.textContent = "此前请求的登录状态已失效，当前已登录；请确认后手动重试该操作。";
+    }
     if (response.status === 403 && response.headers.get("X-BLC-CSRF-Required") === "1") {
       await status();
       message.textContent = "其他标签页已更新登录状态。本次操作未执行，请确认后重试。";

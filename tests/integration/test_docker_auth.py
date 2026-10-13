@@ -438,3 +438,17 @@ async def test_browser_stale_basic_does_not_override_valid_session(browser: http
     header = "Basic " + base64.b64encode(b"admin:obsolete-password").decode()
     result = await browser.get("/api/dashboard", headers={"Authorization": header, "Sec-Fetch-Site": "same-origin"})
     assert result.status_code == 200
+
+
+async def test_expired_response_does_not_clear_a_subsequent_login_cookie(
+    browser: httpx.AsyncClient, auth_store: AuthStore
+) -> None:
+    await login(browser)
+    with auth_store.connect() as db:
+        db.execute("UPDATE sessions SET seen=0")
+    expired = await browser.get("/api/dashboard")
+    assert expired.status_code == 401
+    # 网络可能把该响应延迟到新登录之后，因此不能携带删除 Cookie 的指令。
+    assert "set-cookie" not in expired.headers
+    await login(browser)
+    assert (await browser.get("/api/dashboard")).status_code == 200

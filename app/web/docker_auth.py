@@ -47,7 +47,8 @@ def _required(request: Request, detail: str = "登录已失效，请重新登录
         response = _json({"detail": detail}, 401)
     response.headers["X-BLC-Auth-Required"] = "1"
     response.headers["Cache-Control"] = "no-store"
-    return _clear(response)
+    # 延迟到达的旧 401 不得删除刚登录的新 Cookie；仅显式退出/改密清理 Cookie。
+    return response
 
 
 async def _body(request: Request) -> dict[str, str | bool]:
