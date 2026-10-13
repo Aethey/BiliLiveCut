@@ -71,7 +71,7 @@ X-Forwarded-* 来源；代理与服务看到的 Origin 必须一致，否则修�
 镜像入口也检查目录写权限。宿主绑定目录的权限不会被镜像内 chown 自动修复。可通过调整宿主目录权限解决，或明确执行以下一次性初始化（会改变 storage 内文件的所有者）：
 
 ```bash
-docker compose -f packaging/docker/compose.yaml run --rm --user root \
+docker compose -f packaging/docker/compose.yaml run --rm --user root --cap-add CHOWN \
   --entrypoint chown app -R 1000:1000 /data
 ```
 
@@ -88,7 +88,7 @@ bash scripts/docker-down.sh
 
 Windows 对应 `scripts\docker-up.bat` / `scripts\docker-down.bat`。脚本可以从任意工作目录启动，命令失败会返回非零，启动脚本等待 Web 健康检查通过才提示成功。HTTP 健康检查直接访问本机服务，绕过外部代理，不读取认证凭据；200 和认证挑战 401 均表示 Web 已能响应，不代表模型推理成功。
 
-Compose 使用 `init: true` 回收子进程，停止宽限为 60 秒，为 FFmpeg 收尾和 Worker 关闭留出时间。重启策略为 `unless-stopped`，手动停止后不会自动重新启动。不要增加 Web workers 或复用同一数据库启动多个容器：当前录制监控和任务调度属于单实例应用。
+Compose 默认移除全部 Linux capabilities，并设置 `no-new-privileges`，阻止进程通过 setuid 程序取得额外权限。目录所有者修复命令只在一次性维护容器中显式授予 CHOWN。Compose 使用 `init: true` 回收子进程，停止宽限为 60 秒，为 FFmpeg 收尾和 Worker 关闭留出时间。重启策略为 `unless-stopped`，手动停止后不会自动重新启动。不要增加 Web workers 或复用同一数据库启动多个容器：当前录制监控和任务调度属于单实例应用。
 
 ## 数据与缓存
 
@@ -117,6 +117,10 @@ Web 与录制不需要桌面。当前“自动登录”功能在运行应用的�
 
 构建阶段通过固定 uv 版本，以 `uv.lock` 安装运行 extras，复制完整 setuptools 数据文件和 C/Cython 构建源，并进行非 editable 安装。运行阶段只复制环境，不携带编译器、uv 或仓库源码。传统 pip 源码安装流程不变。
 
+基础系统使用 Debian 13（Trixie）的 Python 3.12 镜像。构建阶段的系统 pip 通过 `requirements-system.lock` 固定版本和哈希；运行阶段移除 pip 及 ensurepip 自带的旧引导 wheel，应用虚拟环境不受影响。容器依赖通过修改锁文件并重建镜像更新，不支持在运行容器内临时执行 pip 安装。验收分别检查应用与系统 Python，要求安装工具已移除；系统环境若出现额外第三方包，仍必须逐个审计。
+
+命令行 FFmpeg 与 PyAV 使用同一套从官方 9.0.2 源码编译的共享库，避免 PyAV wheel 另行携带旧版 FFmpeg。源码已核验官方发行签名并固定 SHA-256；完整源码与 GPLv3 许可证随镜像置于 `/opt/ffmpeg/share/source/`。构建保留 CPU 编解码、网络录制、字幕及中文文本滤镜；此无头 CPU 镜像不提供 ffplay 桌面播放器。
+
 CPU 运行锁采用官方 Torch 2.13.0 与 TorchAudio 2.11.0 的 CPU wheel；具体兼容范围由官方 wheel 元数据、依赖一致性检查和真实 PCM 解码共同验证。旧 Torch 2.10.0 命中已知漏洞记录，不能继续作为构建基线。
 
 项目 extras 暂未声明 PyTorch，CPU 镜像另外使用 `requirements-cpu.lock` 的官方 CPU wheel、完整配套依赖和 SHA-256 哈希。共享依赖版本来自 uv.lock；最终安装使用 `--inexact` 保留 CPU 运行时，再执行依赖一致性和真实导入校验。
@@ -133,6 +137,9 @@ uv pip compile packaging/docker/requirements-cpu.in \
   --index-url https://pypi.org/simple --extra-index-url https://download.pytorch.org/whl/cpu \
   --index-strategy unsafe-best-match --generate-hashes --no-annotate \
   --output-file packaging/docker/requirements-cpu.lock
+uv pip compile packaging/docker/requirements-system.in \
+  --python-version 3.12 --generate-hashes --no-annotate \
+  --output-file packaging/docker/requirements-system.lock
 docker build -t bili-live-cut:docker-test -f packaging/docker/Dockerfile .
 uv run --no-project --python 3.12 --with pip-audit==2.10.1 python scripts/audit_docker_runtime.py
 uv run --no-project --python 3.12 --with playwright==1.61.0 playwright install --with-deps chromium
@@ -143,4 +150,4 @@ uv run --no-project --python 3.12 --with playwright==1.61.0 python scripts/smoke
 
 基础 Python 和 uv 镜像按已验收的 SHA-256 digest 固定，新增 Action 使用完整提交。更新镜像时应核对官方来源并重新运行构建、依赖审计和容器验收，不能只移动标签。
 
-Docker CI 从最终镜像提取实际安装的 Python 包清单，包含 Linux 专属依赖和 CPU Torch；只在查询公共漏洞记录时将官方 Torch/TorchAudio 的 `+cpu` 映射到相同公共版本。原始清单与完整报告保留在 `.local/docker-audit/`。未知本地版本、包被跳过、版本不符、报告不完整、查询失败或任一已知漏洞均阻断验收，不采用漏洞忽略名单。应用自身通过源码审计和测试验收；此检查不等同于 Debian 系统包扫描，也不证明任意外部模型或插件可信。
+Docker CI 分别从最终镜像的 `/app/.venv/bin/python` 和 `/usr/local/bin/python` 提取实际安装包清单，包含 Linux 专属依赖和 CPU Torch，并核对系统安装工具已移除；只在查询公共漏洞记录时将官方 Torch/TorchAudio 的 `+cpu` 映射到相同公共版本。原始清单与完整报告分别保留在 `.local/docker-audit/application/` 和 `.local/docker-audit/system/`；系统无第三方包时只记录清单检查及未执行漏洞查询，不生成 pip-audit 报告。未知本地版本、包被跳过、版本不符、报告不完整、查询失败或任一已知漏洞均阻断验收，不采用漏洞忽略名单。应用自身通过源码审计和测试验收；此检查不等同于 Debian 系统包扫描，也不证明任意外部模型或插件可信。

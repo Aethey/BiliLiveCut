@@ -19,16 +19,20 @@ else:
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_VERSION = Version(tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"])
+APPLICATION_PACKAGES = frozenset({"bili-live-cut", "torch", "torchaudio"})
+SYSTEM_PACKAGES: frozenset[str] = frozenset()
 INVENTORY_COMMAND = (
     "import importlib.metadata as m, json; "
     "print(json.dumps([{'name': d.metadata['Name'], 'version': d.version} for d in m.distributions()]))"
 )
 
 
-def dependencies_from_inventory(text: str) -> frozenset[tuple[str, str]]:
+def dependencies_from_inventory(
+    text: str, *, required_packages: frozenset[str] = APPLICATION_PACKAGES
+) -> frozenset[tuple[str, str]]:
     """校验镜像清单，只对官方 Torch CPU 构建去掉本地版本后缀以查询公共漏洞记录。"""
     entries = json.loads(text)
-    if not isinstance(entries, list) or not entries:
+    if not isinstance(entries, list) or (not entries and required_packages):
         raise AuditReportError("镜像依赖清单必须是非空列表")
     dependencies: set[tuple[str, str]] = set()
     seen: set[str] = set()
@@ -52,16 +56,22 @@ def dependencies_from_inventory(text: str) -> frozenset[tuple[str, str]]:
         if version.local and not (name in {"torch", "torchaudio"} and version.local == "cpu"):
             raise AuditReportError(f"无法映射到公共漏洞记录的本地版本：{name}=={version}")
         dependencies.add((name, version.public))
-    if not {"bili-live-cut", "torch", "torchaudio"} <= seen:
-        raise AuditReportError("镜像缺少应用或 CPU ASR 运行时")
+    if not required_packages <= seen:
+        raise AuditReportError(f"镜像缺少必需依赖：{sorted(required_packages - seen)}")
     return frozenset(dependencies)
 
 
-def audit_inventory(text: str, output_dir: Path) -> bool:
+def audit_inventory(text: str, output_dir: Path, *, required_packages: frozenset[str] = APPLICATION_PACKAGES) -> bool:
     """保留实际清单与审计报告；检查所有依赖均已扫描且没有已知漏洞。"""
-    dependencies = dependencies_from_inventory(text)
+    dependencies = dependencies_from_inventory(text, required_packages=required_packages)
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "inventory.json").write_text(text, encoding="utf-8")
+    if not dependencies:
+        (output_dir / "inventory-check.json").write_text(
+            json.dumps({"third_party_packages": 0, "vulnerability_query_executed": False}), encoding="utf-8"
+        )
+        print("系统 Python 仅含标准库，无第三方依赖可查询。")
+        return True
     requirements = output_dir / "requirements.txt"
     requirements.write_text("".join(f"{name}=={version}\n" for name, version in sorted(dependencies)), encoding="utf-8")
     result = subprocess.run(
@@ -104,32 +114,44 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path, default=Path(".local/docker-audit"))
     args = parser.parse_args(argv)
     try:
-        result = subprocess.run(
-            [
-                args.docker,
-                "run",
-                "--rm",
-                "--network",
-                "none",
-                "--read-only",
-                "--cap-drop",
-                "ALL",
-                "--security-opt",
-                "no-new-privileges",
-                "--entrypoint",
-                "python",
-                args.image,
-                "-I",
-                "-c",
-                INVENTORY_COMMAND,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=180,
-        )
-        audit_inventory(result.stdout, args.output_dir)
+        for scope, python, required in (
+            ("application", "/app/.venv/bin/python", APPLICATION_PACKAGES),
+            ("system", "/usr/local/bin/python", SYSTEM_PACKAGES),
+        ):
+            result = subprocess.run(
+                [
+                    args.docker,
+                    "run",
+                    "--rm",
+                    "--network",
+                    "none",
+                    "--read-only",
+                    "--cap-drop",
+                    "ALL",
+                    "--security-opt",
+                    "no-new-privileges",
+                    "--entrypoint",
+                    python,
+                    args.image,
+                    "-I",
+                    "-c",
+                    INVENTORY_COMMAND
+                    if scope == "application"
+                    else (
+                        "import importlib.util, ensurepip; from pathlib import Path; "
+                        "assert importlib.util.find_spec('pip') is None, 'runtime contains pip'; "
+                        "assert not list((Path(ensurepip.__file__).parent / '_bundled').glob('*.whl')), "
+                        "'runtime contains bootstrap wheels'; " + INVENTORY_COMMAND
+                    ),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=180,
+            )
+            print(f"审计镜像 Python 环境：{scope}")
+            audit_inventory(result.stdout, args.output_dir / scope, required_packages=required)
     except (OSError, ValueError, subprocess.SubprocessError, AuditReportError) as exc:
         print(f"Docker 依赖审计失败：{exc}", file=sys.stderr)
         return 1

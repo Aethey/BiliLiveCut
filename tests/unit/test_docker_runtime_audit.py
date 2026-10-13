@@ -118,23 +118,52 @@ def test_audit_fails_closed(tmp_path: Path, monkeypatch: MonkeyPatch, mode: str)
         audit.audit_inventory(json.dumps(inventory()), tmp_path)
 
 
-def test_image_inventory_is_isolated_and_pipeline_runs(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+@pytest.mark.parametrize("system_failure", [None, "vulnerability", "omitted_report"])
+def test_both_python_environments_must_pass(
+    tmp_path: Path, monkeypatch: MonkeyPatch, system_failure: str | None
+) -> None:
     commands: list[list[str]] = []
+    system_inventory = [] if system_failure is None else [{"name": "urllib3", "version": "2.7.0"}]
+    system_rows = [{"name": "urllib3", "version": "2.7.0", "vulns": []}]
+    if system_failure == "vulnerability":
+        system_rows[0]["vulns"] = [{"id": "CVE-2026-97687", "aliases": []}]
+    elif system_failure == "omitted_report":
+        system_rows = []
 
     def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         commands.append(command)
-        output = json.dumps(inventory()) if command[0] == "docker" else json.dumps(clean_report())
+        if command[0] == "docker":
+            python = command[command.index("--entrypoint") + 1]
+            entries = inventory() if python == "/app/.venv/bin/python" else system_inventory
+            output = json.dumps(entries)
+        else:
+            requirements = Path(command[command.index("-r") + 1])
+            if requirements.parent.name == "application":
+                output = json.dumps(clean_report())
+            else:
+                assert requirements.read_text(encoding="utf-8") == "urllib3==2.7.0\n"
+                output = json.dumps({"dependencies": system_rows})
         return subprocess.CompletedProcess(command, 0, output, "")
 
     monkeypatch.setattr(audit.subprocess, "run", run)
-    assert audit.main(["--output-dir", str(tmp_path)]) == 0
-    command = commands[0]
-    assert command[:3] == ["docker", "run", "--rm"]
-    assert command[command.index("--network") + 1] == "none"
-    assert command[command.index("--entrypoint") + 1] == "python"
-    assert "--read-only" in command and "--cap-drop" in command
-    assert "--env" not in command and "--volume" not in command
-    assert len(commands) == 2
+    assert audit.main(["--output-dir", str(tmp_path)]) == (0 if system_failure is None else 1)
+    assert len(commands) == (3 if system_failure is None else 4)
+    for command, python in zip(commands[::2], ["/app/.venv/bin/python", "/usr/local/bin/python"], strict=True):
+        assert command[:3] == ["docker", "run", "--rm"]
+        assert command[command.index("--network") + 1] == "none"
+        assert command[command.index("--entrypoint") + 1] == python
+        assert "--read-only" in command and "--cap-drop" in command
+        assert "--env" not in command and "--volume" not in command
+    assert "runtime contains pip" in commands[2][-1]
+    assert "bootstrap wheels" in commands[2][-1]
+    assert (tmp_path / "application" / "pip-audit.json").exists()
+    if system_failure is None:
+        assert not (tmp_path / "system" / "pip-audit.json").exists()
+        assert json.loads((tmp_path / "system" / "inventory-check.json").read_text(encoding="utf-8")) == {
+            "third_party_packages": 0,
+            "vulnerability_query_executed": False,
+        }
+        assert json.loads((tmp_path / "system" / "inventory.json").read_text(encoding="utf-8")) == system_inventory
 
 
 @pytest.mark.parametrize("failure", [FileNotFoundError("docker"), subprocess.TimeoutExpired("docker", 180)])

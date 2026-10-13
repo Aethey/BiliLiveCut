@@ -1,11 +1,45 @@
 # CPU 运行镜像；构建工具和 uv 只保留在构建阶段。
-FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS builder
-COPY --from=ghcr.io/astral-sh/uv:0.12.18@sha256:3adc3706091ce7c2fe595e669628caedd6d951551b92b258b7e7dbe06d9440bc /uv /bin/uv
+FROM ghcr.io/astral-sh/uv:0.12.18@sha256:3adc3706091ce7c2fe595e669628caedd6d951551b92b258b7e7dbe06d9440bc AS uv
+FROM python:3.12-slim-trixie@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS python-base
+# 同时修复基础 Python 自带的安装工具；uv 与锁文件只在本条构建指令挂载。
+RUN --mount=from=uv,source=/uv,target=/bin/uv \
+    --mount=type=bind,source=packaging/docker/requirements-system.lock,target=/tmp/requirements-system.lock \
+    /bin/uv --no-cache pip install --python /usr/local/bin/python --require-hashes --no-deps \
+    -r /tmp/requirements-system.lock
+
+# FFmpeg 使用官方签名发行源码；命令行与 PyAV 共用同一套已修复共享库。
+FROM python-base AS ffmpeg-builder
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential \
+    && apt-get install -y --no-install-recommends build-essential pkg-config nasm xz-utils \
+       libass-dev libfontconfig-dev libfreetype-dev libharfbuzz-dev libfribidi-dev \
+       libx264-dev libx265-dev libvpx-dev libopus-dev libmp3lame-dev libvorbis-dev libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+ADD --checksum=sha256:8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e \
+    https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz /tmp/ffmpeg.tar.xz
+WORKDIR /tmp/ffmpeg
+RUN tar -xf /tmp/ffmpeg.tar.xz --strip-components=1 \
+    && ./configure --prefix=/opt/ffmpeg --enable-shared --disable-static \
+       --enable-gpl --enable-version3 --enable-openssl --enable-libass \
+       --enable-libfontconfig --enable-libfreetype --enable-libharfbuzz --enable-libfribidi \
+       --enable-libx264 --enable-libx265 --enable-libvpx --enable-libopus \
+       --enable-libmp3lame --enable-libvorbis --disable-doc --disable-ffplay \
+    && make -j 4 \
+    && make install \
+    && mkdir -p /opt/ffmpeg/share/source \
+    && cp /tmp/ffmpeg.tar.xz /opt/ffmpeg/share/source/ffmpeg-9.0.2.tar.xz \
+    && cp COPYING.GPLv3 LICENSE.md /opt/ffmpeg/share/source/
+
+FROM python-base AS builder
+COPY --from=uv /uv /bin/uv
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential pkg-config \
+       libass9 libfontconfig1 libfreetype6 libharfbuzz0b libfribidi0 \
+       libx264-164 libx265-215 libvpx9 libopus0 libmp3lame0 libvorbis0a libvorbisenc2 libssl3t64 \
     && rm -rf /var/lib/apt/lists/*
 
-ENV UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy
+COPY --from=ffmpeg-builder /opt/ffmpeg /opt/ffmpeg
+ENV PKG_CONFIG_PATH=/opt/ffmpeg/lib/pkgconfig LD_LIBRARY_PATH=/opt/ffmpeg/lib
+ENV UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy UV_NO_BINARY_PACKAGE=av
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --extra asr-all --extra llm --extra web --no-install-project
@@ -27,17 +61,25 @@ COPY tools/native/cython ./tools/native/cython
 RUN uv sync --locked --no-dev --extra asr-all --extra llm --extra web --no-editable \
     --inexact \
     && uv pip check --python /app/.venv/bin/python \
-    && /app/.venv/bin/python -I -c "from app.accelerators import _c_speedups, _cython_speedups; import torch, torchaudio; from funasr import AutoModel; assert torch.version.cuda is None"
+    && PATH="/opt/ffmpeg/bin:$PATH" /app/.venv/bin/python -I -c "from app.accelerators import _c_speedups, _cython_speedups; import torch, torchaudio; from funasr import AutoModel; import av; assert torch.version.cuda is None; assert av.ffmpeg_version_info == '9.0.2'"
 
-FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS runtime
+FROM python-base AS runtime
+# 运行容器通过重建镜像更新依赖，不保留系统安装工具及其可重新安装的旧引导 wheel。
+RUN --mount=from=uv,source=/uv,target=/bin/uv \
+    /bin/uv --no-cache pip uninstall --python /usr/local/bin/python pip \
+    && python -I -c "import ensurepip; from pathlib import Path; [p.unlink() for p in (Path(ensurepip.__file__).parent / '_bundled').glob('*.whl')]"
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk fontconfig libgomp1 \
+    && apt-get install -y --no-install-recommends fonts-noto-cjk fontconfig libgomp1 liblzma5 \
+       libass9 libfontconfig1 libfreetype6 libharfbuzz0b libfribidi0 \
+       libx264-164 libx265-215 libvpx9 libopus0 libmp3lame0 libvorbis0a libvorbisenc2 libssl3t64 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 1000 --create-home appuser \
     && mkdir -p /data /app \
     && chown appuser:appuser /data
 
-ENV PATH="/app/.venv/bin:$PATH" \
+COPY --from=ffmpeg-builder /opt/ffmpeg /opt/ffmpeg
+ENV LD_LIBRARY_PATH=/opt/ffmpeg/lib \
+    PATH="/app/.venv/bin:/opt/ffmpeg/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     APP_ENV=prod \
     DOCKER_AUTH_ENABLED=true \

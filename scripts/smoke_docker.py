@@ -54,6 +54,10 @@ def main() -> int:
             "run",
             "--detach",
             "--init",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
             "--name",
             name,
             *network,
@@ -108,7 +112,7 @@ def main() -> int:
                     args.image,
                     check=False,
                 )
-                assert denied.returncode == 78 and "不可写" in denied.stderr
+                assert denied.returncode == 78 and "不可写" in denied.stderr, (denied.returncode, denied.stderr)
             finally:
                 path.chmod(0o700)
         docker("volume", "create", volume)
@@ -124,7 +128,12 @@ def main() -> int:
                     "import os, sqlite3; from pathlib import Path",
                     "import torch, torchaudio; from funasr import AutoModel",
                     "from funasr.utils.load_utils import load_audio_text_image_video",
-                    "import wave",
+                    "import wave, av",
+                    "from faster_whisper.audio import decode_audio",
+                    "assert av.ffmpeg_version_info == '9.0.2'",
+                    "status = dict(line.split(':', 1) for line in Path('/proc/self/status').read_text().splitlines())",
+                    "assert int(status['NoNewPrivs']) == 1",
+                    "assert int(status['CapEff'], 16) == int(status['CapBnd'], 16) == 0",
                     "from app.accelerators import _c_speedups, _cython_speedups",
                     "assert os.getuid() == 1000 and torch.version.cuda is None",
                     "assert 'DISPLAY' not in os.environ and 'WAYLAND_DISPLAY' not in os.environ",
@@ -133,6 +142,7 @@ def main() -> int:
                     "    audio.writeframes(bytes(32000))",
                     "samples = load_audio_text_image_video('/data/smoke.wav', fs=16000)",
                     "assert isinstance(samples, torch.Tensor) and samples.numel() == 16000",
+                    "assert decode_audio('/data/smoke.wav', sampling_rate=16000).size == 16000",
                     "db = sqlite3.connect('/data/blc.db')",
                     "assert db.execute(\"select count(*) from sqlite_master where type='table'\").fetchone()[0] > 0",
                     "for key in ('PLUGIN_DIR', 'HF_HOME', 'MODELSCOPE_CACHE'):",
@@ -155,12 +165,27 @@ def main() -> int:
             "-f",
             "lavfi",
             "-i",
-            "color=c=black:s=320x180:d=0.2",
+            "color=c=black:s=320x180:d=1",
+            "-i",
+            "/data/smoke.wav",
+            "-shortest",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
             "-vf",
             "drawtext=font='Noto Sans CJK SC':text='无头测试':fontsize=24:fontcolor=white",
-            "-f",
-            "null",
-            "-",
+            "/data/smoke.mp4",
+        )
+        docker(
+            "exec",
+            first,
+            "python",
+            "-c",
+            "from faster_whisper.audio import decode_audio; "
+            "assert decode_audio('/data/smoke.mp4', sampling_rate=16000).size >= 16000",
         )
         docker("stop", "--time", "60", first)
         state = json.loads(docker("inspect", "--format", "{{json .State}}", first).stdout)
