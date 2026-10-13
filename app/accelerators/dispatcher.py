@@ -151,7 +151,8 @@ def robust_relative_uplift(current: float, history: Sequence[float]) -> float:
     """按当前场次历史计算稳健相对增幅。"""
     if _cython_backend is None:
         return _fallback_round2.robust_relative_uplift(current, history)
-    return float(_cython_backend.robust_relative_uplift(current, _float64_contiguous(history)))
+    values = history if isinstance(history, (list, tuple)) else _float64_contiguous(history)
+    return _cython_backend.robust_relative_uplift(current, values)
 
 
 def danmaku_text_features(
@@ -165,21 +166,22 @@ def danmaku_text_features(
         return _fallback_round2.danmaku_text_features(texts, high_emotion_tokens)
     try:
         repetition, intensity, high_emotion, representatives = _rust_backend.danmaku_text_features(
-            list(texts),
-            list(high_emotion_tokens),
+            list(texts) if isinstance(texts, str) else texts,
+            list(high_emotion_tokens) if isinstance(high_emotion_tokens, str) else high_emotion_tokens,
         )
     except UnicodeEncodeError:
         # Python 字符串可含孤立代理码点；Rust UTF-8 无法表示，保留参考实现的文本语义。
         return _fallback_round2.danmaku_text_features(texts, high_emotion_tokens)
-    return float(repetition), float(intensity), float(high_emotion), tuple(representatives)
+    return repetition, intensity, high_emotion, tuple(representatives)
 
 
 def danmaku_baseline_rate(ts_seconds: list[float], bucket_s: float = 10.0) -> tuple[float, int]:
     """按固定秒数分桶并返回弹幕速率中位数和样本总数。"""
+    if len(ts_seconds) < 10:
+        return 0.0, 0
     if _cython_backend is None:
         return _fallback_round2.danmaku_baseline_rate(ts_seconds, bucket_s)
-    rate, count = _cython_backend.danmaku_baseline_rate(ts_seconds, bucket_s)
-    return float(rate), int(count)
+    return _cython_backend.danmaku_baseline_rate(ts_seconds, bucket_s)
 
 
 def group_srt_blocks(

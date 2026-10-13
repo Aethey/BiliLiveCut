@@ -19,6 +19,9 @@
 
 cimport cython
 from libc.math cimport fabs, isfinite, log2
+from libc.stdlib cimport qsort
+from libc.stdint cimport SIZE_MAX
+from cpython.mem cimport PyMem_Malloc, PyMem_Free
 from cpython cimport PyFloat_AsDouble
 from cpython.bytes cimport PyBytes_AS_STRING
 from cpython.unicode cimport PyUnicode_READ_CHAR
@@ -58,16 +61,63 @@ def pcm16_statistics(bytes raw not None) -> tuple[int, int, int]:
     return size // 2, square_sum, peak
 
 
-cdef double _median(list values):
-    """返回非空数值列表的中位数。"""
-    cdef list ordered = sorted(values)
-    cdef Py_ssize_t size = len(ordered)
+cdef int _compare_double(const void* a, const void* b) noexcept nogil:
+    cdef double left = (<const double*>a)[0]
+    cdef double right = (<const double*>b)[0]
+    return (left > right) - (left < right)
+
+
+cdef double _buffer_median(double* values, Py_ssize_t size) noexcept nogil:
+    """原地排序有界数值缓冲区；小输入插入排序，避免回调开销。"""
+    cdef Py_ssize_t i, j
+    cdef double value
+    if size <= 32:
+        for i in range(1, size):
+            value = values[i]
+            j = i
+            while j > 0 and values[j - 1] > value:
+                values[j] = values[j - 1]
+                j -= 1
+            values[j] = value
+    else:
+        qsort(values, size, sizeof(double), _compare_double)
     if size % 2:
-        return PyFloat_AsDouble(ordered[size // 2])
-    return (
-        PyFloat_AsDouble(ordered[size // 2 - 1])
-        + PyFloat_AsDouble(ordered[size // 2])
-    ) / 2.0
+        return values[size // 2]
+    return (values[size // 2 - 1] + values[size // 2]) / 2.0
+
+
+cdef double* _number_buffer(Py_ssize_t size) except NULL:
+    cdef double* values
+    if size < 1 or <size_t>size > SIZE_MAX // sizeof(double):
+        raise MemoryError("invalid numeric buffer size")
+    values = <double*>PyMem_Malloc(size * sizeof(double))
+    if values == NULL:
+        raise MemoryError("numeric buffer allocation failed")
+    return values
+
+
+cdef double _median(list values):
+    """非空列表的中位数；非有限音频输入保留 Python 排序语义。"""
+    cdef Py_ssize_t size = len(values), i
+    cdef double* buffer
+    cdef double result
+    cdef list ordered
+    if size == 1:
+        return PyFloat_AsDouble(values[0])
+    if size == 2:
+        return (PyFloat_AsDouble(values[0]) + PyFloat_AsDouble(values[1])) / 2.0
+    buffer = _number_buffer(size)
+    try:
+        for i in range(size):
+            buffer[i] = PyFloat_AsDouble(values[i])
+            if not isfinite(buffer[i]):
+                ordered = sorted(values)
+                return (ordered[size // 2] if size % 2 else (ordered[size // 2 - 1] + ordered[size // 2]) / 2.0)
+        with nogil:
+            result = _buffer_median(buffer, size)
+        return result
+    finally:
+        PyMem_Free(buffer)
 
 
 cdef double _clamp01(double value):
@@ -189,33 +239,50 @@ def find_silence_ranges(
 # 2. 滚动历史稳健增幅
 # ============================================================================
 
-def robust_relative_uplift(double current, const double[::1] history):
-    """按当前场次历史的中位数与 MAD 计算稳健相对增幅。"""
-    cdef list clean = []
-    cdef list deviations
-    cdef Py_ssize_t index
-    cdef double value, baseline, mad, scale
+def robust_relative_uplift(double current, history: object) -> float:
+    """直接读取 Python 数值序列，在独立缓冲区统计中位数/MAD，不改动输入。"""
+    cdef Py_ssize_t size = len(history), used = 0, index
+    cdef double* clean
+    cdef double value, baseline, mad, scale, argument
     cdef double ratio_score, relative_score, robust_score
-
-    if not isfinite(current):
+    cdef const double[::1] view
+    if not isfinite(current) or size == 0:
         return 0.0
-    for index in range(history.shape[0]):
-        value = history[index]
-        if isfinite(value):
-            clean.append(value)
-    if not clean:
-        return 0.0
-
-    baseline = _median(clean)
-    if current <= baseline:
-        return 0.0
-    deviations = [fabs(PyFloat_AsDouble(value) - baseline) for value in clean]
-    mad = _median(deviations)
-    scale = max(1e-3, fabs(baseline) * 0.10)
-    ratio_score = log2((current + scale) / (baseline + scale)) / 3.0
-    relative_score = ((current - baseline) / (fabs(baseline) + scale)) / 2.0
-    robust_score = 0.0 if mad <= 1e-9 else ((current - baseline) / (1.4826 * mad)) / 6.0
-    return _clamp01(max(ratio_score, relative_score, robust_score))
+    clean = _number_buffer(size)
+    try:
+        if isinstance(history, (list, tuple)):
+            for index in range(size):
+                value = PyFloat_AsDouble(history[index])
+                if isfinite(value):
+                    clean[used] = value
+                    used += 1
+        else:
+            view = history
+            for index in range(size):
+                value = view[index]
+                if isfinite(value):
+                    clean[used] = value
+                    used += 1
+        if used == 0:
+            return 0.0
+        with nogil:
+            baseline = _buffer_median(clean, used)
+        if current <= baseline:
+            return 0.0
+        with nogil:
+            for index in range(used):
+                clean[index] = fabs(clean[index] - baseline)
+            mad = _buffer_median(clean, used)
+        scale = max(1e-3, fabs(baseline) * 0.10)
+        argument = (current + scale) / (baseline + scale)
+        if argument <= 0.0:
+            raise ValueError("math domain error")
+        ratio_score = log2(argument) / 3.0
+        relative_score = ((current - baseline) / (fabs(baseline) + scale)) / 2.0
+        robust_score = 0.0 if mad <= 1e-9 else ((current - baseline) / (1.4826 * mad)) / 6.0
+        return _clamp01(max(ratio_score, relative_score, robust_score))
+    finally:
+        PyMem_Free(clean)
 
 
 # ============================================================================
@@ -344,23 +411,23 @@ def danmaku_baseline_rate(list timestamps_seconds, double bucket_s=10.0):
     cdef double t0 = PyFloat_AsDouble(timestamps_seconds[0])
     cdef dict buckets = {}
     cdef double t
-    cdef Py_ssize_t idx
-    cdef Py_ssize_t i
+    cdef object idx, previous = None
+    cdef Py_ssize_t i, run = 0
 
+    # 相邻同桶只累计整数；跨桶时合并，未排序输入仍按原字典语义汇总。
     for i in range(n):
         t = PyFloat_AsDouble(timestamps_seconds[i])
-        idx = <Py_ssize_t>((t - t0) / bucket_s)
-        buckets[idx] = buckets.get(idx, 0) + 1
-
+        idx = int((t - t0) / bucket_s)
+        if idx == previous:
+            run += 1
+        else:
+            if previous is not None:
+                buckets[previous] = buckets.get(previous, 0) + run
+            previous = idx
+            run = 1
+    buckets[previous] = buckets.get(previous, 0) + run
     cdef list rates = [float(v) / bucket_s for v in buckets.values()]
-    rates.sort()
-
-    cdef Py_ssize_t nr = len(rates)
-    cdef double median
-    if nr % 2 == 1:
-        median = rates[nr // 2]
-    else:
-        median = (rates[nr // 2 - 1] + rates[nr // 2]) / 2.0
+    cdef double median = _median(rates)
 
     return median, n
 

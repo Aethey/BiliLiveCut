@@ -172,6 +172,33 @@ def benchmark() -> list[dict[str, object]]:
                 partial(native.review_text_statistics, text, words),
                 1000 if size < 10 else 100,
             )
+    for size in [0, 1, 8, 64, 512, 4096]:
+        history = [float((i * 13) % 37) for i in range(size)]
+        measure(
+            "rolling",
+            size,
+            partial(reference.robust_relative_uplift, 21.0, history),
+            partial(native.robust_relative_uplift, 21.0, history),
+            1000 if size < 100 else 50,
+        )
+    for size in [0, 9, 10, 64, 512, 4096]:
+        timestamps = [float(i // 3) for i in range(size)]
+        measure(
+            "buckets",
+            size,
+            partial(reference.danmaku_baseline_rate, timestamps),
+            partial(native.danmaku_baseline_rate, timestamps),
+            1000 if size < 100 else 50,
+        )
+    for size in [1, 8, 64, 4096]:
+        texts = [f"高能!第{i}条弹幕" for i in range(size)]
+        measure(
+            "danmaku_unique",
+            size,
+            partial(reference.danmaku_text_features, texts, ["高能"]),
+            partial(native.danmaku_text_features, texts, ["高能"]),
+            1000 if size < 100 else 20,
+        )
     return rows
 
 
