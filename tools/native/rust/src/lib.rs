@@ -24,6 +24,10 @@ use std::collections::{HashMap, HashSet};
 
 /// 提取中文字符级 bigram (与 Python `fast_char_bigrams` 等价的 Rust 实现)。
 fn char_bigrams(text: &str) -> HashMap<String, f64> {
+    // Python 的单字符快速路径保留 ASCII 空白；多字符输入才过滤空白。
+    if text.len() == 1 {
+        return HashMap::from([(text.to_string(), 1.0)]);
+    }
     let chars: Vec<char> = text.chars().filter(|ch| *ch > ' ').collect();
     if chars.is_empty() {
         return HashMap::new();
@@ -103,11 +107,12 @@ fn keyword_jaccard(a: &[String], b: &[String]) -> f64 {
 // ── 时间接近度 ──────────────────────────────────────────────────
 
 /// 时间接近度 (1 小时内线性衰减,与 Python 端 3600s 一致)。
-fn time_proximity(ta: Option<f64>, tb: Option<f64>) -> f64 {
+fn time_proximity(ta: Option<i64>, tb: Option<i64>) -> f64 {
     match (ta, tb) {
         (Some(a), Some(b)) => {
-            let diff = (a - b).abs();
-            if diff < 3600.0 {
+            let micros = a.abs_diff(b);
+            if micros < 3_600_000_000 {
+                let diff = micros as f64 / 1_000_000.0;
                 (1.0 - diff / 3600.0).max(0.0)
             } else {
                 0.0
@@ -117,6 +122,26 @@ fn time_proximity(ta: Option<f64>, tb: Option<f64>) -> f64 {
     }
 }
 
+/// 将非负相似度精确舍入到四位小数，与 Python round 的二进制输入、偶数舍入一致。
+/// 使用 u128 保留乘 10000 后的全部位，避免浮点乘法先舍入改变半值判断。
+fn round_similarity(score: f64) -> f64 {
+    let bits = score.to_bits();
+    let exponent = ((bits >> 52) & 0x7ff) as i32;
+    let shift = 1075 - exponent;
+    if shift >= 128 {
+        return 0.0;
+    }
+    let mantissa = (bits & ((1u64 << 52) - 1)) | (1u64 << 52);
+    let scaled = u128::from(mantissa) * 10000;
+    let mut rounded = scaled >> shift;
+    let remainder = scaled & ((1u128 << shift) - 1);
+    let halfway = 1u128 << (shift - 1);
+    if remainder > halfway || (remainder == halfway && rounded & 1 != 0) {
+        rounded += 1;
+    }
+    rounded as f64 / 10000.0
+}
+
 // ── 单对相似度 ──────────────────────────────────────────────────
 
 /// 计算两个候选事件的全维度综合相似度。
@@ -124,11 +149,11 @@ fn pairwise_sim(
     t_a: &str,
     bg_a: &HashMap<String, f64>,
     kw_a: &[String],
-    ts_a: Option<f64>,
+    ts_a: Option<i64>,
     t_b: &str,
     bg_b: &HashMap<String, f64>,
     kw_b: &[String],
-    ts_b: Option<f64>,
+    ts_b: Option<i64>,
 ) -> f64 {
     // 文本相似度 (TF-IDF 余弦)
     let sim_text = if !t_a.is_empty() && !t_b.is_empty() && !bg_a.is_empty() && !bg_b.is_empty() {
@@ -148,7 +173,7 @@ fn pairwise_sim(
 
     let score = sim_text * 0.55 + sim_kw * 0.25 + time_sim * 0.20;
     // round to 4 decimal places (match Python `round(score, 4)`)
-    (score * 10000.0).round() / 10000.0
+    round_similarity(score)
 }
 
 // ── PyO3 入口 ────────────────────────────────────────────────────
@@ -157,15 +182,20 @@ fn pairwise_sim(
 ///
 /// :param texts: 每个候选的 ASR 文本列表。
 /// :param keywords: 每个候选的关键词列表 (list[list[str]])。
-/// :param timestamps: 每个候选的 Unix 时间戳 (list[Optional[float]])。
+/// :param timestamps: 每个候选的 相对于同一基点的整数微秒 (list[Optional[int]])。
 /// :returns: N×N 矩阵 list[list[float]]。
 #[pyfunction]
 fn cluster_similarity_matrix(
     texts: Vec<String>,
     keywords: Vec<Vec<String>>,
-    timestamps: Vec<Option<f64>>,
+    timestamps: Vec<Option<i64>>,
 ) -> PyResult<Vec<Vec<f64>>> {
     let n = texts.len();
+    if keywords.len() != n || timestamps.len() != n {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "texts, keywords and timestamps must have equal lengths",
+        ));
+    }
 
     // 快速路径: 0 或 1 个元素
     if n < 2 {
@@ -181,23 +211,25 @@ fn cluster_similarity_matrix(
         .flat_map(|i| ((i + 1)..n).map(move |j| (i, j)))
         .collect();
 
-    // rayon 并行计算
-    let results: Vec<(usize, usize, f64)> = pairs
-        .par_iter()
-        .map(|&(i, j)| {
-            let sim = pairwise_sim(
-                &texts[i],
-                &bigrams[i],
-                &keywords[i],
-                timestamps[i],
-                &texts[j],
-                &bigrams[j],
-                &keywords[j],
-                timestamps[j],
-            );
-            (i, j, sim)
-        })
-        .collect();
+    // 小矩阵串行计算，避免任务调度开销超过计算本身。
+    let compute = |&(i, j): &(usize, usize)| {
+        let sim = pairwise_sim(
+            &texts[i],
+            &bigrams[i],
+            &keywords[i],
+            timestamps[i],
+            &texts[j],
+            &bigrams[j],
+            &keywords[j],
+            timestamps[j],
+        );
+        (i, j, sim)
+    };
+    let results: Vec<(usize, usize, f64)> = if pairs.len() < 512 {
+        pairs.iter().map(compute).collect()
+    } else {
+        pairs.par_iter().map(compute).collect()
+    };
 
     // ── 阶段 3: 构建矩阵 ──
     let mut matrix = vec![vec![0.0f64; n]; n];
@@ -273,7 +305,7 @@ fn danmaku_text_features(
 
 // ── 模块注册 ─────────────────────────────────────────────────────
 
-#[pymodule]
+#[pymodule(gil_used = true)]
 fn _rust_speedups(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cluster_similarity_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(danmaku_text_features, m)?)?;

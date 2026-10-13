@@ -32,7 +32,7 @@ RUN tar -xf /tmp/ffmpeg.tar.xz --strip-components=1 \
 FROM python-base AS builder
 COPY --from=uv /uv /bin/uv
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential pkg-config \
+    && apt-get install -y --no-install-recommends build-essential pkg-config cargo rustc \
        libass9 libfontconfig1 libfreetype6 libharfbuzz0b libfribidi0 \
        libx264-164 libx265-215 libvpx9 libopus0 libmp3lame0 libvorbis0a libvorbisenc2 libssl3t64 \
     && rm -rf /var/lib/apt/lists/*
@@ -58,10 +58,14 @@ COPY docs/live-source-plugins.md docs/douyin-plugin-handoff.md ./docs/
 COPY plugin ./plugin
 COPY tools/native/c ./tools/native/c
 COPY tools/native/cython ./tools/native/cython
+COPY tools/native/rust ./tools/native/rust
+COPY tools/native/build_rust.py ./tools/native/build_rust.py
+RUN /app/.venv/bin/python tools/native/build_rust.py
 RUN uv sync --locked --no-dev --extra asr-all --extra llm --extra web --no-editable \
     --inexact \
     && uv pip check --python /app/.venv/bin/python \
-    && PATH="/opt/ffmpeg/bin:$PATH" /app/.venv/bin/python -I -c "from app.accelerators import _c_speedups, _cython_speedups; import torch, torchaudio; from funasr import AutoModel; import av; assert torch.version.cuda is None; assert av.ffmpeg_version_info == '9.0.2'"
+    && /app/.venv/bin/python -I -c "import app.accelerators, pathlib, shutil; shutil.copy2('/app/app/accelerators/_rust_speedups.so', pathlib.Path(app.accelerators.__file__).parent / '_rust_speedups.so')" \
+    && PATH="/opt/ffmpeg/bin:$PATH" /app/.venv/bin/python -I -c "from app.accelerators import _c_speedups, _cython_speedups, _rust_speedups; import torch, torchaudio; from funasr import AutoModel; import av; assert torch.version.cuda is None; assert av.ffmpeg_version_info == '9.0.2'"
 
 FROM python-base AS runtime
 # 运行容器通过重建镜像更新依赖，不保留系统安装工具及其可重新安装的旧引导 wheel。
@@ -99,6 +103,7 @@ ENV LD_LIBRARY_PATH=/opt/ffmpeg/lib \
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 COPY packaging/docker/entrypoint.py packaging/docker/healthcheck.py ./docker/
+COPY tools/native/rust/THIRD_PARTY_NOTICES.md /usr/share/doc/bili-live-cut-rust/THIRD_PARTY_NOTICES.md
 USER appuser
 VOLUME ["/data"]
 EXPOSE 8000

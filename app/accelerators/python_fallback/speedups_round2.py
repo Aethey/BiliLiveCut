@@ -9,9 +9,23 @@
 from __future__ import annotations
 
 import math
+import sys
+from array import array
 from collections import Counter
 from collections.abc import Sequence
 from statistics import median
+
+
+def pcm16_statistics(raw: bytes) -> tuple[int, int, int]:
+    """汇总小端 PCM16 字节的样本数、精确整数平方和与绝对峰值。"""
+    if not isinstance(raw, bytes):
+        raise TypeError("PCM16 输入必须是 bytes")
+    if len(raw) % 2:
+        raise ValueError("ASR WAV 含不完整采样")
+    samples = array("h", raw)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    return len(samples), sum(value * value for value in samples), max((abs(value) for value in samples), default=0)
 
 
 def audio_peak_offsets(

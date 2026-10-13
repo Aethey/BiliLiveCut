@@ -268,14 +268,15 @@ def test_rust_build_streams_cargo_output(monkeypatch: MonkeyPatch, tmp_path: Pat
     release_dir = rust_source / "target" / "release"
     release_dir.mkdir(parents=True)
     (rust_source / "Cargo.toml").write_text("[package]\nname='fixture'\n", encoding="utf-8")
-    source_suffix = ".dll" if sys.platform == "win32" else ".so"
     destination_suffix = ".pyd" if sys.platform == "win32" else ".so"
-    (release_dir / f"_rust_speedups{source_suffix}").write_bytes(b"native")
+    (release_dir / "lib_rust_speedups.d").write_text("dependency-list", encoding="utf-8")
+    (release_dir / build_rust._library_filename()).write_bytes(b"native")
     target_dir = tmp_path / "accelerators"
 
     observed_kwargs: dict[str, object] = {}
 
-    def fake_run(*_args: object, **kwargs: object) -> SimpleNamespace:
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        assert command == ["cargo", "build", "--release", "--locked"]
         observed_kwargs.update(kwargs)
         return SimpleNamespace(returncode=0)
 
@@ -374,3 +375,13 @@ def test_release_gate_rejects_stale_payload_after_build_failure(
 
     assert release_gate.main() == 1
     assert "Payload 构建失败；拒绝校验已有产物" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "platform,name",
+    [("win32", "_rust_speedups.dll"), ("darwin", "lib_rust_speedups.dylib"), ("linux", "lib_rust_speedups.so")],
+)
+def test_rust_library_name_never_matches_dependency_manifest(platform: str, name: str) -> None:
+    from tools.native import build_rust
+
+    assert build_rust._library_filename(platform) == name

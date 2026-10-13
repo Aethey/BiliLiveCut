@@ -10,9 +10,18 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from datetime import datetime as _dt
-from typing import Any
+from typing import Any, TypedDict
 
 from app.accelerators.python_fallback import speedups_round2 as _fallback_round2
+
+
+class ClusterItem(TypedDict, total=False):
+    """矩阵 CPU 边界所需的候选字段，业务对象及数据库保持在调用方。"""
+
+    asr_text: str | None
+    keywords: list[str] | None
+    start_ts: _dt | str | None
+
 
 _logger = logging.getLogger(__name__)
 
@@ -77,6 +86,13 @@ def _float64_contiguous(values: Sequence[float]) -> Any:
     return np.ascontiguousarray(values, dtype=np.float64)
 
 
+def pcm16_statistics(raw: bytes) -> tuple[int, int, int]:
+    """在独立 CPU 内核中汇总 PCM16，不接收设备张量或执行文件 I/O。"""
+    if _cython_backend is None:
+        return _fallback_round2.pcm16_statistics(raw)
+    return _cython_backend.pcm16_statistics(raw)
+
+
 def audio_peak_offsets(
     times: Sequence[float],
     rms: Sequence[float],
@@ -127,12 +143,18 @@ def danmaku_text_features(
     high_emotion_tokens: Sequence[str],
 ) -> tuple[float, float, float, tuple[str, ...]]:
     """汇总弹幕复读率、情绪强度和代表消息。"""
+    if not texts:
+        return 0.0, 0.0, 0.0, ()
     if _rust_backend is None:
         return _fallback_round2.danmaku_text_features(texts, high_emotion_tokens)
-    repetition, intensity, high_emotion, representatives = _rust_backend.danmaku_text_features(
-        list(texts),
-        list(high_emotion_tokens),
-    )
+    try:
+        repetition, intensity, high_emotion, representatives = _rust_backend.danmaku_text_features(
+            list(texts),
+            list(high_emotion_tokens),
+        )
+    except UnicodeEncodeError:
+        # Python 字符串可含孤立代理码点；Rust UTF-8 无法表示，保留参考实现的文本语义。
+        return _fallback_round2.danmaku_text_features(texts, high_emotion_tokens)
     return float(repetition), float(intensity), float(high_emotion), tuple(representatives)
 
 
@@ -171,32 +193,42 @@ def group_srt_blocks(
     )
 
 
-def cluster_similarity_matrix(items: list[dict]) -> list[list[float]]:
+def cluster_similarity_matrix(items: list[ClusterItem]) -> list[list[float]]:
     """计算 N×N 相似度矩阵并选择当前最快可用后端。"""
+    if not items:
+        return []
+    if len(items) == 1:
+        return [[0.0]]
     if _rust_backend is not None:
-        n = len(items)
-        if n < 2:
-            return [[0.0] * n for _ in range(n)]
-
         texts: list[str] = []
         keywords: list[list[str]] = []
-        timestamps: list[float | None] = []
+        dates: list[_dt | None] = []
         for item in items:
             texts.append(item.get("asr_text", "") or "")
             keywords.append([str(keyword) for keyword in (item.get("keywords", []) or [])])
             timestamp = item.get("start_ts")
-            if timestamp is None:
-                timestamps.append(None)
-            elif isinstance(timestamp, _dt):
-                timestamps.append(timestamp.timestamp())
-            elif isinstance(timestamp, str):
+            if isinstance(timestamp, str):
                 try:
-                    timestamps.append(_dt.fromisoformat(timestamp).timestamp())
+                    timestamp = _dt.fromisoformat(timestamp)
                 except ValueError:
-                    timestamps.append(None)
-            else:
+                    timestamp = None
+            dates.append(timestamp if isinstance(timestamp, _dt) else None)
+        anchor = next((value for value in dates if value is not None), None)
+        timestamps: list[int | None] = []
+        for value in dates:
+            if value is None:
                 timestamps.append(None)
-        return _rust_backend.cluster_similarity_matrix(texts, keywords, timestamps)
+                continue
+            assert anchor is not None
+            if value.tzinfo is not anchor.tzinfo:
+                # 不同动态时区的 datetime 减法可能不满足可加性，保留逐对的 Python 时间语义。
+                return _fallback_round2.cluster_similarity_matrix(items)
+            delta = value - anchor
+            timestamps.append((delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds)
+        try:
+            return _rust_backend.cluster_similarity_matrix(texts, keywords, timestamps)
+        except UnicodeEncodeError:
+            return _fallback_round2.cluster_similarity_matrix(items)
 
     if _cython_backend is not None:
         return _cython_backend.cluster_similarity_matrix(items)
@@ -228,6 +260,7 @@ def get_cluster_backend() -> str:
 
 
 __all__ = [
+    "pcm16_statistics",
     "audio_peak_offsets",
     "cluster_similarity_matrix",
     "danmaku_baseline_rate",

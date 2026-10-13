@@ -9,5 +9,5 @@ name = "_rust_speedups"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["extension-module"] }
+pyo3 = { version = "=0.29.3", features = ["extension-module"] }
 rayon = "1.10"

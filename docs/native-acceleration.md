@@ -12,10 +12,11 @@ BiliLiveCut 只保留当前 `app.accelerators` 原生接口。业务代码统一
 `app.accelerators.dispatcher`，不直接依赖编译扩展；旧的 `app.analysis` 原生
 模块路径和函数别名均不再提供。
 
-## V0.1.18.8 已完成的原生化清单
+## 当前已接入的原生化清单
 
 | 热点 | 实现 | 接入结果 | 原因 |
 |---|---|---|---|
+| PCM16 采样计数、精确平方和与峰值 | Cython | 独立 CPU 字节内核 | 单遍整数计算，保留取消与 WAV 完整性检查；分块累积避免长音频溢出 |
 | 候选聚类 N×N 相似度矩阵 | Rust + rayon | 归入 `_rust_speedups` | 两两计算独立，适合 rayon 并行 |
 | 弹幕复读率、标点强度、高情绪命中率、代表消息 | Rust | 新增 | 单遍字符串扫描和计数，Python 对象循环占比高 |
 | 音频局部峰值筛选与间距去重 | Cython | 新增 | 五分钟 RMS 包络上的排序与逐点筛选是稳定数值热循环 |
@@ -28,7 +29,7 @@ Cython 弹幕基线、SRT 组装继续保留在同一命名空间。
 ## 当前模块边界
 
 - `app.accelerators._c_speedups`：文本匹配与向量小核。
-- `app.accelerators._cython_speedups`：音频包络后处理、稳健滚动基线、弹幕基线、SRT、聚类后备。
+- `app.accelerators._cython_speedups`：PCM16 统计、音频包络后处理、稳健滚动基线、弹幕基线、SRT、聚类后备。
 - `app.accelerators._rust_speedups`：rayon 聚类矩阵与弹幕文本特征。
 - `app.accelerators.python_fallback`：与每个原生函数逐项等价的可测试参考实现。
 
@@ -55,3 +56,11 @@ print(dispatcher.get_cluster_backend())
 
 Windows Payload 和 Full Bundle 将当前 Python ABI 的三个 `.pyd` 视为强制发行
 契约；普通源码运行仍可按函数粒度使用 Python 参考实现。
+
+Docker 同样构建 Rust 弹幕与矩阵内核，并在真实容器验收中确认加载成功。PCM 内核只读取主机内存中的小端 PCM16 字节，返回 Python 整数统计；不接收 CUDA 张量，不修改样本、设备配置或模型加载路径。没有编译扩展时使用等价 Python 参考实现。
+
+Rust Python 绑定固定为 PyO3 0.29.3，替换存在已公布内存/线程安全问题的旧 0.22.6；构建必须遵守 Cargo.lock。继续显式要求 GIL，不随依赖升级自动声明支持未经验证的无 GIL 解释器。
+
+矩阵时间列使用相对整数微秒，避免 Unix 浮点秒丢失精度；四位小数遵守 Python 的偶数舍入规则。不同动态时区及 Rust UTF-8 无法表示的孤立代理码点由等价参考实现处理；不会截断、替换文本或忽略计算错误。Rust 构建按平台选择唯一动态库文件名，拒绝把 Cargo 的 `.d` 依赖清单或其他平台产物当作扩展。
+
+C 字符 bigram 按 Python Unicode 码点处理；单汉字、空白和孤立代理码点与参考实现一致，bytes 输入必须是合法 UTF-8。

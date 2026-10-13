@@ -55,6 +55,16 @@ def _extension_suffix(platform: str | None = None) -> str:
     return ".pyd" if current_platform == "win32" else ".so"
 
 
+def _library_filename(platform: str | None = None) -> str:
+    """返回 Cargo 当前平台的唯一动态库名，禁止将 .d 依赖清单当作库复制。"""
+    current_platform = sys.platform if platform is None else platform
+    if current_platform == "win32":
+        return "_rust_speedups.dll"
+    if current_platform == "darwin":
+        return "lib_rust_speedups.dylib"
+    return "lib_rust_speedups.so"
+
+
 def check_rust() -> bool:
     """检查 Rust/cargo 是否可用。
 
@@ -156,7 +166,7 @@ def build() -> bool:
     # 仅按当前受支持解释器编译，不绕过 PyO3 的版本检查。
     env = _build_environment()
     result = subprocess.run(
-        ["cargo", "build", "--release"],
+        ["cargo", "build", "--release", "--locked"],
         cwd=RUST_SRC,
         text=True,
         encoding="utf-8",
@@ -169,22 +179,13 @@ def build() -> bool:
 
     print("  [build_rust] 编译成功")
 
-    # 查找产物 (.pyd, .so, .dll)
+    # 使用精确文件名，不接受旧平台产物或 Cargo 生成的 .d 文本清单。
     ext = _extension_suffix()
-    build_dir = RUST_SRC / "target" / "release"
-    candidates = list(build_dir.glob(f"_rust_speedups*{ext}"))
-    # 也匹配 .dll (Windows Rust 默认输出)
-    if sys.platform == "win32" and not candidates:
-        candidates = list(build_dir.glob("_rust_speedups*.dll"))
-    # macOS: lib_rust_speedups.dylib
-    if not candidates:
-        candidates = list(build_dir.glob("lib_rust_speedups*"))
-
-    if not candidates:
-        print(f"  [build_rust] 错误: 未找到编译产物 ({ext})")
+    src = RUST_SRC / "target" / "release" / _library_filename()
+    if not src.is_file():
+        print(f"  [build_rust] 错误: 未找到编译产物 {src.name}")
         return False
 
-    src = candidates[0]
     dst = TARGET_DIR / f"_rust_speedups{ext}"
     TARGET_DIR.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)

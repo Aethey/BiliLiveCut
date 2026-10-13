@@ -156,7 +156,14 @@ def main() -> int:
                     "status = dict(line.split(':', 1) for line in Path('/proc/self/status').read_text().splitlines())",
                     "assert int(status['NoNewPrivs']) == 1",
                     "assert int(status['CapEff'], 16) == int(status['CapBnd'], 16) == 0",
-                    "from app.accelerators import _c_speedups, _cython_speedups",
+                    "from app.accelerators import _c_speedups, _cython_speedups, _rust_speedups, dispatcher",
+                    "assert dispatcher.get_cluster_backend() == 'Rust+rayon'",
+                    "assert dispatcher.get_rust_backend() == 'Rust+rayon'",
+                    "assert dispatcher.pcm16_statistics(bytes([0, 128, 255, 127])) == (2, 2147418113, 32768)",
+                    "assert dispatcher.danmaku_text_features(['高能!', '高能!'], ['高能']) "
+                    "== (1.0, 1.0, 1.0, ('高能!',))",
+                    "assert dispatcher.cluster_similarity_matrix([{'asr_text': '中文'}] * 2) "
+                    "== [[1.0, 0.55], [0.55, 1.0]]",
                     "assert os.getuid() == 1000 and torch.version.cuda is None",
                     "assert 'DISPLAY' not in os.environ and 'WAYLAND_DISPLAY' not in os.environ",
                     "with wave.open('/data/smoke.wav', 'wb') as audio:",

@@ -1,12 +1,13 @@
 """BiliLiveCut Cython 数值与字幕热点加速模块。
 
-覆盖六个 CPU 热点:
+覆盖七个 CPU 热点:
 1. cluster_similarity_matrix — O(N²) 聚类矩阵构建
 2. danmaku_baseline_rate — 弹幕基线分桶 + 中位数
 3. group_srt_blocks — 词条聚合为 SRT 字幕
 4. audio_peak_offsets — 音频局部峰值筛选
 5. find_silence_ranges — RMS 连续静音区间提取
 6. robust_relative_uplift — 滚动历史稳健增幅
+7. pcm16_statistics — PCM16 精确整数能量与峰值
 
 编译:
     python setup_c.py build_ext --inplace
@@ -16,11 +17,42 @@
 cimport cython
 from libc.math cimport fabs, isfinite, log2
 from cpython cimport PyFloat_AsDouble
+from cpython.bytes cimport PyBytes_AS_STRING
 
 
 # ============================================================================
 # 0. 共享数值辅助函数
 # ============================================================================
+
+def pcm16_statistics(bytes raw not None) -> tuple[int, int, int]:
+    """单遍汇总小端 PCM16；每 65536 样本提升至 Python 整数，长输入也不溢出。"""
+    cdef Py_ssize_t size = len(raw)
+    cdef const unsigned char* data = <const unsigned char*>PyBytes_AS_STRING(raw)
+    cdef Py_ssize_t offset = 0
+    cdef Py_ssize_t stop, index
+    cdef int value, magnitude, peak = 0
+    cdef unsigned long long subtotal
+    cdef object square_sum = 0
+    if size % 2:
+        raise ValueError("ASR WAV 含不完整采样")
+    while offset < size:
+        stop = offset + min(size - offset, 131072)
+        subtotal = 0
+        with nogil:
+            index = offset
+            while index < stop:
+                value = <int>data[index] | (<int>data[index + 1] << 8)
+                if value >= 32768:
+                    value -= 65536
+                magnitude = -value if value < 0 else value
+                if magnitude > peak:
+                    peak = magnitude
+                subtotal += <unsigned long long>(value * value)
+                index += 2
+        square_sum += subtotal
+        offset = stop
+    return size // 2, square_sum, peak
+
 
 cdef double _median(list values):
     """返回非空数值列表的中位数。"""

@@ -9,6 +9,7 @@ include README.md
 include pyproject.toml
 include setup.py
 include setup_c.py
+include tools/native/rust/THIRD_PARTY_NOTICES.md
 include packaging/docker/Dockerfile
 
 recursive-include app *.py *.html *.css *.js *.txt

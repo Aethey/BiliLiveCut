@@ -1,6 +1,6 @@
 # BiliLiveCut Docker 部署
 
-本目录提供 BiliLiveCut `v0.1.18.8-Alpha` 的 CPU 镜像。构建上下文为仓库根目录；容器以 UID/GID 1000 的 `appuser` 运行单实例 Web 服务，内含 FFmpeg、中文字体、C/Cython 扩展及配套 CPU PyTorch/TorchAudio。业务操作见[使用指南](../../docs/usage.md)。
+本目录提供 BiliLiveCut `v0.1.18.8-Alpha` 的 CPU 镜像。构建上下文为仓库根目录；容器以 UID/GID 1000 的 `appuser` 运行单实例 Web 服务，内含 FFmpeg、中文字体、C/Cython/Rust 扩展及配套 CPU PyTorch/TorchAudio。业务操作见[使用指南](../../docs/usage.md)。
 
 ## 首次启动
 
@@ -115,7 +115,7 @@ Web 与录制不需要桌面。当前“自动登录”功能在运行应用的�
 
 ## 构建和依赖更新
 
-构建阶段通过固定 uv 版本，以 `uv.lock` 安装运行 extras，复制完整 setuptools 数据文件和 C/Cython 构建源，并进行非 editable 安装。运行阶段只复制环境，不携带编译器、uv 或仓库源码。传统 pip 源码安装流程不变。
+构建阶段通过固定 uv 版本，以 `uv.lock` 安装运行 extras，复制完整 setuptools 数据文件和 C/Cython/Rust 构建源，并进行非 editable 安装。运行阶段只复制环境，不携带编译器、uv 或仓库源码。Rust 仅在构建阶段安装工具链，以 `cargo build --release --locked` 校验现有 Cargo.lock，最终镜像只复制编译后的扩展，随包许可证位于 `/usr/share/doc/bili-live-cut-rust/THIRD_PARTY_NOTICES.md`。传统 pip 源码安装流程不变。
 
 基础系统使用 Debian 13（Trixie）的 Python 3.12 镜像。构建阶段的系统 pip 通过 `requirements-system.lock` 固定版本和哈希；运行阶段移除 pip 及 ensurepip 自带的旧引导 wheel，应用虚拟环境不受影响。容器依赖通过修改锁文件并重建镜像更新，不支持在运行容器内临时执行 pip 或 apt 安装。账号创建完成后，精确移除 apt、libapt-pkg7.0、sqv、mount、passwd、adduser、libsemanage2、libsemanage-common、libsepol2；不自动移除依赖，不强制删除 Debian 必需或受保护包。保留 dpkg 清单供漏洞扫描，也保留证书、时区、现有 UID/GID 1000 账号及媒体和 Python 运行库。容器挂载由宿主 Docker 管理，无需镜像内 mount 命令；后台密码由应用认证库管理，不依赖系统 passwd。派生镜像如需另建系统账号或安装系统包，应在运行镜像裁剪前的构建阶段完成。验收分别检查应用与系统 Python，要求安装工具已移除；系统环境若出现额外第三方包，仍必须逐个审计。
 
