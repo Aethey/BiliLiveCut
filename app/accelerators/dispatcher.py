@@ -55,7 +55,7 @@ except ImportError:
     _logger.info("加速模块(C): 使用 Python 参考实现")
 
 
-# Cython: 音频峰值/静音、稳健滚动基线、弹幕基线和 SRT 组装。
+# Cython: PCM、文本新颖度、音频峰值/静音、稳健滚动基线、弹幕基线和 SRT 组装。
 try:
     from app.accelerators import _cython_speedups as _cython_backend  # type: ignore[import]
 
@@ -67,7 +67,7 @@ except ImportError:
     _logger.info("加速模块(Cython): 使用 Python 参考实现")
 
 
-# Rust: rayon 聚类矩阵与弹幕文本特征。
+# Rust: rayon 聚类矩阵、并查集/簇内统计与弹幕文本特征。
 try:
     from app.accelerators import _rust_speedups as _rust_backend  # type: ignore[import]
 
@@ -235,6 +235,20 @@ def cluster_similarity_matrix(items: list[ClusterItem]) -> list[list[float]]:
     return _fallback_round2.cluster_similarity_matrix(items)
 
 
+def cluster_groups(matrix: list[list[float]], threshold: float) -> list[tuple[int, list[int], float]]:
+    """以独立 CPU 内核执行并查集和簇内统计，保持原根编号与输出顺序。"""
+    if _rust_backend is None:
+        return _fallback_round2.cluster_groups(matrix, threshold)
+    return _rust_backend.cluster_groups(matrix, threshold)
+
+
+def text_novelty(current: str, baseline: str, *, include_entities: bool = True) -> tuple[float, float, float | None]:
+    """提取文本词项并计算新颖度；证据生成可明确跳过不需要的实体统计。"""
+    if _cython_backend is None:
+        return _fallback_round2.text_novelty(current, baseline, include_entities=include_entities)
+    return _cython_backend.text_novelty(current, baseline, include_entities=include_entities)
+
+
 def get_backend() -> str:
     """返回文本匹配后端：``C`` 或 ``python``。"""
     return _BACKEND
@@ -260,6 +274,8 @@ def get_cluster_backend() -> str:
 
 
 __all__ = [
+    "cluster_groups",
+    "text_novelty",
     "pcm16_statistics",
     "audio_peak_offsets",
     "cluster_similarity_matrix",

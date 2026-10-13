@@ -38,6 +38,17 @@ def hf_progress_class() -> type:
     from tqdm import tqdm
 
     class ModelProgress(tqdm):
+        # 父进程 ProgressDisplay 已每秒刷新停滞/用时。SDK 适配器仅发送实际计数，
+        # 不在 tqdm 持锁的 __new__ 内启动线程，避免 GC finalizer 的跨线程锁死。
+        monitor_interval = 0
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            """透传第三方 tqdm 构造参数；每次有效增量仍按 mininterval 节流报告。"""
+            super().__init__(*args, **kwargs)
+            # 固定迭代门槛，突发后的小增量不依赖监控线程恢复显示。
+            self.miniters = 1
+            self.dynamic_miniters = False
+
         def display(self, msg: str | None = None, pos: int | None = None) -> bool:
             """SDK 已节流的显示回调，字节与文件条目明确区分。"""
             label = str(self.desc or "Hugging Face")

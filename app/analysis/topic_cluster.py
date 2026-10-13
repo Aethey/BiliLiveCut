@@ -27,6 +27,7 @@ from loguru import logger
 from sqlmodel import select
 
 from app.accelerators.dispatcher import (
+    cluster_groups,
     cluster_similarity_matrix,
     fast_char_bigrams,
     fast_cosine_similarity,
@@ -259,50 +260,14 @@ def cluster_candidates(session_id: int) -> list[dict[str, object]]:
         )
 
     # 两两相似度 — V0.1.10: 使用预提取 bigram/kw 加速 O(N**2) 矩阵构建 (5-15x)。
-    n = len(items)
     matrix = cluster_similarity_matrix(items)
-
-    # 聚类:Union-Find。
-    parent = list(range(n))
-
-    def find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(x: int, y: int) -> None:
-        px, py = find(x), find(y)
-        if px != py:
-            parent[py] = px
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            if matrix[i][j] >= TOPIC_CONFIDENCE_HIGH:
-                union(i, j)
-
-    # 收集簇。
-    clusters: dict[int, list[int]] = {}
-    for i in range(n):
-        root = find(i)
-        clusters.setdefault(root, []).append(i)
+    # 独立 CPU 内核完成并查集及簇内均值，数据库状态仅由当前事务维护。
+    groups = cluster_groups(matrix, TOPIC_CONFIDENCE_HIGH)
 
     # 写入数据库。
     topics_created = []
     with get_session() as db:
-        for root, indices in clusters.items():
-            if len(indices) < 2:
-                continue
-            # 计算簇内平均相似度。
-            avg_sim = 0.0
-            count = 0
-            for a in indices:
-                for b in indices:
-                    if a < b:
-                        avg_sim += matrix[a][b]
-                        count += 1
-            avg_sim = avg_sim / count if count > 0 else 0.0
-
+        for root, indices, avg_sim in groups:
             # 生成标题和摘要。
             kw_pool: set[str] = set()
             all_text = ""

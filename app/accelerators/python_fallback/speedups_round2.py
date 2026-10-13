@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import math
+import re
 import sys
 from array import array
 from collections import Counter
@@ -308,3 +309,76 @@ def _fmt_time(t: float) -> str:
     s = int(t)
     ms = int((t - s) * 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+_NOVELTY_WORD_PATTERN = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}")
+
+
+def _lexical_tokens(text: str) -> set[str]:
+    tokens: set[str] = set()
+    for raw in _NOVELTY_WORD_PATTERN.findall(text.lower()):
+        if re.fullmatch(r"[\u4e00-\u9fff]+", raw):
+            tokens.update(raw[index : index + 2] for index in range(max(1, len(raw) - 1)))
+        else:
+            tokens.add(raw)
+    return tokens
+
+
+def _entity_tokens(text: str) -> set[str]:
+    return {
+        token.lower()
+        for token in _NOVELTY_WORD_PATTERN.findall(text)
+        if any(char.isdigit() or char.isascii() and char.isalpha() for char in token) or 2 <= len(token) <= 8
+    }
+
+
+def text_novelty(current: str, baseline: str, *, include_entities: bool = True) -> tuple[float, float, float | None]:
+    """按原 Unicode 小写及词项规则计算语义新颖度、主题变化和可选实体变化。"""
+    left, right = _lexical_tokens(current), _lexical_tokens(baseline)
+    novelty = len(left - right) / len(left) if left else 0.0
+    union = left | right
+    change = 1.0 - (len(left & right) / len(union) if union else 1.0)
+    entity_change: float | None = None
+    if include_entities:
+        left, right = _entity_tokens(current), _entity_tokens(baseline)
+        entity_change = len(left - right) / len(left) if left else 0.0
+    return novelty, change, entity_change
+
+
+def cluster_groups(matrix: list[list[float]], threshold: float) -> list[tuple[int, list[int], float]]:
+    """按原并查集顺序返回非单例簇、根编号及按索引顺序累加的簇内均值。"""
+    size = len(matrix)
+    if not math.isfinite(threshold) or any(
+        len(row) != size or any(not math.isfinite(value) for value in row) for row in matrix
+    ):
+        raise ValueError("cluster matrix must be square and finite; threshold must be finite")
+    parent = list(range(size))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    for i in range(size):
+        for j in range(i + 1, size):
+            if matrix[i][j] >= threshold:
+                a, b = find(i), find(j)
+                if a != b:
+                    parent[b] = a
+    groups: dict[int, list[int]] = {}
+    for i in range(size):
+        groups.setdefault(find(i), []).append(i)
+    result: list[tuple[int, list[int], float]] = []
+    for root, indices in groups.items():
+        if len(indices) < 2:
+            continue
+        total = 0.0
+        count = 0
+        for a in indices:
+            for b in indices:
+                if a < b:
+                    total += matrix[a][b]
+                    count += 1
+        result.append((root, indices, total / count))
+    return result

@@ -34,6 +34,45 @@ def previous_docker_matrix(items: list[dict[str, object]]) -> list[list[float]]:
     return reference.cluster_similarity_matrix(items)
 
 
+def previous_cluster_groups(matrix: list[list[float]], threshold: float) -> list[tuple[int, list[int], float]]:
+    """原业务循环基线；不把新边界校验的开销计入旧实现来夸大收益。"""
+    n = len(matrix)
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x: int, y: int) -> None:
+        px, py = find(x), find(y)
+        if px != py:
+            parent[py] = px
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if matrix[i][j] >= threshold:
+                union(i, j)
+    clusters: dict[int, list[int]] = {}
+    for i in range(n):
+        root = find(i)
+        clusters.setdefault(root, []).append(i)
+    result: list[tuple[int, list[int], float]] = []
+    for root, indices in clusters.items():
+        if len(indices) < 2:
+            continue
+        total = 0.0
+        count = 0
+        for a in indices:
+            for b in indices:
+                if a < b:
+                    total += matrix[a][b]
+                    count += 1
+        result.append((root, indices, total / count))
+    return result
+
+
 def benchmark() -> list[dict[str, object]]:
     """要求真实原生扩展，校验结果相等，再逐项测量大小输入。"""
     if native.get_cython_backend() != "Cython" or native.get_rust_backend() != "Rust+rayon":
@@ -90,6 +129,26 @@ def benchmark() -> list[dict[str, object]]:
             partial(native.cluster_similarity_matrix, items),
             500 if size < 8 else (50 if size < 64 else 3),
         )
+    for size in [0, 1, 2, 8, 32, 128, 256]:
+        matrix = [[1.0 if i == j else (0.9 if (i + j) % 3 == 0 else 0.2) for j in range(size)] for i in range(size)]
+        measure(
+            "groups",
+            size,
+            partial(previous_cluster_groups, matrix, 0.82),
+            partial(native.cluster_groups, matrix, 0.82),
+            1000 if size < 32 else 10,
+        )
+    for size in [0, 1, 8, 128, 4096]:
+        text = "中文直播ABC1_！新主题" * size
+        baseline = "中文直播ABC1_ 日常" * size
+        for entities in [False, True]:
+            measure(
+                "novelty_entities" if entities else "novelty",
+                size,
+                partial(reference.text_novelty, text, baseline, include_entities=entities),
+                partial(native.text_novelty, text, baseline, include_entities=entities),
+                1000 if size < 10 else 5,
+            )
     return rows
 
 

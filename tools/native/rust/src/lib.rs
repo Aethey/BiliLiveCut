@@ -303,11 +303,77 @@ fn danmaku_text_features(
     )
 }
 
+/// 路径折半并保持原有“右根连接到左根”规则，根编号用于默认主题标题。
+fn find_root(parent: &mut [usize], mut index: usize) -> usize {
+    while parent[index] != index {
+        parent[index] = parent[parent[index]];
+        index = parent[index];
+    }
+    index
+}
+
+/// 不访问 Python/数据库：按原遍历顺序连接，保留簇顺序并统计全部簇内边。
+#[pyfunction]
+fn cluster_groups(
+    py: Python<'_>,
+    matrix: Vec<Vec<f64>>,
+    threshold: f64,
+) -> PyResult<Vec<(usize, Vec<usize>, f64)>> {
+    let n = matrix.len();
+    if !threshold.is_finite()
+        || matrix
+            .iter()
+            .any(|row| row.len() != n || row.iter().any(|v| !v.is_finite()))
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "cluster matrix must be square and finite; threshold must be finite",
+        ));
+    }
+    Ok(py.detach(move || {
+        let mut parent: Vec<usize> = (0..n).collect();
+        for (i, row) in matrix.iter().enumerate() {
+            for (j, &similarity) in row.iter().enumerate().skip(i + 1) {
+                if similarity >= threshold {
+                    let a = find_root(&mut parent, i);
+                    let b = find_root(&mut parent, j);
+                    if a != b {
+                        parent[b] = a;
+                    }
+                }
+            }
+        }
+        let mut positions = vec![usize::MAX; n];
+        let mut groups: Vec<(usize, Vec<usize>, f64)> = Vec::new();
+        for i in 0..n {
+            let root = find_root(&mut parent, i);
+            if positions[root] == usize::MAX {
+                positions[root] = groups.len();
+                groups.push((root, Vec::new(), 0.0));
+            }
+            groups[positions[root]].1.push(i);
+        }
+        groups.retain(|(_, members, _)| members.len() >= 2);
+        for (_, members, average) in &mut groups {
+            let mut total = 0.0;
+            let mut count = 0usize;
+            for (position, &a) in members.iter().enumerate() {
+                for &b in &members[position + 1..] {
+                    total += matrix[a][b];
+                    count += 1;
+                }
+            }
+            *average = total / count as f64;
+        }
+        groups
+    }))
+}
+
 // ── 模块注册 ─────────────────────────────────────────────────────
 
 #[pymodule(gil_used = true)]
 fn _rust_speedups(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cluster_similarity_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(danmaku_text_features, m)?)?;
+    m.add_function(wrap_pyfunction!(cluster_groups, m)?)?;
     Ok(())
 }

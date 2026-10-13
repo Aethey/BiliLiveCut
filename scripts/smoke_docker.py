@@ -164,6 +164,8 @@ def main() -> int:
                     "== (1.0, 1.0, 1.0, ('高能!',))",
                     "assert dispatcher.cluster_similarity_matrix([{'asr_text': '中文'}] * 2) "
                     "== [[1.0, 0.55], [0.55, 1.0]]",
+                    "assert dispatcher.cluster_groups([[1.0, 0.9], [0.9, 1.0]], 0.82) == [(0, [0, 1], 0.9)]",
+                    "assert dispatcher.text_novelty('AB 新鲜', 'ab 日常') == (0.5, 1.0 - 1.0 / 3.0, 0.5)",
                     "assert os.getuid() == 1000 and torch.version.cuda is None",
                     "assert 'DISPLAY' not in os.environ and 'WAYLAND_DISPLAY' not in os.environ",
                     "with wave.open('/data/smoke.wav', 'wb') as audio:",

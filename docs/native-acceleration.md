@@ -16,6 +16,8 @@ BiliLiveCut 只保留当前 `app.accelerators` 原生接口。业务代码统一
 
 | 热点 | 实现 | 接入结果 | 原因 |
 |---|---|---|---|
+| 并查集与簇内平均相似度 | Rust | 独立 CPU 内核 | 保留连接顺序、根编号、簇顺序与浮点累加顺序；计算期间释放 GIL |
+| 文本词项、实体与新颖度 | Cython | 独立 CPU 字符内核 | 保留 Python Unicode 小写规则与原 ASCII/CJK 分词范围，避免创建临时差集/并集 |
 | PCM16 采样计数、精确平方和与峰值 | Cython | 独立 CPU 字节内核 | 单遍整数计算，保留取消与 WAV 完整性检查；分块累积避免长音频溢出 |
 | 候选聚类 N×N 相似度矩阵 | Rust + rayon | 归入 `_rust_speedups` | 两两计算独立，适合 rayon 并行 |
 | 弹幕复读率、标点强度、高情绪命中率、代表消息 | Rust | 新增 | 单遍字符串扫描和计数，Python 对象循环占比高 |
@@ -29,8 +31,8 @@ Cython 弹幕基线、SRT 组装继续保留在同一命名空间。
 ## 当前模块边界
 
 - `app.accelerators._c_speedups`：文本匹配与向量小核。
-- `app.accelerators._cython_speedups`：PCM16 统计、音频包络后处理、稳健滚动基线、弹幕基线、SRT、聚类后备。
-- `app.accelerators._rust_speedups`：rayon 聚类矩阵与弹幕文本特征。
+- `app.accelerators._cython_speedups`：PCM16 统计、文本新颖度、音频包络后处理、稳健滚动基线、弹幕基线、SRT、聚类后备。
+- `app.accelerators._rust_speedups`：rayon 聚类矩阵、并查集/簇内统计与弹幕文本特征。
 - `app.accelerators.python_fallback`：与每个原生函数逐项等价的可测试参考实现。
 
 以下链路没有改写为 Rust/Cython：RMS 包络本身已由 NumPy 向量化；FFmpeg
@@ -64,3 +66,7 @@ Rust Python 绑定固定为 PyO3 0.29.3，替换存在已公布内存/线程安�
 矩阵时间列使用相对整数微秒，避免 Unix 浮点秒丢失精度；四位小数遵守 Python 的偶数舍入规则。不同动态时区及 Rust UTF-8 无法表示的孤立代理码点由等价参考实现处理；不会截断、替换文本或忽略计算错误。Rust 构建按平台选择唯一动态库文件名，拒绝把 Cargo 的 `.d` 依赖清单或其他平台产物当作扩展。
 
 C 字符 bigram 按 Python Unicode 码点处理；单汉字、空白和孤立代理码点与参考实现一致，bytes 输入必须是合法 UTF-8。
+
+并查集内核仅接收有限数值的方阵与阈值，返回根编号、成员索引和簇内均值；主题、关联及事务仍由 Python 业务层维护。文本内核只接收字符串，保留空文本、新颖度/主题变化/实体变化评分公式；证据无需实体统计时显式返回 `None`，不会假造统计值。
+
+完整调用边界基准：`python scripts/benchmark_cpu_kernels.py --output benchmark.json`。测量包括参数转换和结果返回，先逐项校验等价，再记录七轮中位数。合成 CPU 基准不代表 ASR/CUDA 或数据库端到端吞吐，也不保证未测平台及所有输入均加速。

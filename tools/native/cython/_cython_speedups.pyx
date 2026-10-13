@@ -1,6 +1,6 @@
 """BiliLiveCut Cython 数值与字幕热点加速模块。
 
-覆盖七个 CPU 热点:
+覆盖八个 CPU 热点:
 1. cluster_similarity_matrix — O(N²) 聚类矩阵构建
 2. danmaku_baseline_rate — 弹幕基线分桶 + 中位数
 3. group_srt_blocks — 词条聚合为 SRT 字幕
@@ -8,6 +8,7 @@
 5. find_silence_ranges — RMS 连续静音区间提取
 6. robust_relative_uplift — 滚动历史稳健增幅
 7. pcm16_statistics — PCM16 精确整数能量与峰值
+8. text_novelty — 词项/实体扫描与新颖度统计
 
 编译:
     python setup_c.py build_ext --inplace
@@ -18,6 +19,7 @@ cimport cython
 from libc.math cimport fabs, isfinite, log2
 from cpython cimport PyFloat_AsDouble
 from cpython.bytes cimport PyBytes_AS_STRING
+from cpython.unicode cimport PyUnicode_READ_CHAR
 
 
 # ============================================================================
@@ -457,3 +459,75 @@ cdef str _fmt_time(double t):
     cdef int s_int = <int>(t)
     cdef int ms = <int>((t - s_int) * 1000.0)
     return f"{h:02d}:{m:02d}:{s_int:02d},{ms:03d}"
+
+
+cdef inline int _novelty_word_kind(Py_UCS4 value) noexcept nogil:
+    if 65 <= value <= 90 or 97 <= value <= 122 or 48 <= value <= 57 or value == 95:
+        return 1
+    if 0x4e00 <= value <= 0x9fff:
+        return 2
+    return 0
+
+
+cdef set _novelty_tokens(str text, bint entities):
+    """扫描与原正则相同的连续 ASCII/CJK 范围，保留 Python lower 的 Unicode 语义。"""
+    cdef str source = text if entities else text.lower()
+    cdef Py_ssize_t size = len(source), index = 0, start, position, length
+    cdef int kind
+    cdef Py_UCS4 value
+    cdef bint has_alnum
+    cdef set result = set()
+    while index < size:
+        kind = _novelty_word_kind(PyUnicode_READ_CHAR(source, index))
+        if kind == 0:
+            index += 1
+            continue
+        start = index
+        has_alnum = False
+        while index < size:
+            value = PyUnicode_READ_CHAR(source, index)
+            if _novelty_word_kind(value) != kind:
+                break
+            if kind == 1 and value != 95:
+                has_alnum = True
+            index += 1
+        length = index - start
+        if kind == 2 and length < 2:
+            continue
+        if entities:
+            if has_alnum or 2 <= length <= 8:
+                result.add(source[start:index].lower())
+        elif kind == 1:
+            result.add(source[start:index])
+        else:
+            for position in range(start, index - 1):
+                result.add(source[position:position + 2])
+    return result
+
+
+cdef Py_ssize_t _intersection_count(set left, set right):
+    cdef Py_ssize_t count = 0
+    cdef object token
+    if len(left) > len(right):
+        left, right = right, left
+    for token in left:
+        if token in right:
+            count += 1
+    return count
+
+
+def text_novelty(str current not None, str baseline not None, *, bint include_entities=True) -> tuple[float, float, float | None]:
+    """只接收主机字符串，合并词项扫描与集合计数，省去中间差集/并集。"""
+    cdef set left = _novelty_tokens(current, False)
+    cdef set right = _novelty_tokens(baseline, False)
+    cdef Py_ssize_t common = _intersection_count(left, right)
+    cdef Py_ssize_t union_size = len(left) + len(right) - common
+    cdef double novelty = (len(left) - common) / <double>len(left) if left else 0.0
+    cdef double change = 1.0 - common / <double>union_size if union_size else 0.0
+    cdef object entity_change = None
+    if include_entities:
+        left = _novelty_tokens(current, True)
+        right = _novelty_tokens(baseline, True)
+        common = _intersection_count(left, right)
+        entity_change = (len(left) - common) / <double>len(left) if left else 0.0
+    return novelty, change, entity_change
