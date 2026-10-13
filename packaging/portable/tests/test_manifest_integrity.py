@@ -233,6 +233,14 @@ class TestIdentityFields:
         assert manifest["project_license"] == "MIT"
         assert manifest["project_license_sha256"] == hashlib.sha256(expected).hexdigest()
 
+    def test_rust_dependency_notices_match_payload(self, payload_zip: Path) -> None:
+        """随附 Rust 动态库必须同时分发完整依赖许可证。"""
+        name = "tools/native/rust/THIRD_PARTY_NOTICES.md"
+        expected = (_portable_dir.parent.parent / name).read_bytes()
+        with zipfile.ZipFile(payload_zip) as archive:
+            assert archive.read(name) == expected
+        assert b"PyO3" in expected
+
     def test_engine_pack_contract_fields(self, manifest: dict) -> None:
         """验证 Engine Pack API 版本字段。"""
         assert isinstance(manifest.get("engine_pack_api_version"), int)

@@ -13,7 +13,9 @@ if not _skip_extensions:
     _c_speedups = Extension(
         "app.accelerators._c_speedups",
         sources=["tools/native/c/_c_speedups.c"],
-        extra_compile_args=(["/O2", "/fp:fast", "/utf-8"] if sys.platform == "win32" else ["-O3", "-ffast-math"]),
+        extra_compile_args=(
+            ["/O2", "/fp:precise", "/utf-8"] if sys.platform == "win32" else ["-O3", "-ffp-contract=off"]
+        ),
         extra_link_args=(["/Brepro"] if sys.platform == "win32" else []),
     )
     _extensions.append(_c_speedups)
@@ -25,7 +27,7 @@ if not _skip_extensions:
         _r2 = Extension(
             "app.accelerators._cython_speedups",
             sources=["tools/native/cython/_cython_speedups.pyx"],
-            extra_compile_args=(["/O2", "/utf-8"] if sys.platform == "win32" else ["-O3", "-ffast-math"]),
+            extra_compile_args=(["/O2", "/utf-8"] if sys.platform == "win32" else ["-O3", "-ffp-contract=off"]),
             extra_link_args=(["/Brepro"] if sys.platform == "win32" else []),
         )
         _extensions.append(_r2)

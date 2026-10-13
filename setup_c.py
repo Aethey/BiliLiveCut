@@ -17,14 +17,16 @@ if not _skip:
     _c_speedups = Extension(
         "app.accelerators._c_speedups",
         sources=["tools/native/c/_c_speedups.c"],
-        extra_compile_args=(["/O2", "/fp:fast", "/utf-8"] if sys.platform == "win32" else ["-O3", "-ffast-math"]),
+        extra_compile_args=(
+            ["/O2", "/fp:precise", "/utf-8"] if sys.platform == "win32" else ["-O3", "-ffp-contract=off"]
+        ),
         extra_link_args=(["/Brepro"] if sys.platform == "win32" else []),
     )
     _extensions.append(_c_speedups)
 
 setup(
     name="bili_live_cut_c",
-    version="0.1.18.8",
+    version="0.1.18.9",
     py_modules=[],
     ext_modules=_extensions,
 )

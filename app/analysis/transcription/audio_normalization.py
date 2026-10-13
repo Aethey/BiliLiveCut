@@ -5,10 +5,8 @@ from __future__ import annotations
 import math
 import os
 import subprocess
-import sys
 import time
 import wave
-from array import array
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -17,6 +15,7 @@ from tempfile import TemporaryDirectory
 
 from loguru import logger
 
+from app.accelerators.dispatcher import pcm16_statistics
 from app.analysis.transcription.process_tree import ProcessTree
 from app.core.config import settings
 
@@ -52,14 +51,10 @@ def inspect_pcm_audio(path: str, *, check_cancelled: Callable[[], None] | None =
         while raw := audio.readframes(65536):
             if check_cancelled is not None:
                 check_cancelled()
-            if len(raw) % 2:
-                raise ValueError("ASR WAV 含不完整采样")
-            samples = array("h", raw)
-            if sys.byteorder != "little":
-                samples.byteswap()
-            count += len(samples)
-            square_sum += sum(value * value for value in samples)
-            peak = max(peak, max(abs(value) for value in samples))
+            block_count, block_square_sum, block_peak = pcm16_statistics(raw)
+            count += block_count
+            square_sum += block_square_sum
+            peak = max(peak, block_peak)
         if count == 0 or count != expected:
             raise ValueError(f"ASR WAV 帧数无效: declared={expected} decoded={count}")
         return AudioEvidence(

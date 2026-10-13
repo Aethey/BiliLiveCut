@@ -1,6 +1,6 @@
 [package]
 name = "bili-live-cut-rust"
-version = "0.1.18-alpha.8"
+version = "0.1.18-alpha.9"
 edition = "2021"
 description = "BiliLiveCut Rust 加速模块 — 聚类矩阵与弹幕文本特征"
 
@@ -9,5 +9,5 @@ name = "_rust_speedups"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["extension-module"] }
+pyo3 = { version = "=0.29.3", features = ["extension-module"] }
 rayon = "1.10"

@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 
+from app.accelerators.dispatcher import consecutive_repeat_details as _max_consecutive_repeat_details
+
 
 @dataclass(frozen=True, slots=True)
 class TranscriptQuality:
@@ -54,28 +56,8 @@ def _normalize_text(text: str) -> str:
 
 def _max_consecutive_repeat(text: str) -> tuple[int, int]:
     """返回最长连续重复覆盖字符数及重复次数。"""
-    text_length = len(text)
-    best_coverage = 0
-    best_repeats = 0
-    max_unit_length = min(32, text_length // 3)
-
-    for unit_length in range(1, max_unit_length + 1):
-        last_start = text_length - unit_length * 3
-        for start in range(last_start + 1):
-            unit = text[start : start + unit_length]
-            cursor = start + unit_length
-            repeats = 1
-            while text[cursor : cursor + unit_length] == unit:
-                repeats += 1
-                cursor += unit_length
-            if repeats < 3:
-                continue
-            coverage = repeats * unit_length
-            if coverage > best_coverage:
-                best_coverage = coverage
-                best_repeats = repeats
-
-    return best_coverage, best_repeats
+    _, unit_length, repeats = _max_consecutive_repeat_details(text)
+    return unit_length * repeats, repeats
 
 
 def repair_local_decode_loop(text: str, *, max_ratio: float = 0.35) -> RepetitionRepair:
@@ -115,31 +97,10 @@ def _normalize_with_indexes(text: str) -> tuple[str, list[int]]:
     indexes: list[int] = []
     for index, character in enumerate(text):
         if character.isalnum():
-            characters.append(character.casefold())
-            indexes.append(index)
+            folded = character.casefold()
+            characters.append(folded)
+            indexes.extend([index] * len(folded))
     return "".join(characters), indexes
-
-
-def _max_consecutive_repeat_details(text: str) -> tuple[int, int, int]:
-    """返回最佳连续重复的起点、单元长度和次数。"""
-    text_length = len(text)
-    best = (0, 0, 0)
-    best_coverage = 0
-    max_unit_length = min(32, text_length // 3)
-    for unit_length in range(1, max_unit_length + 1):
-        last_start = text_length - unit_length * 3
-        for start in range(last_start + 1):
-            unit = text[start : start + unit_length]
-            cursor = start + unit_length
-            repeats = 1
-            while text[cursor : cursor + unit_length] == unit:
-                repeats += 1
-                cursor += unit_length
-            coverage = repeats * unit_length
-            if repeats >= 3 and coverage > best_coverage:
-                best = (start, unit_length, repeats)
-                best_coverage = coverage
-    return best
 
 
 def assess_transcript_quality(text: str) -> TranscriptQuality:

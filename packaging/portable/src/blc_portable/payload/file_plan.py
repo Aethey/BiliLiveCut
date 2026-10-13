@@ -17,6 +17,7 @@ PAYLOAD_ITEMS = [
     "setup_c.py",
     ".env.example",
     "LICENSE",
+    "tools/native/rust/THIRD_PARTY_NOTICES.md",
     "docs/live-source-plugins.md",
     "docs/douyin-plugin-handoff.md",
     "plugin/README.md",

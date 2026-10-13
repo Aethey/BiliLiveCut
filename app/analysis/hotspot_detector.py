@@ -15,7 +15,7 @@ import numpy as np
 from loguru import logger
 from sqlmodel import Session, select
 
-from app.accelerators.dispatcher import danmaku_text_features, robust_relative_uplift
+from app.accelerators.dispatcher import danmaku_text_features, robust_relative_uplift, text_novelty
 from app.analysis.keywords import match_keywords
 from app.analysis.room_config import room_highlight_keywords
 from app.analysis.timeline import datetime_epoch
@@ -57,7 +57,6 @@ _CLIP_WEIGHTS: dict[str, float] = {
     "asr": 0.30,
     "trend": 0.10,
 }
-_WORD_PATTERN = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -717,13 +716,8 @@ def _asr_modality_score(
     if not current_text:
         return 0.0
     baseline_text = _join_bucket_text(baseline)
-    current_tokens = _lexical_tokens(current_text)
-    baseline_tokens = _lexical_tokens(baseline_text)
-    semantic_novelty = _set_novelty(current_tokens, baseline_tokens)
-    topic_change = 1.0 - _jaccard(current_tokens, baseline_tokens)
-    current_entities = _entity_tokens(current_text)
-    baseline_entities = _entity_tokens(baseline_text)
-    entity_change = _set_novelty(current_entities, baseline_entities)
+    semantic_novelty, topic_change, entity_change = text_novelty(current_text, baseline_text)
+    assert entity_change is not None
     keyword_score = max(bucket.asr_keyword_score or 0.0 for bucket in current)
     speech_rate = float(np.mean([bucket.asr_speech_rate or 0.0 for bucket in current]))
     baseline_rates = [bucket.asr_speech_rate for bucket in baseline if bucket.asr_speech_rate is not None]
@@ -835,8 +829,7 @@ def _build_tick_evidence(
     if asr_score is not None:
         current_text = _join_bucket_text(current)
         baseline_text = _join_bucket_text(baseline)
-        current_tokens = _lexical_tokens(current_text)
-        baseline_tokens = _lexical_tokens(baseline_text)
+        semantic_novelty, topic_change, _ = text_novelty(current_text, baseline_text, include_entities=False)
         evidence.append(
             EvidenceItem(
                 type="asr",
@@ -844,8 +837,8 @@ def _build_tick_evidence(
                 end_ts=end_ts,
                 metrics={
                     "score": asr_score,
-                    "semantic_novelty": _set_novelty(current_tokens, baseline_tokens),
-                    "topic_change": 1.0 - _jaccard(current_tokens, baseline_tokens),
+                    "semantic_novelty": semantic_novelty,
+                    "topic_change": topic_change,
                     "keyword_score": max(bucket.asr_keyword_score or 0.0 for bucket in current),
                     "speech_rate": float(np.mean([bucket.asr_speech_rate or 0.0 for bucket in current])),
                 },
@@ -929,35 +922,6 @@ def _join_bucket_text(buckets: Sequence[SignalBucket]) -> str:
     return " ".join(
         bucket.asr_text.strip() for bucket in buckets if bucket.asr_text is not None and bucket.asr_text.strip()
     )
-
-
-def _lexical_tokens(text: str) -> set[str]:
-    tokens: set[str] = set()
-    for raw in _WORD_PATTERN.findall(text.lower()):
-        if re.fullmatch(r"[\u4e00-\u9fff]+", raw):
-            tokens.update(raw[index : index + 2] for index in range(max(1, len(raw) - 1)))
-        else:
-            tokens.add(raw)
-    return tokens
-
-
-def _entity_tokens(text: str) -> set[str]:
-    return {
-        token.lower()
-        for token in _WORD_PATTERN.findall(text)
-        if any(char.isdigit() or char.isascii() and char.isalpha() for char in token) or 2 <= len(token) <= 8
-    }
-
-
-def _set_novelty(current: set[str], baseline: set[str]) -> float:
-    if not current:
-        return 0.0
-    return _clamp(len(current - baseline) / len(current))
-
-
-def _jaccard(left: set[str], right: set[str]) -> float:
-    union = left | right
-    return len(left & right) / len(union) if union else 1.0
 
 
 def _bucket_index(offset_s: float, duration_s: float, bucket_s: float, count: int) -> int | None:

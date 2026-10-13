@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -129,3 +130,76 @@ def test_interrupted_display_stops_real_child(tmp_path: Path, monkeypatch: Monke
         progress.run_provisioner([sys.executable, "-u", "-c", code], cwd=str(tmp_path), env=dict(os.environ))
     assert len(child_processes) == 1
     child_processes[0].wait(timeout=5)
+
+
+def test_sdk_progress_gc_during_thread_start_cannot_deadlock(tmp_path: Path) -> None:
+    """在真实子进程强制重现 tqdm 启动线程时的 GC/共享锁交叉等待。"""
+    code = r"""
+import faulthandler,gc,io,json,os,threading
+from tqdm import tqdm
+from blc_portable.launcher import progress
+faulthandler.dump_traceback_later(2)
+os.environ['BLC_MODEL_PROGRESS']='1'
+tqdm.get_lock()
+original_interval=tqdm.monitor_interval
+class OrphanBar(tqdm):
+    monitor_interval=0
+gc.disable()
+orphan=OrphanBar(total=1,file=io.StringIO())
+orphan.cycle=orphan
+del orphan
+original_start=threading.Thread._set_tstate_lock
+def collect_during_start(self):
+    if self.name=='tqdm_monitor': gc.collect()
+    original_start(self)
+threading.Thread._set_tstate_lock=collect_during_start
+klass=progress.hf_progress_class()
+with klass(desc='Reconstructing',total=1000,unit='B',mininterval=0) as bar:
+    bar.update(900)
+    bar.update(1)
+    assert bar.n==901
+assert tqdm.monitor_interval==original_interval
+gc.collect()
+faulthandler.cancel_dump_traceback_later()
+print('GC_PROGRESS_OK',flush=True)
+"""
+    result = subprocess.run(
+        [sys.executable, "-u", "-c", code],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(Path(progress.__file__).resolve().parents[2])},
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        timeout=5,
+        check=True,
+    )
+    assert "GC_PROGRESS_OK" in result.stdout
+    states = [
+        json.loads(line.removeprefix(progress.PREFIX))
+        for line in result.stdout.splitlines()
+        if line.startswith(progress.PREFIX)
+    ]
+    assert any(item["completed"] == 901 and item["total"] == 1000 for item in states)
+
+
+def test_sdk_progress_reports_small_updates_after_burst(monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]) -> None:
+    monkeypatch.setenv("BLC_MODEL_PROGRESS", "1")
+    klass = progress.hf_progress_class()
+    bar = klass(desc="Reconstructing", total=1000, unit="B", mininterval=0.1)
+    clock = [bar.last_print_t]
+    bar._time = lambda: clock[0]
+    try:
+        capsys.readouterr()
+        clock[0] += 1
+        bar.update(900)
+        capsys.readouterr()
+        clock[0] += 2
+        bar.update(1)
+        states = [
+            json.loads(line.removeprefix(progress.PREFIX))
+            for line in capsys.readouterr().out.splitlines()
+            if line.startswith(progress.PREFIX)
+        ]
+        assert any(item["completed"] == 901 and item["total"] == 1000 for item in states)
+    finally:
+        bar.close()

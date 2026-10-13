@@ -313,90 +313,58 @@ static PyObject *fast_ahocorasick_search(PyObject *self, PyObject *args) {
  * fast_char_bigrams(text) -> list[str]
  * ─────────────────────────────────────────────────────────────────────── */
 static PyObject *fast_char_bigrams(PyObject *self, PyObject *arg) {
-    const char *text; Py_ssize_t tlen;
+    PyObject *text;
     if (PyUnicode_Check(arg)) {
-        text = PyUnicode_AsUTF8AndSize(arg, &tlen);
+        text = Py_NewRef(arg);
     } else if (PyBytes_Check(arg)) {
-        PyBytes_AsStringAndSize(arg, (char **)&text, &tlen);
-        /* V0.1.12.5: 验证 bytes 为合法 UTF-8 */
-        if (text && tlen > 0 && !_is_valid_utf8(text, tlen)) {
-            PyErr_SetString(PyExc_UnicodeDecodeError, "bytes is not valid UTF-8");
-            return NULL;
-        }
+        /* 验证 bytes 为合法 UTF-8；Unicode 输入按码点处理，包含孤立代理码点。 */
+        text = PyUnicode_DecodeUTF8(PyBytes_AS_STRING(arg), PyBytes_GET_SIZE(arg), "strict");
+        if (!text) return NULL;
     } else {
         PyErr_SetString(PyExc_TypeError, "expected str or bytes");
         return NULL;
     }
-    if (!text || tlen < 2) {
-        PyObject *list = PyList_New(0);
-        if (!list) return NULL;
-        if (tlen == 1 && text) {
-            int clen = 1;
-            if ((unsigned char)text[0] >= 0xC0) {
-                while (clen < 4 && (unsigned char)text[clen] >= 0x80 && (unsigned char)text[clen] < 0xC0)
-                    clen++;
-            }
-            PyObject *bg = PyUnicode_FromStringAndSize(text, clen);
-            if (bg) {
-                if (PyList_Append(list, bg) < 0) {
-                    Py_DECREF(bg);
-                    Py_DECREF(list);
-                    return NULL;
-                }
-                Py_DECREF(bg);
-            }
-        }
-        return list;
-    }
-
     PyObject *result = PyList_New(0);
-    if (!result) return NULL;
-
-    const char *p = text, *end = text + tlen;
-    while (p < end) {
-        /* 跳过空白 */
-        if ((unsigned char)*p <= ' ') { p++; continue; }
-
-        /* 第一个字符的字节长度 */
-        int first_len = 1;
-        if ((unsigned char)*p >= 0xC0) {
-            while (first_len < 4 && (unsigned char)p[first_len] >= 0x80 && (unsigned char)p[first_len] < 0xC0)
-                first_len++;
-            if (first_len > (int)(end - p)) first_len = 1;
-        }
-
-        /* 跳过第一个字符,找到下一个非空白字符开头 */
-        const char *q = p + first_len;
-        while (q < end && (unsigned char)*q <= ' ') q++;
-        if (q >= end) { p += first_len; continue; }
-
-        /* 第二个字符的字节长度 */
-        int second_len = 1;
-        if ((unsigned char)*q >= 0xC0) {
-            while (second_len < 4 && (unsigned char)q[second_len] >= 0x80 && (unsigned char)q[second_len] < 0xC0)
-                second_len++;
-            if (second_len > (int)(end - q)) second_len = 1;
-        }
-
-        /* p 到 q+second_len 组成一个有效 bigram (不含空白, V0.1.12.5) */
-        char bigram_buf[16];  /* 最坏情况: 2 个 4 字节 UTF-8 字符 = 8 字节 */
-        memcpy(bigram_buf, p, first_len);
-        memcpy(bigram_buf + first_len, q, second_len);
-        PyObject *bg = PyUnicode_FromStringAndSize(bigram_buf, first_len + second_len);
-        if (!bg) {
-            Py_DECREF(result);
-            return NULL;
-        }
-        if (PyList_Append(result, bg) < 0) {
-            Py_DECREF(bg);
-            Py_DECREF(result);
-            return NULL;
-        }
-        Py_DECREF(bg);
-
-        p += first_len;
+    if (!result) { Py_DECREF(text); return NULL; }
+    Py_ssize_t size = PyUnicode_GET_LENGTH(text);
+    if (size < 2) {
+        if (size == 1 && PyList_Append(result, text) < 0) goto error;
+        Py_DECREF(text);
+        return result;
     }
+    int kind = PyUnicode_KIND(text);
+    void *data = PyUnicode_DATA(text);
+    Py_UCS4 previous = 0x110000;
+    for (Py_ssize_t index = 0; index < size; index++) {
+        Py_UCS4 current = PyUnicode_READ(kind, data, index);
+        /* 跳过 ASCII 空白，与 Python 参考实现逐码点比较一致。 */
+        if (current <= ' ') continue;
+        if (previous != 0x110000) {
+            PyObject *pair = PyUnicode_New(2, previous > current ? previous : current);
+            if (!pair) goto error;
+            int pair_kind = PyUnicode_KIND(pair);
+            void *pair_data = PyUnicode_DATA(pair);
+            PyUnicode_WRITE(pair_kind, pair_data, 0, previous);
+            PyUnicode_WRITE(pair_kind, pair_data, 1, current);
+            int status = PyList_Append(result, pair);
+            Py_DECREF(pair);
+            if (status < 0) goto error;
+        }
+        previous = current;
+    }
+    if (PyList_GET_SIZE(result) == 0 && previous != 0x110000) {
+        PyObject *single = PyUnicode_FromOrdinal(previous);
+        if (!single) goto error;
+        int status = PyList_Append(result, single);
+        Py_DECREF(single);
+        if (status < 0) goto error;
+    }
+    Py_DECREF(text);
     return result;
+error:
+    Py_DECREF(text);
+    Py_DECREF(result);
+    return NULL;
 }
 
 /* ───────────────────────────────────────────────────────────────────────

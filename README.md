@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/StarGazerQQD/BiliLiveCut?include_prereleases&sort=semver)](https://github.com/StarGazerQQD/BiliLiveCut/releases)
 [![License](https://img.shields.io/github/license/StarGazerQQD/BiliLiveCut)](LICENSE)
 
-**当前版本：V0.1.18.8 Alpha** (`0.1.18.8-alpha`) · [更新记录](CHANGELOG.md)
+**当前版本：V0.1.18.9 Alpha** (`0.1.18.9-alpha`) · [更新记录](CHANGELOG.md)
 
 面向 Bilibili 直播的自动切片工具：**录制 → 转写 → 识别高光 → 人工审核 → 生成切片与文案 → 可选上传**。通过 Web 控制台管理直播间、录制场次、转写、候选和成品。
 
@@ -88,7 +88,7 @@ python -m app.cli serve
 - GitHub：[shuangyiliu211126com](https://github.com/shuangyiliu211126com)（[#61](https://github.com/StarGazerQQD/BiliLiveCut/issues/61)、[#62](https://github.com/StarGazerQQD/BiliLiveCut/issues/62)）
 - GitHub：[xiu1zi3](https://github.com/xiu1zi3)（[#60](https://github.com/StarGazerQQD/BiliLiveCut/issues/60)）
 - GitHub：[BEIJUUUUU](https://github.com/BEIJUUUUU)（[#68 定位反馈](https://github.com/StarGazerQQD/BiliLiveCut/issues/68#issuecomment-6108960218)，提供镜像重定向和 SDK 兼容性复现）
-- GitHub：[GEYUANwuqi](https://github.com/GEYUANwuqi)（[PR #73](https://github.com/StarGazerQQD/BiliLiveCut/pull/73)，贡献 uv 支持与 pre-commit 钩子）
+- GitHub：[GEYUANwuqi](https://github.com/GEYUANwuqi)（[PR #73](https://github.com/StarGazerQQD/BiliLiveCut/pull/73)，贡献 uv 支持、pre-commit 钩子及 [Docker 部署修复](https://github.com/StarGazerQQD/BiliLiveCut/pull/78)）
 
 - Bilibili：[大口径喷子](https://space.bilibili.com/13886027)
 - Bilibili：[口米_K-Mi](https://space.bilibili.com/493488643)

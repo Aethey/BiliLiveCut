@@ -1,12 +1,16 @@
 """BiliLiveCut Cython 数值与字幕热点加速模块。
 
-覆盖六个 CPU 热点:
+覆盖十个 CPU 热点:
 1. cluster_similarity_matrix — O(N²) 聚类矩阵构建
 2. danmaku_baseline_rate — 弹幕基线分桶 + 中位数
 3. group_srt_blocks — 词条聚合为 SRT 字幕
 4. audio_peak_offsets — 音频局部峰值筛选
 5. find_silence_ranges — RMS 连续静音区间提取
 6. robust_relative_uplift — 滚动历史稳健增幅
+7. pcm16_statistics — PCM16 精确整数能量与峰值
+8. text_novelty — 词项/实体扫描与新颖度统计
+9. consecutive_repeat_details — 精确连续重复检测
+10. review_text_statistics — ASR 复核字符与热词统计
 
 编译:
     python setup_c.py build_ext --inplace
@@ -15,23 +19,105 @@
 
 cimport cython
 from libc.math cimport fabs, isfinite, log2
+from libc.stdlib cimport qsort
+from libc.stdint cimport SIZE_MAX
+from cpython.mem cimport PyMem_Malloc, PyMem_Free
 from cpython cimport PyFloat_AsDouble
+from cpython.bytes cimport PyBytes_AS_STRING
+from cpython.unicode cimport PyUnicode_READ_CHAR
 
 
 # ============================================================================
 # 0. 共享数值辅助函数
 # ============================================================================
 
-cdef double _median(list values):
-    """返回非空数值列表的中位数。"""
-    cdef list ordered = sorted(values)
-    cdef Py_ssize_t size = len(ordered)
+def pcm16_statistics(bytes raw not None) -> tuple[int, int, int]:
+    """单遍汇总小端 PCM16；每 65536 样本提升至 Python 整数，长输入也不溢出。"""
+    cdef Py_ssize_t size = len(raw)
+    cdef const unsigned char* data = <const unsigned char*>PyBytes_AS_STRING(raw)
+    cdef Py_ssize_t offset = 0
+    cdef Py_ssize_t stop, index
+    cdef int value, magnitude, peak = 0
+    cdef unsigned long long subtotal
+    cdef object square_sum = 0
     if size % 2:
-        return PyFloat_AsDouble(ordered[size // 2])
-    return (
-        PyFloat_AsDouble(ordered[size // 2 - 1])
-        + PyFloat_AsDouble(ordered[size // 2])
-    ) / 2.0
+        raise ValueError("ASR WAV 含不完整采样")
+    while offset < size:
+        stop = offset + min(size - offset, 131072)
+        subtotal = 0
+        with nogil:
+            index = offset
+            while index < stop:
+                value = <int>data[index] | (<int>data[index + 1] << 8)
+                if value >= 32768:
+                    value -= 65536
+                magnitude = -value if value < 0 else value
+                if magnitude > peak:
+                    peak = magnitude
+                subtotal += <unsigned long long>(value * value)
+                index += 2
+        square_sum += subtotal
+        offset = stop
+    return size // 2, square_sum, peak
+
+
+cdef int _compare_double(const void* a, const void* b) noexcept nogil:
+    cdef double left = (<const double*>a)[0]
+    cdef double right = (<const double*>b)[0]
+    return (left > right) - (left < right)
+
+
+cdef double _buffer_median(double* values, Py_ssize_t size) noexcept nogil:
+    """原地排序有界数值缓冲区；小输入插入排序，避免回调开销。"""
+    cdef Py_ssize_t i, j
+    cdef double value
+    if size <= 32:
+        for i in range(1, size):
+            value = values[i]
+            j = i
+            while j > 0 and values[j - 1] > value:
+                values[j] = values[j - 1]
+                j -= 1
+            values[j] = value
+    else:
+        qsort(values, size, sizeof(double), _compare_double)
+    if size % 2:
+        return values[size // 2]
+    return (values[size // 2 - 1] + values[size // 2]) / 2.0
+
+
+cdef double* _number_buffer(Py_ssize_t size) except NULL:
+    cdef double* values
+    if size < 1 or <size_t>size > SIZE_MAX // sizeof(double):
+        raise MemoryError("invalid numeric buffer size")
+    values = <double*>PyMem_Malloc(size * sizeof(double))
+    if values == NULL:
+        raise MemoryError("numeric buffer allocation failed")
+    return values
+
+
+cdef double _median(list values):
+    """非空列表的中位数；非有限音频输入保留 Python 排序语义。"""
+    cdef Py_ssize_t size = len(values), i
+    cdef double* buffer
+    cdef double result
+    cdef list ordered
+    if size == 1:
+        return PyFloat_AsDouble(values[0])
+    if size == 2:
+        return (PyFloat_AsDouble(values[0]) + PyFloat_AsDouble(values[1])) / 2.0
+    buffer = _number_buffer(size)
+    try:
+        for i in range(size):
+            buffer[i] = PyFloat_AsDouble(values[i])
+            if not isfinite(buffer[i]):
+                ordered = sorted(values)
+                return (ordered[size // 2] if size % 2 else (ordered[size // 2 - 1] + ordered[size // 2]) / 2.0)
+        with nogil:
+            result = _buffer_median(buffer, size)
+        return result
+    finally:
+        PyMem_Free(buffer)
 
 
 cdef double _clamp01(double value):
@@ -153,33 +239,50 @@ def find_silence_ranges(
 # 2. 滚动历史稳健增幅
 # ============================================================================
 
-def robust_relative_uplift(double current, const double[::1] history):
-    """按当前场次历史的中位数与 MAD 计算稳健相对增幅。"""
-    cdef list clean = []
-    cdef list deviations
-    cdef Py_ssize_t index
-    cdef double value, baseline, mad, scale
+def robust_relative_uplift(double current, history: object) -> float:
+    """直接读取 Python 数值序列，在独立缓冲区统计中位数/MAD，不改动输入。"""
+    cdef Py_ssize_t size = len(history), used = 0, index
+    cdef double* clean
+    cdef double value, baseline, mad, scale, argument
     cdef double ratio_score, relative_score, robust_score
-
-    if not isfinite(current):
+    cdef const double[::1] view
+    if not isfinite(current) or size == 0:
         return 0.0
-    for index in range(history.shape[0]):
-        value = history[index]
-        if isfinite(value):
-            clean.append(value)
-    if not clean:
-        return 0.0
-
-    baseline = _median(clean)
-    if current <= baseline:
-        return 0.0
-    deviations = [fabs(PyFloat_AsDouble(value) - baseline) for value in clean]
-    mad = _median(deviations)
-    scale = max(1e-3, fabs(baseline) * 0.10)
-    ratio_score = log2((current + scale) / (baseline + scale)) / 3.0
-    relative_score = ((current - baseline) / (fabs(baseline) + scale)) / 2.0
-    robust_score = 0.0 if mad <= 1e-9 else ((current - baseline) / (1.4826 * mad)) / 6.0
-    return _clamp01(max(ratio_score, relative_score, robust_score))
+    clean = _number_buffer(size)
+    try:
+        if isinstance(history, (list, tuple)):
+            for index in range(size):
+                value = PyFloat_AsDouble(history[index])
+                if isfinite(value):
+                    clean[used] = value
+                    used += 1
+        else:
+            view = history
+            for index in range(size):
+                value = view[index]
+                if isfinite(value):
+                    clean[used] = value
+                    used += 1
+        if used == 0:
+            return 0.0
+        with nogil:
+            baseline = _buffer_median(clean, used)
+        if current <= baseline:
+            return 0.0
+        with nogil:
+            for index in range(used):
+                clean[index] = fabs(clean[index] - baseline)
+            mad = _buffer_median(clean, used)
+        scale = max(1e-3, fabs(baseline) * 0.10)
+        argument = (current + scale) / (baseline + scale)
+        if argument <= 0.0:
+            raise ValueError("math domain error")
+        ratio_score = log2(argument) / 3.0
+        relative_score = ((current - baseline) / (fabs(baseline) + scale)) / 2.0
+        robust_score = 0.0 if mad <= 1e-9 else ((current - baseline) / (1.4826 * mad)) / 6.0
+        return _clamp01(max(ratio_score, relative_score, robust_score))
+    finally:
+        PyMem_Free(clean)
 
 
 # ============================================================================
@@ -308,23 +411,23 @@ def danmaku_baseline_rate(list timestamps_seconds, double bucket_s=10.0):
     cdef double t0 = PyFloat_AsDouble(timestamps_seconds[0])
     cdef dict buckets = {}
     cdef double t
-    cdef Py_ssize_t idx
-    cdef Py_ssize_t i
+    cdef object idx, previous = None
+    cdef Py_ssize_t i, run = 0
 
+    # 相邻同桶只累计整数；跨桶时合并，未排序输入仍按原字典语义汇总。
     for i in range(n):
         t = PyFloat_AsDouble(timestamps_seconds[i])
-        idx = <Py_ssize_t>((t - t0) / bucket_s)
-        buckets[idx] = buckets.get(idx, 0) + 1
-
+        idx = int((t - t0) / bucket_s)
+        if idx == previous:
+            run += 1
+        else:
+            if previous is not None:
+                buckets[previous] = buckets.get(previous, 0) + run
+            previous = idx
+            run = 1
+    buckets[previous] = buckets.get(previous, 0) + run
     cdef list rates = [float(v) / bucket_s for v in buckets.values()]
-    rates.sort()
-
-    cdef Py_ssize_t nr = len(rates)
-    cdef double median
-    if nr % 2 == 1:
-        median = rates[nr // 2]
-    else:
-        median = (rates[nr // 2 - 1] + rates[nr // 2]) / 2.0
+    cdef double median = _median(rates)
 
     return median, n
 
@@ -425,3 +528,116 @@ cdef str _fmt_time(double t):
     cdef int s_int = <int>(t)
     cdef int ms = <int>((t - s_int) * 1000.0)
     return f"{h:02d}:{m:02d}:{s_int:02d},{ms:03d}"
+
+
+cdef inline int _novelty_word_kind(Py_UCS4 value) noexcept nogil:
+    if 65 <= value <= 90 or 97 <= value <= 122 or 48 <= value <= 57 or value == 95:
+        return 1
+    if 0x4e00 <= value <= 0x9fff:
+        return 2
+    return 0
+
+
+cdef set _novelty_tokens(str text, bint entities):
+    """扫描与原正则相同的连续 ASCII/CJK 范围，保留 Python lower 的 Unicode 语义。"""
+    cdef str source = text if entities else text.lower()
+    cdef Py_ssize_t size = len(source), index = 0, start, position, length
+    cdef int kind
+    cdef Py_UCS4 value
+    cdef bint has_alnum
+    cdef set result = set()
+    while index < size:
+        kind = _novelty_word_kind(PyUnicode_READ_CHAR(source, index))
+        if kind == 0:
+            index += 1
+            continue
+        start = index
+        has_alnum = False
+        while index < size:
+            value = PyUnicode_READ_CHAR(source, index)
+            if _novelty_word_kind(value) != kind:
+                break
+            if kind == 1 and value != 95:
+                has_alnum = True
+            index += 1
+        length = index - start
+        if kind == 2 and length < 2:
+            continue
+        if entities:
+            if has_alnum or 2 <= length <= 8:
+                result.add(source[start:index].lower())
+        elif kind == 1:
+            result.add(source[start:index])
+        else:
+            for position in range(start, index - 1):
+                result.add(source[position:position + 2])
+    return result
+
+
+cdef Py_ssize_t _intersection_count(set left, set right):
+    cdef Py_ssize_t count = 0
+    cdef object token
+    if len(left) > len(right):
+        left, right = right, left
+    for token in left:
+        if token in right:
+            count += 1
+    return count
+
+
+def text_novelty(str current not None, str baseline not None, *, bint include_entities=True) -> tuple[float, float, float | None]:
+    """只接收主机字符串，合并词项扫描与集合计数，省去中间差集/并集。"""
+    cdef set left = _novelty_tokens(current, False)
+    cdef set right = _novelty_tokens(baseline, False)
+    cdef Py_ssize_t common = _intersection_count(left, right)
+    cdef Py_ssize_t union_size = len(left) + len(right) - common
+    cdef double novelty = (len(left) - common) / <double>len(left) if left else 0.0
+    cdef double change = 1.0 - common / <double>union_size if union_size else 0.0
+    cdef object entity_change = None
+    if include_entities:
+        left = _novelty_tokens(current, True)
+        right = _novelty_tokens(baseline, True)
+        common = _intersection_count(left, right)
+        entity_change = (len(left) - common) / <double>len(left) if left else 0.0
+    return novelty, change, entity_change
+
+
+
+def consecutive_repeat_details(str text not None) -> tuple[int, int, int]:
+    """逐周期反向累计相等后缀，O(32N) 时间/O(1) 额外空间，保留最早平局。"""
+    cdef Py_ssize_t size = len(text)
+    cdef Py_ssize_t unit, start, run, repeats, coverage
+    cdef Py_ssize_t best_start = 0, best_unit = 0, best_repeats = 0, best_coverage = 0
+    for unit in range(1, min(32, size // 3) + 1):
+        run = 0
+        for start in range(size - unit - 1, -1, -1):
+            if PyUnicode_READ_CHAR(text, start) == PyUnicode_READ_CHAR(text, start + unit):
+                run += 1
+            else:
+                run = 0
+            repeats = 1 + run // unit
+            if repeats < 3:
+                continue
+            coverage = repeats * unit
+            if coverage > best_coverage or (coverage == best_coverage and unit == best_unit and start < best_start):
+                best_start = start
+                best_unit = unit
+                best_repeats = repeats
+                best_coverage = coverage
+    return best_start, best_unit, best_repeats
+
+
+def review_text_statistics(str text not None, hotwords: list[str] | None = None) -> tuple[int, int, str | None]:
+    """单遍字符统计；任意匹配前缀必然包含首字符，保留首个热词冲突。"""
+    cdef Py_ssize_t size = len(text), index, garbled = 0
+    cdef Py_ssize_t unique = len(set(text)) if size >= 4 else 0
+    cdef unsigned int code
+    cdef str word
+    for index in range(size):
+        code = PyUnicode_READ_CHAR(text, index)
+        if code < 32 or 126 < code < 0x4E00:
+            garbled += 1
+    for word in hotwords or ():
+        if word and word[0] in text and word not in text:
+            return unique, garbled, word
+    return unique, garbled, None

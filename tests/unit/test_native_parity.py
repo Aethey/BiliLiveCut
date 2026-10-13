@@ -423,3 +423,85 @@ class TestRustHotspotParity:
             [None, None],
         )
         assert native == fallback.cluster_similarity_matrix(items)
+
+
+@pytest.mark.parametrize("keywords,timestamps", [([], [None, None]), ([[], []], []), ([[]], [None])])
+def test_rust_matrix_rejects_mismatched_columns(keywords: list[list[str]], timestamps: list[None]) -> None:
+    from app.accelerators import dispatcher
+
+    if dispatcher._rust_backend is not None:
+        with pytest.raises(ValueError, match="equal lengths"):
+            dispatcher._rust_backend.cluster_similarity_matrix(["甲", "乙"], keywords, timestamps)
+
+
+@pytest.mark.parametrize("seconds", [0.000001, 0.3, 0.9, 1.8, 2.7, 8.1, 99.9, 3599.9, 3600.0])
+def test_cluster_time_and_decimal_boundaries_match_reference(seconds: float) -> None:
+    from datetime import datetime, timedelta
+
+    from app.accelerators import dispatcher
+    from app.accelerators.python_fallback import speedups_round2 as reference
+
+    base = datetime(2026, 1, 1)
+    items = [
+        {"asr_text": "", "keywords": [], "start_ts": base + timedelta(seconds=value)}
+        for value in [0, seconds, seconds * 2]
+    ]
+    assert dispatcher.cluster_similarity_matrix(items) == reference.cluster_similarity_matrix(items)
+
+
+def test_cluster_uses_datetime_semantics_across_different_timezones() -> None:
+    from datetime import UTC, datetime, timedelta, timezone
+
+    from app.accelerators import dispatcher
+    from app.accelerators.python_fallback import speedups_round2 as reference
+
+    items = [
+        {"asr_text": "直播", "keywords": [], "start_ts": datetime(2026, 1, 1, tzinfo=zone)}
+        for zone in [UTC, timezone(timedelta(hours=8))]
+    ]
+    assert dispatcher.cluster_similarity_matrix(items) == reference.cluster_similarity_matrix(items)
+    items[1]["start_ts"] = datetime(2026, 1, 1)
+    with pytest.raises(TypeError):
+        dispatcher.cluster_similarity_matrix(items)
+
+
+def test_cpu_text_dispatch_preserves_lone_surrogate_semantics() -> None:
+    from app.accelerators import dispatcher
+    from app.accelerators.python_fallback import speedups_round2 as reference
+
+    texts = ["高能!\ud800", "\udfff", "正常", "正常"]
+    assert dispatcher.danmaku_text_features(texts, ["高能"]) == reference.danmaku_text_features(texts, ["高能"])
+    items = [{"asr_text": value, "keywords": [], "start_ts": None} for value in texts]
+    assert dispatcher.cluster_similarity_matrix(items) == reference.cluster_similarity_matrix(items)
+
+
+def test_matrix_microsecond_range_cannot_overflow() -> None:
+    from app.accelerators import dispatcher
+
+    if dispatcher._rust_backend is not None:
+        assert dispatcher._rust_backend.cluster_similarity_matrix(["", ""], [[], []], [-(2**63), 2**63 - 1]) == [
+            [1.0, 0.0],
+            [0.0, 1.0],
+        ]
+
+
+@pytest.mark.parametrize(
+    "text", ["", " ", "中", "a", " 中 ", " a ", "\t", "😀", "中文", "\ud800", "x\udfff y", "a\x00b"]
+)
+def test_short_and_unicode_bigrams_and_matrix_match_python(text: str) -> None:
+    from app.accelerators import dispatcher
+    from app.accelerators.python_fallback import speedups, speedups_round2
+
+    expected = speedups.fast_char_bigrams(text)
+    assert dispatcher.fast_char_bigrams(text) == expected
+    items = [{"asr_text": text}, {"asr_text": text}]
+    assert dispatcher.cluster_similarity_matrix(items) == speedups_round2.cluster_similarity_matrix(items)
+
+
+def test_c_bigram_rejects_malformed_utf8_without_partial_result() -> None:
+    from app.accelerators import dispatcher
+
+    if dispatcher.get_backend() == "C":
+        for raw in [b"\xff", b"\xf0\x80", b"valid\xed\xa0\x80"]:
+            with pytest.raises(UnicodeDecodeError):
+                dispatcher.fast_char_bigrams(raw)

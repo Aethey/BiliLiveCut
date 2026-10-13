@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Protocol, Self, cast
 
 from loguru import logger
 
+from app.accelerators.dispatcher import review_text_statistics
 from app.analysis import asr_metrics
 from app.analysis.model_pool import model_pool
 from app.analysis.transcription.models import (  # single source of truth — no duplicates
@@ -1061,33 +1062,24 @@ def _compute_review_risk_score(
             risk += 0.2
             reasons.append(f"high_chars_per_sec({chars_per_sec:.1f})")
 
+    unique_count, non_cjk, conflicting_hotword = review_text_statistics(text, hotwords)
+
     # 4) 重复字符/短语
     if len(text) >= 4:
-        unique_ratio = len(set(text)) / len(text)
+        unique_ratio = unique_count / len(text)
         if unique_ratio < 0.3:
             risk += 0.3
             reasons.append("high_repetition")
 
     # 5) 乱码/非预期符号
-    non_cjk = sum(1 for c in text if ord(c) < 32 or (ord(c) > 126 and ord(c) < 0x4E00))
     if non_cjk > len(text) * 0.3:
         risk += 0.2
         reasons.append("possible_garbled")
 
     # 6) 热词冲突: 文本中包含热词前缀但整体不匹配
-    if hotwords:
-        for hw in hotwords:
-            if len(hw) >= 1:
-                # 检查热词的任意前缀或单字是否出现在文本中
-                for length in range(1, len(hw) + 1):
-                    sub = hw[:length]
-                    if len(sub) >= 1 and sub in text and hw not in text:
-                        risk += 0.15
-                        reasons.append(f"hotword_conflict({hw}->{sub})")
-                        break
-                else:
-                    continue
-                break
+    if conflicting_hotword is not None:
+        risk += 0.15
+        reasons.append(f"hotword_conflict({conflicting_hotword}->{conflicting_hotword[0]})")
 
     return min(risk, 1.0), reasons
 

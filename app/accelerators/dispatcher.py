@@ -10,9 +10,18 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from datetime import datetime as _dt
-from typing import Any
+from typing import Any, TypedDict
 
 from app.accelerators.python_fallback import speedups_round2 as _fallback_round2
+
+
+class ClusterItem(TypedDict, total=False):
+    """矩阵 CPU 边界所需的候选字段，业务对象及数据库保持在调用方。"""
+
+    asr_text: str | None
+    keywords: list[str] | None
+    start_ts: _dt | str | None
+
 
 _logger = logging.getLogger(__name__)
 
@@ -46,7 +55,7 @@ except ImportError:
     _logger.info("加速模块(C): 使用 Python 参考实现")
 
 
-# Cython: 音频峰值/静音、稳健滚动基线、弹幕基线和 SRT 组装。
+# Cython: PCM、文本新颖度、音频峰值/静音、稳健滚动基线、弹幕基线和 SRT 组装。
 try:
     from app.accelerators import _cython_speedups as _cython_backend  # type: ignore[import]
 
@@ -58,7 +67,7 @@ except ImportError:
     _logger.info("加速模块(Cython): 使用 Python 参考实现")
 
 
-# Rust: rayon 聚类矩阵与弹幕文本特征。
+# Rust: rayon 聚类矩阵、并查集/簇内统计与弹幕文本特征。
 try:
     from app.accelerators import _rust_speedups as _rust_backend  # type: ignore[import]
 
@@ -75,6 +84,29 @@ def _float64_contiguous(values: Sequence[float]) -> Any:
     import numpy as np
 
     return np.ascontiguousarray(values, dtype=np.float64)
+
+
+def consecutive_repeat_details(text: str) -> tuple[int, int, int]:
+    """检测精确字符循环；不访问模型、张量或设备。"""
+    if len(text) < 3:
+        return 0, 0, 0
+    if _cython_backend is None:
+        return _fallback_round2.consecutive_repeat_details(text)
+    return _cython_backend.consecutive_repeat_details(text)
+
+
+def review_text_statistics(text: str, hotwords: list[str] | None = None) -> tuple[int, int, str | None]:
+    """返回复核所需的字符计数及首个热词冲突。"""
+    if _cython_backend is None:
+        return _fallback_round2.review_text_statistics(text, hotwords)
+    return _cython_backend.review_text_statistics(text, hotwords)
+
+
+def pcm16_statistics(raw: bytes) -> tuple[int, int, int]:
+    """在独立 CPU 内核中汇总 PCM16，不接收设备张量或执行文件 I/O。"""
+    if _cython_backend is None:
+        return _fallback_round2.pcm16_statistics(raw)
+    return _cython_backend.pcm16_statistics(raw)
 
 
 def audio_peak_offsets(
@@ -119,7 +151,8 @@ def robust_relative_uplift(current: float, history: Sequence[float]) -> float:
     """按当前场次历史计算稳健相对增幅。"""
     if _cython_backend is None:
         return _fallback_round2.robust_relative_uplift(current, history)
-    return float(_cython_backend.robust_relative_uplift(current, _float64_contiguous(history)))
+    values = history if isinstance(history, (list, tuple)) else _float64_contiguous(history)
+    return _cython_backend.robust_relative_uplift(current, values)
 
 
 def danmaku_text_features(
@@ -127,21 +160,28 @@ def danmaku_text_features(
     high_emotion_tokens: Sequence[str],
 ) -> tuple[float, float, float, tuple[str, ...]]:
     """汇总弹幕复读率、情绪强度和代表消息。"""
+    if not texts:
+        return 0.0, 0.0, 0.0, ()
     if _rust_backend is None:
         return _fallback_round2.danmaku_text_features(texts, high_emotion_tokens)
-    repetition, intensity, high_emotion, representatives = _rust_backend.danmaku_text_features(
-        list(texts),
-        list(high_emotion_tokens),
-    )
-    return float(repetition), float(intensity), float(high_emotion), tuple(representatives)
+    try:
+        repetition, intensity, high_emotion, representatives = _rust_backend.danmaku_text_features(
+            list(texts) if isinstance(texts, str) else texts,
+            list(high_emotion_tokens) if isinstance(high_emotion_tokens, str) else high_emotion_tokens,
+        )
+    except UnicodeEncodeError:
+        # Python 字符串可含孤立代理码点；Rust UTF-8 无法表示，保留参考实现的文本语义。
+        return _fallback_round2.danmaku_text_features(texts, high_emotion_tokens)
+    return repetition, intensity, high_emotion, tuple(representatives)
 
 
 def danmaku_baseline_rate(ts_seconds: list[float], bucket_s: float = 10.0) -> tuple[float, int]:
     """按固定秒数分桶并返回弹幕速率中位数和样本总数。"""
+    if len(ts_seconds) < 10:
+        return 0.0, 0
     if _cython_backend is None:
         return _fallback_round2.danmaku_baseline_rate(ts_seconds, bucket_s)
-    rate, count = _cython_backend.danmaku_baseline_rate(ts_seconds, bucket_s)
-    return float(rate), int(count)
+    return _cython_backend.danmaku_baseline_rate(ts_seconds, bucket_s)
 
 
 def group_srt_blocks(
@@ -171,36 +211,60 @@ def group_srt_blocks(
     )
 
 
-def cluster_similarity_matrix(items: list[dict]) -> list[list[float]]:
+def cluster_similarity_matrix(items: list[ClusterItem]) -> list[list[float]]:
     """计算 N×N 相似度矩阵并选择当前最快可用后端。"""
+    if not items:
+        return []
+    if len(items) == 1:
+        return [[0.0]]
     if _rust_backend is not None:
-        n = len(items)
-        if n < 2:
-            return [[0.0] * n for _ in range(n)]
-
         texts: list[str] = []
         keywords: list[list[str]] = []
-        timestamps: list[float | None] = []
+        dates: list[_dt | None] = []
         for item in items:
             texts.append(item.get("asr_text", "") or "")
             keywords.append([str(keyword) for keyword in (item.get("keywords", []) or [])])
             timestamp = item.get("start_ts")
-            if timestamp is None:
-                timestamps.append(None)
-            elif isinstance(timestamp, _dt):
-                timestamps.append(timestamp.timestamp())
-            elif isinstance(timestamp, str):
+            if isinstance(timestamp, str):
                 try:
-                    timestamps.append(_dt.fromisoformat(timestamp).timestamp())
+                    timestamp = _dt.fromisoformat(timestamp)
                 except ValueError:
-                    timestamps.append(None)
-            else:
+                    timestamp = None
+            dates.append(timestamp if isinstance(timestamp, _dt) else None)
+        anchor = next((value for value in dates if value is not None), None)
+        timestamps: list[int | None] = []
+        for value in dates:
+            if value is None:
                 timestamps.append(None)
-        return _rust_backend.cluster_similarity_matrix(texts, keywords, timestamps)
+                continue
+            assert anchor is not None
+            if value.tzinfo is not anchor.tzinfo:
+                # 不同动态时区的 datetime 减法可能不满足可加性，保留逐对的 Python 时间语义。
+                return _fallback_round2.cluster_similarity_matrix(items)
+            delta = value - anchor
+            timestamps.append((delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds)
+        try:
+            return _rust_backend.cluster_similarity_matrix(texts, keywords, timestamps)
+        except UnicodeEncodeError:
+            return _fallback_round2.cluster_similarity_matrix(items)
 
     if _cython_backend is not None:
         return _cython_backend.cluster_similarity_matrix(items)
     return _fallback_round2.cluster_similarity_matrix(items)
+
+
+def cluster_groups(matrix: list[list[float]], threshold: float) -> list[tuple[int, list[int], float]]:
+    """以独立 CPU 内核执行并查集和簇内统计，保持原根编号与输出顺序。"""
+    if _rust_backend is None:
+        return _fallback_round2.cluster_groups(matrix, threshold)
+    return _rust_backend.cluster_groups(matrix, threshold)
+
+
+def text_novelty(current: str, baseline: str, *, include_entities: bool = True) -> tuple[float, float, float | None]:
+    """提取文本词项并计算新颖度；证据生成可明确跳过不需要的实体统计。"""
+    if _cython_backend is None:
+        return _fallback_round2.text_novelty(current, baseline, include_entities=include_entities)
+    return _cython_backend.text_novelty(current, baseline, include_entities=include_entities)
 
 
 def get_backend() -> str:
@@ -228,6 +292,11 @@ def get_cluster_backend() -> str:
 
 
 __all__ = [
+    "cluster_groups",
+    "text_novelty",
+    "pcm16_statistics",
+    "consecutive_repeat_details",
+    "review_text_statistics",
     "audio_peak_offsets",
     "cluster_similarity_matrix",
     "danmaku_baseline_rate",
