@@ -76,6 +76,11 @@ RUN apt-get update \
     && useradd --uid 1000 --create-home appuser \
     && mkdir -p /data /app \
     && chown appuser:appuser /data
+# 账号和目录建好后移除仅用于安装、创建账号及挂载的工具；保留 dpkg 数据库供漏洞审计。
+# 不自动清理依赖、不强制删除 Essential/Protected 包；依赖关系变化时构建必须失败。
+RUN dpkg --purge apt libapt-pkg7.0 sqv mount passwd adduser \
+       libsemanage2 libsemanage-common libsepol2 \
+    && test -z "$(dpkg --audit)"
 
 COPY --from=ffmpeg-builder /opt/ffmpeg /opt/ffmpeg
 ENV LD_LIBRARY_PATH=/opt/ffmpeg/lib \

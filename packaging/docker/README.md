@@ -117,7 +117,7 @@ Web 与录制不需要桌面。当前“自动登录”功能在运行应用的�
 
 构建阶段通过固定 uv 版本，以 `uv.lock` 安装运行 extras，复制完整 setuptools 数据文件和 C/Cython 构建源，并进行非 editable 安装。运行阶段只复制环境，不携带编译器、uv 或仓库源码。传统 pip 源码安装流程不变。
 
-基础系统使用 Debian 13（Trixie）的 Python 3.12 镜像。构建阶段的系统 pip 通过 `requirements-system.lock` 固定版本和哈希；运行阶段移除 pip 及 ensurepip 自带的旧引导 wheel，应用虚拟环境不受影响。容器依赖通过修改锁文件并重建镜像更新，不支持在运行容器内临时执行 pip 安装。验收分别检查应用与系统 Python，要求安装工具已移除；系统环境若出现额外第三方包，仍必须逐个审计。
+基础系统使用 Debian 13（Trixie）的 Python 3.12 镜像。构建阶段的系统 pip 通过 `requirements-system.lock` 固定版本和哈希；运行阶段移除 pip 及 ensurepip 自带的旧引导 wheel，应用虚拟环境不受影响。容器依赖通过修改锁文件并重建镜像更新，不支持在运行容器内临时执行 pip 或 apt 安装。账号创建完成后，精确移除 apt、libapt-pkg7.0、sqv、mount、passwd、adduser、libsemanage2、libsemanage-common、libsepol2；不自动移除依赖，不强制删除 Debian 必需或受保护包。保留 dpkg 清单供漏洞扫描，也保留证书、时区、现有 UID/GID 1000 账号及媒体和 Python 运行库。容器挂载由宿主 Docker 管理，无需镜像内 mount 命令；后台密码由应用认证库管理，不依赖系统 passwd。派生镜像如需另建系统账号或安装系统包，应在运行镜像裁剪前的构建阶段完成。验收分别检查应用与系统 Python，要求安装工具已移除；系统环境若出现额外第三方包，仍必须逐个审计。
 
 命令行 FFmpeg 与 PyAV 使用同一套从官方 9.0.2 源码编译的共享库，避免 PyAV wheel 另行携带旧版 FFmpeg。源码已核验官方发行签名并固定 SHA-256；完整源码与 GPLv3 许可证随镜像置于 `/opt/ffmpeg/share/source/`。构建保留 CPU 编解码、网络录制、字幕及中文文本滤镜；此无头 CPU 镜像不提供 ffplay 桌面播放器。
 

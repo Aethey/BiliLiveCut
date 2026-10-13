@@ -9,9 +9,7 @@ import os
 import re
 import secrets
 import subprocess
-import tempfile
 import time
-from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
@@ -26,6 +24,7 @@ def main() -> int:
     args = parser.parse_args()
     prefix = "blc-docker-smoke-" + secrets.token_hex(5)
     volume = prefix + "-data"
+    denied_volume = prefix + "-denied"
     containers: list[str] = []
     password = secrets.token_urlsafe(24)
     environment = {**os.environ, "ADMIN_PASSWORD": password}
@@ -98,23 +97,46 @@ def main() -> int:
         raise RuntimeError("容器 Web 服务在 120 秒内没有就绪。")
 
     try:
-        with tempfile.TemporaryDirectory(prefix=prefix) as directory:
-            path = Path(directory)
-            path.chmod(0o555)
-            try:
-                denied = docker(
-                    "run",
-                    "--rm",
-                    "--env",
-                    "ADMIN_PASSWORD",
-                    "--mount",
-                    f"type=bind,source={path},target=/data",
-                    args.image,
-                    check=False,
-                )
-                assert denied.returncode == 78 and "不可写" in denied.stderr, (denied.returncode, denied.stderr)
-            finally:
-                path.chmod(0o700)
+        # 在 Linux 卷内设置权限，Windows bind mount 的 chmod 不具有等价语义。
+        docker("volume", "create", denied_volume)
+        docker(
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--entrypoint",
+            "python",
+            "--mount",
+            f"type=volume,source={denied_volume},target=/data",
+            args.image,
+            "-c",
+            "import os; assert os.getuid() == 1000; os.chmod('/data', 0o555)",
+        )
+        denied_name = prefix + "-denied"
+        containers.append(denied_name)
+        denied = docker(
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--name",
+            denied_name,
+            "--env",
+            "ADMIN_PASSWORD",
+            "--mount",
+            f"type=volume,source={denied_volume},target=/data,volume-nocopy",
+            args.image,
+            check=False,
+        )
+        assert denied.returncode == 78 and "不可写" in denied.stderr, (denied.returncode, denied.stderr)
         docker("volume", "create", volume)
         first = prefix + "-first"
         start(first)
@@ -150,6 +172,33 @@ def main() -> int:
                     "    (root / 'docker-smoke-marker').write_text('persistent')",
                 ]
             ),
+        )
+        # 确认真实镜像完成精确裁剪，保留账号、证书和运行库；不依赖 Dockerfile 文本断言。
+        packages = docker("exec", first, "dpkg-query", "-W", "-f=${Package}\t${db:Status-Status}\n").stdout
+        installed = {line.split("\t")[0] for line in packages.splitlines() if line.endswith("\tinstalled")}
+        assert not installed & {
+            "apt",
+            "libapt-pkg7.0",
+            "sqv",
+            "mount",
+            "passwd",
+            "adduser",
+            "libsemanage2",
+            "libsemanage-common",
+            "libsepol2",
+        }
+        assert {"dpkg", "ca-certificates", "tzdata", "libc6", "libssl3t64", "libsqlite3-0"} <= installed
+        assert not docker("exec", first, "dpkg", "--audit").stdout.strip()
+        docker(
+            "exec",
+            first,
+            "python",
+            "-c",
+            "import pwd, grp, ssl, sqlite3, lzma, bz2, ctypes, socket; "
+            "assert pwd.getpwnam('appuser').pw_uid == grp.getgrnam('appuser').gr_gid == 1000; "
+            "assert ssl.create_default_context().get_ca_certs(); "
+            "assert lzma.decompress(lzma.compress(b'pcm')) == b'pcm'; "
+            "assert bz2.decompress(bz2.compress(b'pcm')) == b'pcm'",
         )
         filters = docker("exec", first, "ffmpeg", "-hide_banner", "-filters").stdout
         assert "subtitles" in filters and "drawtext" in filters
@@ -261,6 +310,7 @@ def main() -> int:
         for name in containers:
             docker("rm", "--force", name, check=False)
         docker("volume", "rm", volume, check=False)
+        docker("volume", "rm", denied_volume, check=False)
 
 
 if __name__ == "__main__":
