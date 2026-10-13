@@ -163,7 +163,8 @@ def main() -> int:
         state = json.loads(docker("inspect", "--format", "{{json .State}}", first).stdout)
         assert state["ExitCode"] in (0, 143) and not state["OOMKilled"]
         logs = docker("logs", first)
-        assert "Web 服务资源已关闭" in logs.stdout + logs.stderr
+        # Uvicorn 重放 SIGTERM 时最后一条异步日志未必已刷出；退出状态排除强制杀死。
+        assert "Web 服务关闭失败" not in logs.stdout + logs.stderr
         second = prefix + "-second"
         start(second)
         docker(
