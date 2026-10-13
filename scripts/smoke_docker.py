@@ -6,8 +6,8 @@ import argparse
 import base64
 import json
 import os
+import re
 import secrets
-import string
 import subprocess
 import tempfile
 import time
@@ -21,6 +21,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", default="bili-live-cut:docker-test")
     parser.add_argument("--docker", default="docker")
+    parser.add_argument("--browser", action="store_true", help="使用 Playwright Chromium 验证实际网页登录")
     parser.add_argument("--host-network", action="store_true", help="供禁用 bridge 的隔离测试 daemon 使用")
     args = parser.parse_args()
     prefix = "blc-docker-smoke-" + secrets.token_hex(5)
@@ -45,8 +46,7 @@ def main() -> int:
         except HTTPError as exc:
             return exc.code
 
-    def start(name: str, *, generated: bool = False) -> str:
-        nonlocal password
+    def start(name: str, *, initialize: bool = False) -> str:
         containers.append(name)
         network = ["--network", "host"] if args.host_network else ["--publish", "127.0.0.1::8000"]
         command = ["blc", "serve", "--host", "127.0.0.1", "--port", "8000"] if args.host_network else []
@@ -58,7 +58,7 @@ def main() -> int:
             name,
             *network,
             "--env",
-            "ADMIN_PASSWORD=" if generated else "ADMIN_PASSWORD",
+            "ADMIN_PASSWORD=" if initialize else "ADMIN_PASSWORD",
             "--env",
             "ASR_NO_MODEL_DOWNLOAD=1",
             "--env",
@@ -80,17 +80,11 @@ def main() -> int:
             if not state["Running"]:
                 logs = docker("logs", name)
                 raise RuntimeError(f"容器提前退出：{logs.stdout}{logs.stderr}")
-            if generated:
-                saved = docker("exec", name, "cat", "/data/config/admin-password", check=False)
-                if saved.returncode:
-                    time.sleep(1)
-                    continue
-                password = saved.stdout.strip()
-                groups = (string.ascii_uppercase, string.ascii_lowercase, string.digits, "-_.@")
-                assert len(password) == 16 and set(password) <= set("".join(groups))
-                assert all(set(password).intersection(group) for group in groups)
             try:
-                if request(url + "/api/dashboard", authenticated=True) == 200:
+                if (
+                    request(url + ("/auth/status" if initialize else "/api/dashboard"), authenticated=not initialize)
+                    == 200
+                ):
                     assert request(url + "/api/dashboard") == 401
                     docker("exec", name, "python", "/app/docker/healthcheck.py")
                     return url
@@ -190,26 +184,53 @@ def main() -> int:
             ),
         )
         docker("stop", "--time", "60", second)
-        third = prefix + "-generated"
-        start(third, generated=True)
-        generated_password = password
+        third = prefix + "-initialized"
+        url = start(third, initialize=True)
+        logs = docker("logs", third)
+        code = re.findall(r"仅可使用一次）：([\w-]+)", logs.stdout + logs.stderr)[-1]
+        password = secrets.token_urlsafe(24)
+
+        def expire_session() -> None:
+            docker(
+                "exec",
+                third,
+                "python",
+                "-c",
+                "import sqlite3; db=sqlite3.connect('/data/config/web-auth.sqlite3'); "
+                "db.execute('UPDATE sessions SET seen=0'); db.commit(); db.close()",
+            )
+
+        if args.browser:
+            from check_docker_auth_browser import check_browser
+
+            password = check_browser(url, code, password, expire_session)
+        else:
+            payload = json.dumps({"code": code, "password": password}).encode()
+            with build_opener(ProxyHandler({})).open(
+                Request(url + "/auth/setup", data=payload, headers={"Content-Type": "application/json", "Origin": url}),
+                timeout=10,
+            ) as result:
+                assert result.status == 200
+        assert request(url + "/api/dashboard", authenticated=True) == 200
         docker(
             "exec",
             third,
             "python",
             "-c",
             "import os, stat; from pathlib import Path; "
-            "s = Path('/data/config/admin-password').stat(); "
+            "s = Path('/data/config/web-auth.sqlite3').stat(); "
             "assert stat.S_IMODE(s.st_mode) == 0o600 and s.st_uid == os.getuid()",
         )
         logs = docker("logs", third)
-        assert generated_password not in logs.stdout + logs.stderr
+        assert password not in logs.stdout + logs.stderr
         docker("stop", "--time", "60", third)
-        fourth = prefix + "-generated-recreated"
-        start(fourth, generated=True)
-        assert password == generated_password
+        fourth = prefix + "-initialized-recreated"
+        url = start(fourth, initialize=True)
+        assert request(url + "/api/dashboard", authenticated=True) == 200
+        logs = docker("logs", fourth)
+        assert "仅可使用一次）" not in logs.stdout + logs.stderr
         docker("stop", "--time", "60", fourth)
-        print("Docker 认证、随机密码复用、CPU ASR 导入、原生扩展、FFmpeg、中文字体、持久化和正常停止：通过。")
+        print("Docker 初始化、密码持久化、CPU ASR、原生扩展、FFmpeg、字体、数据持久化和正常停止：通过。")
         return 0
     finally:
         for name in containers:

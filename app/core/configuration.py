@@ -25,6 +25,9 @@ BOOTSTRAP = {
     "app_env": "运行环境由部署配置确定，重启后生效。",
     "log_level": "日志输出在启动时配置；修改部署配置后重启。",
     "admin_password": "管理员凭据影响服务绑定与认证；在部署配置中修改后重启。",
+    "docker_auth_enabled": "Docker 登录模式由容器入口启用，不可在业务配置中关闭。",
+    "docker_auth_idle_seconds": "会话空闲期限属于部署配置，重建容器后生效。",
+    "docker_auth_session_seconds": "会话最长有效期属于部署配置，重建容器后生效。",
     "reviewer_accounts_json": "审核员凭据在启动时加载；在部署配置中修改后重启。",
 }
 SECRETS = {

@@ -9,18 +9,63 @@
 ```bash
 test -f .env || cp .env.example .env
 mkdir -p storage
-# 可在 .env 设置 ADMIN_PASSWORD；留空时生成持久化的 16 位随机密码。
+# 可在 .env 设置 ADMIN_PASSWORD；留空时通过一次性初始化码在网页设置密码。
 # Linux 上确保 storage 可由 UID/GID 1000 写入；不要用 chmod 777。
 docker compose -f packaging/docker/compose.yaml up --build -d --wait --wait-timeout 180
 ```
 
-访问 `http://localhost:8000`，使用 `admin` 登录。显式设置的 `ADMIN_PASSWORD` 优先；留空时，首次启动使用系统随机源生成 16 位密码，保证包含大写、小写、数字及 `-_.@` 中的符号。密码以权限 `600` 保存到 `/data/config/admin-password`，容器重启或重建时复用，不写入日志。通过以下命令读取：
+访问 `http://localhost:8000`，首次进入“设置管理员密码”页。管理员账号固定为 `admin`。
+从当前容器日志取得一次性初始化码，设置 12–128 字符密码后登录；支持中文及密码短语，无需记忆随机默认密码。
 
 ```bash
-docker compose -f packaging/docker/compose.yaml exec app cat /data/config/admin-password
+docker compose -f packaging/docker/compose.yaml logs --tail=100 app
 ```
 
-密码文件损坏、为符号链接或权限过宽时，入口明确失败，不会自动重置。可修复文件或设置 `ADMIN_PASSWORD`；要重新生成默认密码，先停止服务，再删除宿主 `storage/config/admin-password` 并重新启动。已有显式密码不会被随机密码覆盖。
+初始化码使用系统随机源生成（192 位），30 分钟内有效、使用后立即失效；只能设置一次，
+不能当作管理员密码登录。重启会轮换尚未使用的初始化码，请取当前启动最后一条日志，不要公开日志。
+密码以独立随机盐、600,000 次 PBKDF2-SHA256 保存到私有认证库 `/data/config/web-auth.sqlite3`（600）。
+保留 storage 后重启/重建仍使用已设密码，不再输出初始化码。认证库丢失或损坏时不降级为免密访问；
+损坏时必须由操作者恢复备份，入口不会自动覆盖现有数据。
+
+显式设置 `ADMIN_PASSWORD` 时直接进入登录页，网页不能覆盖该部署密码；修改 .env 后须重建容器，
+单纯 restart 不会重新载入 Compose 环境。撤销 ADMIN_PASSWORD 会回到受初始化码保护的设置流程，
+不会悄悄恢复先前的网页密码。已有 `admin-password` 随机密码文件会在第一次升级时迁移为哈希，
+保持原密码可用，成功落盘后移除旧明文文件；非法、共享权限或链接文件仍会拒绝迁移。
+
+### 登录、退出与恢复
+
+网页顶部提供“密码管理”“退出登录”“退出所有设备”。默认空闲 30 分钟、最长 12 小时；
+受保护的后台刷新也算请求活动，但状态探测不续期，最长有效期始终生效。
+可通过 `DOCKER_AUTH_IDLE_SECONDS`（60–86400）与 `DOCKER_AUTH_SESSION_SECONDS`（300–604800）配置。
+Cookie 使用 HttpOnly、SameSite=Strict；HTTPS 下加 Secure，不将凭据放入 URL 或浏览器本地存储。
+会话令牌只以摘要存储，单个账号最多十个会话；登录会轮换当前令牌，退出可立即撤销。
+
+过期、服务重启或会话被撤销时，在原页面弹出重新登录框，保留未保存草稿，不自动重试保存/上传等操作。
+其他标签页更新登录状态后，本页会刷新会话校验信息，但仍须手动重试失败操作。
+显式退出返回登录页，退出前请保存草稿。退出和改密不会停止后台录制任务。
+网页改密须验证当前密码，成功后所有浏览器重新登录，API 也须使用新密码。
+审核员账号权限范围不变，密码仍在 REVIEWER_ACCOUNTS_JSON 中管理。
+
+忘记网页密码时，在服务器运行以下命令，使用输出的新初始化码重新设置，不删除业务数据：
+
+```bash
+docker compose -f packaging/docker/compose.yaml exec app python -m app.core.docker_auth reset
+```
+
+此命令即时撤销所有会话并使旧密码失效，只适用于网页管理密码。使用 ADMIN_PASSWORD 的部署应修改 .env，
+再执行 `docker compose -f packaging/docker/compose.yaml up -d --force-recreate`。
+初始化码过期可重新执行重置命令或重启尚未完成初始化的容器。
+不要通过删除整个 storage 来重置密码。应用是单实例服务，不支持多个容器共用认证库和业务数据库。
+
+API 客户端继续支持 Basic Auth（admin 或审核员账号）；浏览器使用 Cookie 会话时，
+修改请求还需同源 Origin 和 `/auth/status` 返回的 `csrf_token`（请求头 `X-BLC-CSRF`）。
+登录相关 POST 端点要求同源 Origin 和 JSON，所有认证失败均不会执行原业务操作。
+初始化码、密码和会话令牌均需保密；五分钟内五次错误尝试会触发该来源 IP 的冷却。
+
+对外访问应使用 HTTPS 反向代理并正确传递 Host 与协议。只信任实际代理的地址，不要随意信任任意
+X-Forwarded-* 来源；代理与服务看到的 Origin 必须一致，否则修改请求会被拒绝。
+跨站嵌入或跨域网页登录不受支持。DOCKER_AUTH_ENABLED 由镜像及入口强制开启，
+源码/Portable 默认仍沿用原有认证方式。
 
 镜像入口也检查目录写权限。宿主绑定目录的权限不会被镜像内 chown 自动修复。可通过调整宿主目录权限解决，或明确执行以下一次性初始化（会改变 storage 内文件的所有者）：
 
@@ -54,7 +99,7 @@ Compose 使用 `init: true` 回收子进程，停止宽限为 60 秒，为 FFmpe
 | 录制、成片与日志 | `/data/raw`、`/data/clips`、`/data/logs` |
 | 插件 | `/data/plugins` |
 | Launcher 运行配置 | `/data/config` |
-| 随机默认管理员密码 | `/data/config/admin-password`（权限 `600`） |
+| 管理员密码哈希和登录会话 | `/data/config/web-auth.sqlite3`（权限 `600`） |
 | Hugging Face 缓存 | `/data/cache/huggingface` |
 | ModelScope 缓存 | `/data/cache/modelscope` |
 | 可选浏览器缓存 | `/data/cache/playwright` |
@@ -71,6 +116,8 @@ Web 与录制不需要桌面。当前“自动登录”功能在运行应用的�
 
 构建阶段通过固定 uv 版本，以 `uv.lock` 安装运行 extras，复制完整 setuptools 数据文件和 C/Cython 构建源，并进行非 editable 安装。运行阶段只复制环境，不携带编译器、uv 或仓库源码。传统 pip 源码安装流程不变。
 
+CPU 运行锁采用官方 Torch 2.13.0 与 TorchAudio 2.11.0 的 CPU wheel；具体兼容范围由官方 wheel 元数据、依赖一致性检查和真实 PCM 解码共同验证。旧 Torch 2.10.0 命中已知漏洞记录，不能继续作为构建基线。
+
 项目 extras 暂未声明 PyTorch，CPU 镜像另外使用 `requirements-cpu.lock` 的官方 CPU wheel、完整配套依赖和 SHA-256 哈希。共享依赖版本来自 uv.lock；最终安装使用 `--inexact` 保留 CPU 运行时，再执行依赖一致性和真实导入校验。
 
 更新项目锁后，在仓库根目录重新生成 CPU 依赖锁并验证镜像：
@@ -86,7 +133,13 @@ uv pip compile packaging/docker/requirements-cpu.in \
   --index-strategy unsafe-best-match --generate-hashes --no-annotate \
   --output-file packaging/docker/requirements-cpu.lock
 docker build -t bili-live-cut:docker-test -f packaging/docker/Dockerfile .
-python scripts/smoke_docker.py
+uv run --no-project --python 3.12 --with pip-audit==2.10.1 python scripts/audit_docker_runtime.py
+uv run --no-project --python 3.12 --with playwright==1.61.0 playwright install --with-deps chromium
+uv run --no-project --python 3.12 --with playwright==1.61.0 python scripts/smoke_docker.py --browser
 ```
 
-当前验收目标为 Linux x86_64 / Python 3.12，其他架构应重新生成对应锁并完成实际构建验收。Docker 工作流执行实际镜像构建与隔离容器检查，包括目录权限失败、显式与随机密码认证、CPU ASR 导入、原生扩展、FFmpeg 滤镜、中文字体、数据及密码持久化以及停止后重建。验收使用临时卷，不读取仓库 .env，也不连接真实直播或下载模型。
+当前验收目标为 Linux x86_64 / Python 3.12，其他架构应重新生成对应锁并完成实际构建验收。Docker 工作流执行实际镜像构建与隔离容器检查，包括目录权限失败、显式密码、一次性初始化、网页登录和重登、CPU ASR 导入、原生扩展、FFmpeg 滤镜、中文字体、数据及密码持久化以及停止后重建。验收使用临时卷，不读取仓库 .env，也不连接真实直播或下载模型。
+
+基础 Python 和 uv 镜像按已验收的 SHA-256 digest 固定，新增 Action 使用完整提交。更新镜像时应核对官方来源并重新运行构建、依赖审计和容器验收，不能只移动标签。
+
+Docker CI 从最终镜像提取实际安装的 Python 包清单，包含 Linux 专属依赖和 CPU Torch；只在查询公共漏洞记录时将官方 Torch/TorchAudio 的 `+cpu` 映射到相同公共版本。原始清单与完整报告保留在 `.local/docker-audit/`。未知本地版本、包被跳过、版本不符、报告不完整、查询失败或任一已知漏洞均阻断验收，不采用漏洞忽略名单。应用自身通过源码审计和测试验收；此检查不等同于 Debian 系统包扫描，也不证明任意外部模型或插件可信。

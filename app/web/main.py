@@ -287,6 +287,18 @@ from app.core.config import settings as _cfg  # noqa: E402
 
 _ADMIN_PASSWORD = _cfg.admin_password
 
+from app.core.docker_auth import AuthStore  # noqa: E402
+from app.web import docker_auth as _docker_auth  # noqa: E402
+from config.launcher_settings import runtime_app_root  # noqa: E402
+
+_DOCKER_AUTH = (
+    AuthStore(
+        runtime_app_root(), idle_seconds=_cfg.docker_auth_idle_seconds, session_seconds=_cfg.docker_auth_session_seconds
+    )
+    if _cfg.docker_auth_enabled
+    else None
+)
+
 
 def _load_reviewer_passwords(raw: str) -> dict[str, str]:
     """解析审核员账号配置，拒绝空账号、空密码和非字符串值。"""
@@ -499,6 +511,12 @@ class _AuthMiddleware(_BaseMiddleware):
         path = request.url.path
         request.state.auth_user = "anonymous"
         request.state.auth_role = "anonymous"
+        if _DOCKER_AUTH is not None:
+            return await _docker_auth.dispatch(
+                request, call_next, _DOCKER_AUTH, _REVIEWER_PASSWORDS, self._check_csrf, self._reviewer_path_allowed
+            )
+        if path == "/auth/status" and request.method == "GET":
+            return _JSONResponse({"enabled": False}, headers={"Cache-Control": "no-store"})
         protected = any(path.startswith(p) for p in _AUTH_PROTECTED_PREFIXES)
         if not protected:
             return await call_next(request)

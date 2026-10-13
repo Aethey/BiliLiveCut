@@ -1,6 +1,6 @@
 # CPU 运行镜像；构建工具和 uv 只保留在构建阶段。
-FROM python:3.12-slim-bookworm AS builder
-COPY --from=ghcr.io/astral-sh/uv:0.12.18 /uv /bin/uv
+FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS builder
+COPY --from=ghcr.io/astral-sh/uv:0.12.18@sha256:3adc3706091ce7c2fe595e669628caedd6d951551b92b258b7e7dbe06d9440bc /uv /bin/uv
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
@@ -29,7 +29,7 @@ RUN uv sync --locked --no-dev --extra asr-all --extra llm --extra web --no-edita
     && uv pip check --python /app/.venv/bin/python \
     && /app/.venv/bin/python -I -c "from app.accelerators import _c_speedups, _cython_speedups; import torch, torchaudio; from funasr import AutoModel; assert torch.version.cuda is None"
 
-FROM python:3.12-slim-bookworm AS runtime
+FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk fontconfig libgomp1 \
     && rm -rf /var/lib/apt/lists/* \
@@ -40,6 +40,7 @@ RUN apt-get update \
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     APP_ENV=prod \
+    DOCKER_AUTH_ENABLED=true \
     STORAGE_ROOT=/data \
     DATABASE_URL=sqlite:////data/blc.db \
     PLUGIN_DIR=/data/plugins \

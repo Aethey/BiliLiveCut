@@ -26,6 +26,7 @@ services:
       - ../../.env
     environment:
       # 覆盖为容器内路径(优先级高于 .env)。
+      DOCKER_AUTH_ENABLED: "true"
       STORAGE_ROOT: /data
       DATABASE_URL: sqlite:////data/blc.db
       PLUGIN_DIR: /data/plugins

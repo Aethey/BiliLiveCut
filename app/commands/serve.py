@@ -47,7 +47,12 @@ def cmd_serve(
     # P0: non-loopback requires password
     from app.core.config import settings as _srv_cfg
 
-    if not _srv_cfg.admin_password:
+    if _srv_cfg.docker_auth_enabled:
+        from app.core.docker_auth import AuthStore
+
+        # 认证库必须由容器入口先初始化，否则不允许空密码对外监听。
+        AuthStore(runtime_app_root()).state()
+    if not _srv_cfg.admin_password and not _srv_cfg.docker_auth_enabled:
         from ipaddress import ip_address
 
         try:

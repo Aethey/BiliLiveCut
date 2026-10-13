@@ -3,23 +3,16 @@
 from __future__ import annotations
 
 import os
-import secrets
+import sqlite3
 import stat
 import string
 import sys
 import tempfile
 from pathlib import Path
 
+from app.core.docker_auth import AuthStore
+
 PASSWORD_GROUPS = (string.ascii_uppercase, string.ascii_lowercase, string.digits, "-_.@")
-
-
-def generate_password() -> str:
-    """使用系统随机源，保证 16 位密码包含四类字符。"""
-    alphabet = "".join(PASSWORD_GROUPS)
-    characters = [secrets.choice(group) for group in PASSWORD_GROUPS]
-    characters.extend(secrets.choice(alphabet) for _ in range(16 - len(characters)))
-    secrets.SystemRandom().shuffle(characters)
-    return "".join(characters)
 
 
 def read_password(path: Path) -> str | None:
@@ -53,43 +46,32 @@ def read_password(path: Path) -> str | None:
     return password
 
 
-def ensure_password(environment: dict[str, str]) -> None:
-    """显式密码优先，否则原子保存并复用持久化默认密码。"""
-    if environment.get("ADMIN_PASSWORD", "").strip():
-        return
-    root = Path(environment.get("BLC_APP_ROOT", environment.get("STORAGE_ROOT", "/data")))
-    path = root / "config/admin-password"
-    temporary: Path | None = None
+def prepare_auth(environment: dict[str, str]) -> None:
+    """Docker 强制启用网页登录；首次设置需持有只输出在容器日志中的初始化码。"""
+    environment["DOCKER_AUTH_ENABLED"] = "true"
+    root = Path(environment.get("BLC_APP_ROOT", environment.get("STORAGE_ROOT", "/data"))).resolve()
+    store = AuthStore(root)
+    legacy_path = root / "config" / "admin-password"
+    legacy = None
+    configured = environment.get("ADMIN_PASSWORD", "")
+    if not configured.strip() and not store.path.exists():
+        legacy = read_password(legacy_path)
     try:
-        password = read_password(path)
-        if password is None:
-            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            with tempfile.NamedTemporaryFile(
-                mode="w", encoding="ascii", newline="\n", dir=path.parent, delete=False
-            ) as stream:
-                temporary = Path(stream.name)
-                stream.write(generate_password() + "\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            try:
-                # 硬链接发布完整文件，避免并发启动覆盖密码或读到半写入内容。
-                os.link(temporary, path)
-                print(f"已生成管理员密码，保存于 {path}；请从容器内读取该文件。", file=sys.stderr)
-            except FileExistsError:
-                pass
-            password = read_password(path)
-        if password is None:
-            raise RuntimeError(f"密码文件在启动期间消失：{path}；请重试。")
-        environment["ADMIN_PASSWORD"] = password
-    except OSError as exc:
-        raise RuntimeError(f"无法保存密码文件：{path}；请检查持久化目录权限。") from exc
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+        code = store.boot(configured, legacy)
+        if legacy is not None:
+            # 哈希事务已落盘后才移除旧的明文文件，失败时不假装迁移成功。
+            legacy_path.unlink()
+    except (OSError, sqlite3.Error) as exc:
+        raise RuntimeError("无法初始化认证存储；请检查持久化目录权限和认证库，已有数据不会自动重置。") from exc
+    if code:
+        print(f"管理员初始化码（30 分钟内有效，仅可使用一次）：{code}", file=sys.stderr, flush=True)
+        print("打开 Web 页面设置管理员密码；不要公开容器日志。重启会使未使用的旧码失效。", file=sys.stderr)
+    else:
+        print("管理员认证已就绪，请打开 Web 页面登录。", file=sys.stderr)
 
 
 def prepare_environment(environment: dict[str, str]) -> None:
-    """检查可写运行目录，并为未配置密码的部署提供持久化随机密码。"""
+    """检查可写运行目录，并准备 Docker 管理员初始化或登录。"""
     paths = {
         environment.get("STORAGE_ROOT", "/data"),
         environment.get("PLUGIN_DIR", "/data/plugins"),
@@ -106,7 +88,7 @@ def prepare_environment(environment: dict[str, str]) -> None:
                 pass
         except OSError as exc:
             raise RuntimeError(f"运行目录不可写：{path}；请为容器用户 UID/GID 1000 配置宿主挂载目录权限。") from exc
-    ensure_password(environment)
+    prepare_auth(environment)
 
 
 def main() -> int:
