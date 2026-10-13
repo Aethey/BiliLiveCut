@@ -86,6 +86,22 @@ def _float64_contiguous(values: Sequence[float]) -> Any:
     return np.ascontiguousarray(values, dtype=np.float64)
 
 
+def consecutive_repeat_details(text: str) -> tuple[int, int, int]:
+    """检测精确字符循环；不访问模型、张量或设备。"""
+    if len(text) < 3:
+        return 0, 0, 0
+    if _cython_backend is None:
+        return _fallback_round2.consecutive_repeat_details(text)
+    return _cython_backend.consecutive_repeat_details(text)
+
+
+def review_text_statistics(text: str, hotwords: list[str] | None = None) -> tuple[int, int, str | None]:
+    """返回复核所需的字符计数及首个热词冲突。"""
+    if _cython_backend is None:
+        return _fallback_round2.review_text_statistics(text, hotwords)
+    return _cython_backend.review_text_statistics(text, hotwords)
+
+
 def pcm16_statistics(raw: bytes) -> tuple[int, int, int]:
     """在独立 CPU 内核中汇总 PCM16，不接收设备张量或执行文件 I/O。"""
     if _cython_backend is None:
@@ -277,6 +293,8 @@ __all__ = [
     "cluster_groups",
     "text_novelty",
     "pcm16_statistics",
+    "consecutive_repeat_details",
+    "review_text_statistics",
     "audio_peak_offsets",
     "cluster_similarity_matrix",
     "danmaku_baseline_rate",

@@ -382,3 +382,41 @@ def cluster_groups(matrix: list[list[float]], threshold: float) -> list[tuple[in
                     count += 1
         result.append((root, indices, total / count))
     return result
+
+
+def consecutive_repeat_details(text: str) -> tuple[int, int, int]:
+    """返回最佳连续重复的起点、单元长度和次数。"""
+    text_length = len(text)
+    best = (0, 0, 0)
+    best_coverage = 0
+    max_unit_length = min(32, text_length // 3)
+    for unit_length in range(1, max_unit_length + 1):
+        last_start = text_length - unit_length * 3
+        for start in range(last_start + 1):
+            unit = text[start : start + unit_length]
+            cursor = start + unit_length
+            repeats = 1
+            while text[cursor : cursor + unit_length] == unit:
+                repeats += 1
+                cursor += unit_length
+            coverage = repeats * unit_length
+            if repeats >= 3 and coverage > best_coverage:
+                best = (start, unit_length, repeats)
+                best_coverage = coverage
+    return best
+
+
+def review_text_statistics(text: str, hotwords: list[str] | None = None) -> tuple[int, int, str | None]:
+    """保留复核文本统计的 Python 参考语义；权重与置信度留在业务层。"""
+    unique = len(set(text)) if len(text) >= 4 else 0
+    garbled = sum(1 for character in text if ord(character) < 32 or 126 < ord(character) < 0x4E00)
+    conflict = None
+    for word in hotwords or []:
+        for length in range(1, len(word) + 1):
+            prefix = word[:length]
+            if prefix in text and word not in text:
+                conflict = word
+                break
+        if conflict is not None:
+            break
+    return unique, garbled, conflict

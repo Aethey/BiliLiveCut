@@ -149,6 +149,29 @@ def benchmark() -> list[dict[str, object]]:
                 partial(native.text_novelty, text, baseline, include_entities=entities),
                 1000 if size < 10 else 5,
             )
+    for size in [0, 1, 8, 128, 1024]:
+        for repeated in [False, True]:
+            text = ("重复文本" * (size // 4 + 1))[:size] if repeated else "".join(chr(0x4E00 + i) for i in range(size))
+            measure(
+                "repeat_loop" if repeated else "repeat_normal",
+                size,
+                partial(reference.consecutive_repeat_details, text),
+                partial(native.consecutive_repeat_details, text),
+                100 if size < 10 else 3,
+            )
+        text = ("ASR原神é\0 测试" * (size // 8 + 1))[:size]
+        for name, words in [
+            ("review", None),
+            ("review_match", ["原神"]),
+            ("review_miss", ["缺失热词" * 40, "原神", "测试中"]),
+        ]:
+            measure(
+                name,
+                size,
+                partial(reference.review_text_statistics, text, words),
+                partial(native.review_text_statistics, text, words),
+                1000 if size < 10 else 100,
+            )
     return rows
 
 

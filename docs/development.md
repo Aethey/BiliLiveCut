@@ -152,3 +152,5 @@ python scripts/check_local_asr.py --models-dir "D:/测试安装/models" --audio 
 - 用户可见变更记入当前系列的 `CHANGELOG.md`；旧系列使用既有 `docs/changelog/` 归档，不重复维护多份版本历史。
 - 长期有效的配置说明、架构决策和发行约束留在正式文档，随实现同步维护。一次性任务清单、排查过程和运行日志可留在 PR、Issue 或本地 `.local/` 中，不作为当前使用指南。
 - `.local/` 从 Git 跟踪、源码分发包和 Docker 构建上下文中排除。整理历史记录时先提炼仍有效的内容，核对引用，再保留本地原件；不要通过重写 Git 历史删除已经提交的记录。
+
+ASR 文本检测通过独立 Cython CPU 内核执行：重复检测按最多 32 个字符的周期扫描，精确保留起点与平局顺序；复核内核仅返回字符计数和首个热词冲突，风险权重、复核阈值及模型/CUDA 调度仍在原业务层。`casefold()` 展开字符的原文映射按展开长度维护，局部修复保留两次重复。`tests/unit/test_cpu_asr_statistics.py` 比较旧判定、Unicode 和随机输入；性能命令 `python scripts/benchmark_cpu_kernels.py --output benchmark.json` 包含完整分派调用开销。
