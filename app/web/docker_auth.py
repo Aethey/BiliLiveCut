@@ -161,7 +161,9 @@ async def dispatch(
         )
         if path.startswith("/auth/"):
             return await _endpoint(request, store, reviewers, session, csrf_check)
-        authorization = request.headers.get("authorization", "")
+        # 浏览器可能缓存升级前的 Basic 凭据；浏览器统一使用会话，避免旧凭据绕过退出/超时。
+        # Fetch Metadata 由浏览器设置；脚本 API 客户端不带此头时继续使用显式 Basic。
+        authorization = "" if request.headers.get("sec-fetch-site") else request.headers.get("authorization", "")
         if authorization:
             try:
                 if not authorization.startswith("Basic ") or len(authorization) > 4096:

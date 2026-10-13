@@ -107,7 +107,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # V0.1.13: Web 安全兜底 — 启动时检查 host+password 配置
     from app.core.config import settings as _cfg_startup
 
-    if not _cfg_startup.admin_password:
+    if _cfg_startup.docker_auth_enabled:
+        auth_state = await asyncio.to_thread(AuthStore(runtime_app_root()).state)
+        logger.info(
+            "Docker 后台认证：{}",
+            "等待使用一次性初始化码设置管理员密码" if auth_state["setup_required"] else "网页登录已启用",
+        )
+    elif not _cfg_startup.admin_password:
         try:
             non_loopback_ips = await asyncio.to_thread(_non_loopback_interface_addresses)
         except OSError as exc:

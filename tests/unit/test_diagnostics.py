@@ -347,8 +347,9 @@ def test_audio_extraction_has_timeout_and_keeps_root(monkeypatch: pytest.MonkeyP
     assert isinstance(caught.value.__cause__, subprocess.TimeoutExpired)
 
 
+@pytest.mark.parametrize("docker_state", ["disabled", "setup", "ready"])
 def test_doctor_uses_current_settings_and_preserves_existing_files(
-    temp_db: None, monkeypatch: pytest.MonkeyPatch
+    temp_db: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, docker_state: str
 ) -> None:
     import httpx
     from rich.console import Console
@@ -359,6 +360,16 @@ def test_doctor_uses_current_settings_and_preserves_existing_files(
 
     storage = Path(settings.storage_root)
     storage.mkdir(parents=True, exist_ok=True)
+    if docker_state != "disabled":
+        from app.core.docker_auth import AuthStore
+
+        monkeypatch.setattr(settings, "docker_auth_enabled", True)
+        monkeypatch.setattr(settings, "admin_password", "")
+        monkeypatch.setenv("BLC_APP_ROOT", str(tmp_path))
+        auth = AuthStore(tmp_path)
+        code = auth.boot("")
+        if docker_state == "ready":
+            auth.initialize(code, "administrator-test-password", "local")
     existing = storage / ".doctor_write_test"
     existing.write_text("user asset", encoding="utf-8")
     output = io.StringIO()
@@ -376,6 +387,9 @@ def test_doctor_uses_current_settings_and_preserves_existing_files(
     assert "尚未创建" not in text and "8.0 GB VRAM" in text and "funasr_nano" in text
     assert "FFmpeg" in text and "数据库完整性" in text
     assert existing.read_text(encoding="utf-8") == "user asset"
+    if docker_state != "disabled":
+        assert "ADMIN_PASSWORD 为空" not in text
+        assert ("尚未初始化" if docker_state == "setup" else "网页登录已启用") in text
 
 
 def test_doctor_fails_explicit_cuda_and_caches_identical_backend_probes(

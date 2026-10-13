@@ -57,6 +57,7 @@ docker compose -f packaging/docker/compose.yaml exec app python -m app.core.dock
 初始化码过期可重新执行重置命令或重启尚未完成初始化的容器。
 不要通过删除整个 storage 来重置密码。应用是单实例服务，不支持多个容器共用认证库和业务数据库。
 
+浏览器统一使用会话登录，旧 Basic 凭据缓存不会绕过退出和会话超时。
 API 客户端继续支持 Basic Auth（admin 或审核员账号）；浏览器使用 Cookie 会话时，
 修改请求还需同源 Origin 和 `/auth/status` 返回的 `csrf_token`（请求头 `X-BLC-CSRF`）。
 登录相关 POST 端点要求同源 Origin 和 JSON，所有认证失败均不会执行原业务操作。

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Callable
 from pathlib import Path
 
@@ -37,6 +38,8 @@ def check_browser(
         page.locator("#auth-submit").click()
         page.wait_for_url(url + "/")
         expect(page.locator(".blc-session-bar")).to_be_visible()
+        cached = base64.b64encode(f"admin:{password}".encode()).decode()
+        page.set_extra_http_headers({"Authorization": "Basic " + cached})
         page.goto(url + "/imports")
         page.locator("#import-title").fill("尚未保存的录播草稿")
         writes: list[str] = []

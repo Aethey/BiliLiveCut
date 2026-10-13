@@ -283,3 +283,31 @@ print('EXIT_PROBE_COMPLETE')
         raise
     assert result.returncode == 0, result.stderr
     assert "EXIT_PROBE_COMPLETE" in str(result.stdout)
+
+
+@pytest.mark.parametrize("initialized", [False, True])
+async def test_docker_startup_reports_real_auth_mode(
+    temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, initialized: bool
+) -> None:
+    from app.core.config import settings
+    from app.core.docker_auth import AuthStore
+    from app.web import main
+
+    _prepare_lifespan(monkeypatch)
+    monkeypatch.setattr(settings, "docker_auth_enabled", True)
+    monkeypatch.setattr(settings, "admin_password", "")
+    monkeypatch.setenv("BLC_APP_ROOT", str(tmp_path))
+    store = AuthStore(tmp_path)
+    code = store.boot("")
+    if initialized:
+        store.initialize(code, "administrator-test-password", "local")
+    messages: list[str] = []
+    sink = main.logger.add(messages.append, format="{message}", level="INFO")
+    try:
+        async with main.lifespan(main.app):
+            pass
+    finally:
+        main.logger.remove(sink)
+    text = "".join(messages)
+    assert "Web 将禁止非本机请求" not in text
+    assert ("网页登录已启用" if initialized else "等待使用一次性初始化码") in text

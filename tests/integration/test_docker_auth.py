@@ -421,3 +421,20 @@ async def test_json_surrogate_is_rejected_without_leaking_input(browser: httpx.A
     )
     assert result.status_code == 400
     assert "ud800" not in result.text
+
+
+async def test_browser_cached_basic_cannot_bypass_logout(browser: httpx.AsyncClient) -> None:
+    await login(browser)
+    header = "Basic " + base64.b64encode(f"admin:{PASSWORD}".encode()).decode()
+    browser.headers.update({"Authorization": header, "Sec-Fetch-Site": "same-origin"})
+    assert (await browser.get("/api/dashboard")).status_code == 200
+    assert (await browser.post("/auth/logout", json={})).status_code == 200
+    result = await browser.get("/api/dashboard")
+    assert result.status_code == 401 and result.headers["X-BLC-Auth-Required"] == "1"
+
+
+async def test_browser_stale_basic_does_not_override_valid_session(browser: httpx.AsyncClient) -> None:
+    await login(browser)
+    header = "Basic " + base64.b64encode(b"admin:obsolete-password").decode()
+    result = await browser.get("/api/dashboard", headers={"Authorization": header, "Sec-Fetch-Site": "same-origin"})
+    assert result.status_code == 200
