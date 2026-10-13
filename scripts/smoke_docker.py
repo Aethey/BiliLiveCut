@@ -7,6 +7,7 @@ import base64
 import json
 import os
 import secrets
+import string
 import subprocess
 import tempfile
 import time
@@ -44,7 +45,8 @@ def main() -> int:
         except HTTPError as exc:
             return exc.code
 
-    def start(name: str) -> str:
+    def start(name: str, *, generated: bool = False) -> str:
+        nonlocal password
         containers.append(name)
         network = ["--network", "host"] if args.host_network else ["--publish", "127.0.0.1::8000"]
         command = ["blc", "serve", "--host", "127.0.0.1", "--port", "8000"] if args.host_network else []
@@ -56,7 +58,7 @@ def main() -> int:
             name,
             *network,
             "--env",
-            "ADMIN_PASSWORD",
+            "ADMIN_PASSWORD=" if generated else "ADMIN_PASSWORD",
             "--env",
             "ASR_NO_MODEL_DOWNLOAD=1",
             "--env",
@@ -78,6 +80,15 @@ def main() -> int:
             if not state["Running"]:
                 logs = docker("logs", name)
                 raise RuntimeError(f"容器提前退出：{logs.stdout}{logs.stderr}")
+            if generated:
+                saved = docker("exec", name, "cat", "/data/config/admin-password", check=False)
+                if saved.returncode:
+                    time.sleep(1)
+                    continue
+                password = saved.stdout.strip()
+                groups = (string.ascii_uppercase, string.ascii_lowercase, string.digits, "-_.@")
+                assert len(password) == 16 and set(password) <= set("".join(groups))
+                assert all(set(password).intersection(group) for group in groups)
             try:
                 if request(url + "/api/dashboard", authenticated=True) == 200:
                     assert request(url + "/api/dashboard") == 401
@@ -89,8 +100,6 @@ def main() -> int:
         raise RuntimeError("容器 Web 服务在 120 秒内没有就绪。")
 
     try:
-        missing = docker("run", "--rm", "--env", "ADMIN_PASSWORD=", args.image, check=False)
-        assert missing.returncode == 78 and "ADMIN_PASSWORD" in missing.stderr
         with tempfile.TemporaryDirectory(prefix=prefix) as directory:
             path = Path(directory)
             path.chmod(0o555)
@@ -181,7 +190,26 @@ def main() -> int:
             ),
         )
         docker("stop", "--time", "60", second)
-        print("Docker 认证、CPU ASR 导入、原生扩展、FFmpeg、中文字体、持久化和正常停止：通过。")
+        third = prefix + "-generated"
+        start(third, generated=True)
+        generated_password = password
+        docker(
+            "exec",
+            third,
+            "python",
+            "-c",
+            "import os, stat; from pathlib import Path; "
+            "s = Path('/data/config/admin-password').stat(); "
+            "assert stat.S_IMODE(s.st_mode) == 0o600 and s.st_uid == os.getuid()",
+        )
+        logs = docker("logs", third)
+        assert generated_password not in logs.stdout + logs.stderr
+        docker("stop", "--time", "60", third)
+        fourth = prefix + "-generated-recreated"
+        start(fourth, generated=True)
+        assert password == generated_password
+        docker("stop", "--time", "60", fourth)
+        print("Docker 认证、随机密码复用、CPU ASR 导入、原生扩展、FFmpeg、中文字体、持久化和正常停止：通过。")
         return 0
     finally:
         for name in containers:

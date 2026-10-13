@@ -9,12 +9,20 @@
 ```bash
 test -f .env || cp .env.example .env
 mkdir -p storage
-# 编辑 .env，设置非空 ADMIN_PASSWORD；用户名为 admin。
+# 可在 .env 设置 ADMIN_PASSWORD；留空时生成持久化的 16 位随机密码。
 # Linux 上确保 storage 可由 UID/GID 1000 写入；不要用 chmod 777。
 docker compose -f packaging/docker/compose.yaml up --build -d --wait --wait-timeout 180
 ```
 
-访问 `http://localhost:8000`，使用 `admin` 和配置的密码登录。镜像入口在启动前检查密码和目录写权限；缺少密码或目录不可写时明确失败。宿主绑定目录的权限不会被镜像内 chown 自动修复。可通过调整宿主目录权限解决，或明确执行以下一次性初始化（会改变 storage 内文件的所有者）：
+访问 `http://localhost:8000`，使用 `admin` 登录。显式设置的 `ADMIN_PASSWORD` 优先；留空时，首次启动使用系统随机源生成 16 位密码，保证包含大写、小写、数字及 `-_.@` 中的符号。密码以权限 `600` 保存到 `/data/config/admin-password`，容器重启或重建时复用，不写入日志。通过以下命令读取：
+
+```bash
+docker compose -f packaging/docker/compose.yaml exec app cat /data/config/admin-password
+```
+
+密码文件损坏、为符号链接或权限过宽时，入口明确失败，不会自动重置。可修复文件或设置 `ADMIN_PASSWORD`；要重新生成默认密码，先停止服务，再删除宿主 `storage/config/admin-password` 并重新启动。已有显式密码不会被随机密码覆盖。
+
+镜像入口也检查目录写权限。宿主绑定目录的权限不会被镜像内 chown 自动修复。可通过调整宿主目录权限解决，或明确执行以下一次性初始化（会改变 storage 内文件的所有者）：
 
 ```bash
 docker compose -f packaging/docker/compose.yaml run --rm --user root \
@@ -46,6 +54,7 @@ Compose 使用 `init: true` 回收子进程，停止宽限为 60 秒，为 FFmpe
 | 录制、成片与日志 | `/data/raw`、`/data/clips`、`/data/logs` |
 | 插件 | `/data/plugins` |
 | Launcher 运行配置 | `/data/config` |
+| 随机默认管理员密码 | `/data/config/admin-password`（权限 `600`） |
 | Hugging Face 缓存 | `/data/cache/huggingface` |
 | ModelScope 缓存 | `/data/cache/modelscope` |
 | 可选浏览器缓存 | `/data/cache/playwright` |
@@ -80,4 +89,4 @@ docker build -t bili-live-cut:docker-test -f packaging/docker/Dockerfile .
 python scripts/smoke_docker.py
 ```
 
-当前验收目标为 Linux x86_64 / Python 3.12，其他架构应重新生成对应锁并完成实际构建验收。Docker 工作流执行实际镜像构建与隔离容器检查，包括密码/权限失败、认证、CPU ASR 导入、原生扩展、FFmpeg 滤镜、中文字体、数据持久化以及停止后重建。验收使用临时卷，不读取仓库 .env，也不连接真实直播或下载模型。
+当前验收目标为 Linux x86_64 / Python 3.12，其他架构应重新生成对应锁并完成实际构建验收。Docker 工作流执行实际镜像构建与隔离容器检查，包括目录权限失败、显式与随机密码认证、CPU ASR 导入、原生扩展、FFmpeg 滤镜、中文字体、数据及密码持久化以及停止后重建。验收使用临时卷，不读取仓库 .env，也不连接真实直播或下载模型。
