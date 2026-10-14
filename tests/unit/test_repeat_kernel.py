@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import os
 import random
 import shutil
 from concurrent.futures import ThreadPoolExecutor
@@ -12,8 +13,12 @@ from pathlib import Path
 
 import pytest
 
-from app.accelerators import _repeat_speedups as kernel
 from app.accelerators.python_fallback.speedups_round2 import consecutive_repeat_details as reference
+
+if os.environ.get("BLC_SKIP_C_EXTENSIONS", "").strip().lower() in ("1", "true", "yes"):
+    from app.accelerators import dispatcher as kernel
+else:
+    from app.accelerators import _repeat_speedups as kernel
 
 
 def brute(text: str) -> tuple[int, int, int]:
