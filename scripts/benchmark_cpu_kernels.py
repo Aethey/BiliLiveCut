@@ -75,8 +75,12 @@ def previous_cluster_groups(matrix: list[list[float]], threshold: float) -> list
 
 def benchmark() -> list[dict[str, object]]:
     """要求真实原生扩展，校验结果相等，再逐项测量大小输入。"""
-    if native.get_cython_backend() != "Cython" or native.get_rust_backend() != "Rust+rayon":
-        raise RuntimeError("基准要求真实 Cython 和 Rust 扩展，不能用参考实现冒充")
+    if (
+        native.get_cython_backend() != "Cython"
+        or native.get_rust_backend() != "Rust+rayon"
+        or native.get_repeat_backend() != "C++"
+    ):
+        raise RuntimeError("基准要求真实 Cython、C++ 和 Rust 扩展，不能用参考实现冒充")
     rows: list[dict[str, object]] = []
 
     def measure(name: str, size: int, before: Callable[[], object], after: Callable[[], object], count: int) -> None:

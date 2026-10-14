@@ -216,15 +216,15 @@ jobs:
         run: uv sync --locked
       - name: Require native extensions
         if: matrix.mode == 'native'
-        run: uv run --locked python -c "from app.accelerators import _c_speedups, _cython_speedups"
+        run: uv run --locked python -c "from app.accelerators import _c_speedups, _cython_speedups, _repeat_speedups; from app.accelerators.dispatcher import get_repeat_backend; assert get_repeat_backend() == 'C++'; assert _repeat_speedups.consecutive_repeat_details('abc' * 100) == (0, 3, 100)"
       - name: Verify Python fallback installation
         if: matrix.mode == 'python'
         run: |
-          uv run --locked python -c "import importlib.util; from app.accelerators.dispatcher import get_backend; assert importlib.util.find_spec('app.accelerators._c_speedups') is None; assert importlib.util.find_spec('app.accelerators._cython_speedups') is None; assert get_backend() == 'python'"
+          uv run --locked python -c "import importlib.util; from app.accelerators.dispatcher import get_backend, get_repeat_backend; assert importlib.util.find_spec('app.accelerators._c_speedups') is None; assert importlib.util.find_spec('app.accelerators._cython_speedups') is None; assert importlib.util.find_spec('app.accelerators._repeat_speedups') is None; assert get_repeat_backend() == 'python'; assert get_backend() == 'python'"
       - name: Run focused tests
         shell: bash
         run: |
-          uv run --locked python -m pytest tests/unit/test_native_parity.py tests/unit/test_accelerator_fallback_parity.py tests/unit/test_quality_gate.py --timeout=120 --fail-on-skip
+          uv run --locked python -m pytest tests/unit/test_native_parity.py tests/unit/test_accelerator_fallback_parity.py tests/unit/test_quality_gate.py tests/unit/test_cpu_asr_statistics.py tests/unit/test_repeat_dispatch.py --timeout=120 --fail-on-skip
 
 # macOS 原生行为必须在 PR 合并前验收；main 推送和手动验收也执行。
 # 全量覆盖测试曾在 99% 进度触及 45 分钟上限；步骤预算扩为 90 分钟。

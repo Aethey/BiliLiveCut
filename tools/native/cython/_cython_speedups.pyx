@@ -1,6 +1,6 @@
 """BiliLiveCut Cython 数值与字幕热点加速模块。
 
-覆盖十个 CPU 热点:
+覆盖九个 CPU 热点:
 1. cluster_similarity_matrix — O(N²) 聚类矩阵构建
 2. danmaku_baseline_rate — 弹幕基线分桶 + 中位数
 3. group_srt_blocks — 词条聚合为 SRT 字幕
@@ -9,8 +9,7 @@
 6. robust_relative_uplift — 滚动历史稳健增幅
 7. pcm16_statistics — PCM16 精确整数能量与峰值
 8. text_novelty — 词项/实体扫描与新颖度统计
-9. consecutive_repeat_details — 精确连续重复检测
-10. review_text_statistics — ASR 复核字符与热词统计
+9. review_text_statistics — ASR 复核字符与热词统计
 
 编译:
     python setup_c.py build_ext --inplace
@@ -601,75 +600,6 @@ def text_novelty(str current not None, str baseline not None, *, bint include_en
         entity_change = (len(left) - common) / <double>len(left) if left else 0.0
     return novelty, change, entity_change
 
-
-
-cdef list _repeat_z(list symbols):
-    """线性计算公共前缀长度，复用已匹配区间。"""
-    cdef Py_ssize_t size = len(symbols)
-    cdef Py_ssize_t left = 0, right = 0, index, length
-    cdef list matches = [0] * size
-    for index in range(1, size):
-        length = min(right - index, <Py_ssize_t>matches[index - left]) if index < right else 0
-        while index + length < size and symbols[length] == symbols[index + length]:
-            length += 1
-        matches[index] = length
-        if index + length > right:
-            left = index
-            right = index + length
-    return matches
-
-
-def consecutive_repeat_details(str text not None) -> tuple[int, int, int]:
-    """分治检测任意长度连续重复，O(N log N) 时间/O(N) 空间。"""
-    cdef list symbols = list(text)
-    cdef Py_ssize_t size = len(symbols)
-    cdef Py_ssize_t offset, end, length, middle, right_length, unit, anchor
-    cdef Py_ssize_t start, stop, suffix, repeats, coverage, absolute_start
-    cdef Py_ssize_t best_start = 0, best_unit = 0, best_repeats = 0, best_coverage = 0
-    cdef list pending = [(0, size)]
-    cdef list section, left, right, reversed_left, left_suffix, right_prefix, forward, backward
-    while pending:
-        offset, end = pending.pop()
-        length = end - offset
-        if length < 3 or length < best_coverage:
-            continue
-        section = symbols[offset:end]
-        middle = length // 2
-        right_length = length - middle
-        left = section[:middle]
-        right = section[middle:]
-        reversed_left = left[::-1]
-        # 空字符串哨兵不会与输入的任意 Unicode 单字符冲突。
-        left_suffix = _repeat_z(reversed_left)
-        right_prefix = _repeat_z(right)
-        forward = _repeat_z(right + [""] + section)
-        backward = _repeat_z(reversed_left + [""] + section[::-1])
-        for unit in range(1, length // 3 + 1):
-            suffix = left_suffix[unit] if unit < middle else 0
-            for anchor in range(2):
-                if anchor == 0:
-                    start = middle - unit - suffix
-                    stop = middle + <Py_ssize_t>forward[right_length + 1 + middle - unit]
-                else:
-                    start = middle - <Py_ssize_t>backward[middle + 1 + right_length - unit]
-                    stop = middle + unit + <Py_ssize_t>right_prefix[unit]
-                repeats = (stop - start) // unit
-                coverage = repeats * unit
-                absolute_start = offset + start
-                if repeats < 3:
-                    continue
-                if coverage > best_coverage or (coverage == best_coverage and (
-                    unit < best_unit or (unit == best_unit and absolute_start < best_start)
-                )):
-                    best_start = absolute_start
-                    best_unit = unit
-                    best_repeats = repeats
-                    best_coverage = coverage
-                    if coverage == size:
-                        return best_start, best_unit, best_repeats
-        pending.append((offset + middle, end))
-        pending.append((offset, offset + middle))
-    return best_start, best_unit, best_repeats
 
 
 def review_text_statistics(str text not None, hotwords: list[str] | None = None) -> tuple[int, int, str | None]:

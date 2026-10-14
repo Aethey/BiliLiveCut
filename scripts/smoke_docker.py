@@ -156,7 +156,10 @@ def main() -> int:
                     "status = dict(line.split(':', 1) for line in Path('/proc/self/status').read_text().splitlines())",
                     "assert int(status['NoNewPrivs']) == 1",
                     "assert int(status['CapEff'], 16) == int(status['CapBnd'], 16) == 0",
-                    "from app.accelerators import _c_speedups, _cython_speedups, _rust_speedups, dispatcher",
+                    "from app.accelerators import _c_speedups, _cython_speedups, _repeat_speedups, "
+                    "_rust_speedups, dispatcher",
+                    "assert dispatcher.get_repeat_backend() == 'C++'",
+                    "assert dispatcher.consecutive_repeat_details('abc' * 100) == (0, 3, 100)",
                     "assert dispatcher.get_cluster_backend() == 'Rust+rayon'",
                     "assert dispatcher.get_rust_backend() == 'Rust+rayon'",
                     "assert dispatcher.pcm16_statistics(bytes([0, 128, 255, 127])) == (2, 2147418113, 32768)",

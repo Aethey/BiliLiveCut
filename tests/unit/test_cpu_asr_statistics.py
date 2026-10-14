@@ -188,6 +188,7 @@ def test_review_risk_matches_original_decisions_and_reason_order() -> None:
 
 def test_asr_statistics_python_only_backend(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(native, "_cython_backend", None)
+    monkeypatch.setattr(native, "_repeat_backend", None)
     assert native.consecutive_repeat_details("abc" * 4) == (0, 3, 4)
     unit = "".join(chr(0x4E00 + index) for index in range(64))
     assert native.consecutive_repeat_details(unit * 3) == (0, 64, 3)
@@ -248,7 +249,7 @@ def test_long_period_quality_and_local_repair(force_python: bool, monkeypatch: M
     from app.analysis.transcription.quality import assess_transcript_quality
 
     if force_python:
-        monkeypatch.setattr(native, "_cython_backend", None)
+        monkeypatch.setattr(native, "_repeat_backend", None)
     unit = "".join(chr(0x4E00 + index) for index in range(80))
     prefix = "".join(chr(0x6000 + index) for index in range(700))
     suffix = "".join(chr(0x7000 + index) for index in range(700))

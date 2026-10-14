@@ -260,7 +260,9 @@ jobs:
           required_native = {
               f"app/accelerators/_c_speedups.{abi}-win_amd64.pyd",
               f"app/accelerators/_cython_speedups.{abi}-win_amd64.pyd",
+              f"app/accelerators/_repeat_speedups.{abi}-win_amd64.pyd",
               "app/accelerators/_rust_speedups.pyd",
+              "licenses/libsais-LICENSE.txt",
           }
           missing_native = sorted(required_native - entries)
           assert not missing_native, f"Missing Windows native modules: {missing_native}"
@@ -608,7 +610,7 @@ jobs:
             try {
               & $venvPython -c "from pathlib import Path; from app.cli import app; import app.cli; source = Path(r'$runtimeSource').resolve(); actual = Path(app.cli.__file__).resolve(); assert actual.is_relative_to(source), f'app.cli loaded from {actual}'; print('app.cli import OK:', actual)"
               if ($LASTEXITCODE -ne 0) { throw "Full Bundle app.cli import failed" }
-              & $venvPython -c "from app.accelerators import dispatcher as d; assert d.get_backend() == 'C', d.get_backend(); assert d.get_cython_backend() == 'Cython', d.get_cython_backend(); assert d.get_rust_backend() == 'Rust+rayon', d.get_rust_backend(); assert d.get_cluster_backend() == 'Rust+rayon', d.get_cluster_backend(); print('Full Bundle native acceleration OK')"
+              & $venvPython -c "from app.accelerators import dispatcher as d; assert d.get_backend() == 'C', d.get_backend(); assert d.get_cython_backend() == 'Cython', d.get_cython_backend(); assert d.get_repeat_backend() == 'C++', d.get_repeat_backend(); assert d.consecutive_repeat_details('abc' * 100) == (0, 3, 100); assert d.get_rust_backend() == 'Rust+rayon', d.get_rust_backend(); assert d.get_cluster_backend() == 'Rust+rayon', d.get_cluster_backend(); print('Full Bundle native acceleration OK')"
             }
             finally {
               Pop-Location

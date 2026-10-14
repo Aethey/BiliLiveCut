@@ -66,7 +66,7 @@ RUN uv sync --locked --no-dev --extra asr-all --extra llm --extra web --no-edita
     --inexact \
     && uv pip check --python /app/.venv/bin/python \
     && /app/.venv/bin/python -I -c "import app.accelerators, pathlib, shutil; shutil.copy2('/app/app/accelerators/_rust_speedups.so', pathlib.Path(app.accelerators.__file__).parent / '_rust_speedups.so')" \
-    && PATH="/opt/ffmpeg/bin:$PATH" /app/.venv/bin/python -I -c "from app.accelerators import _c_speedups, _cython_speedups, _rust_speedups; import torch, torchaudio; from funasr import AutoModel; import av; assert torch.version.cuda is None; assert av.ffmpeg_version_info == '9.0.2'"
+    && PATH="/opt/ffmpeg/bin:$PATH" /app/.venv/bin/python -I -c "from app.accelerators import _c_speedups, _cython_speedups, _repeat_speedups, _rust_speedups; import torch, torchaudio; from funasr import AutoModel; import av; assert torch.version.cuda is None; assert av.ffmpeg_version_info == '9.0.2'"
 
 FROM python-base AS runtime
 # 运行容器通过重建镜像更新依赖，不保留系统安装工具及其可重新安装的旧引导 wheel。
