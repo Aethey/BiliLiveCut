@@ -36,14 +36,15 @@ class QrLoginError(RuntimeError):
     """不包含二维码密钥或账号凭据的协议错误。"""
 
 
-def _passport_url(value: object) -> str:
+def _passport_url(value: object, *, qrcode: bool = False) -> str:
     if not isinstance(value, str) or len(value) > 4096 or any(ord(c) <= 32 or ord(c) == 127 for c in value):
         raise QrLoginError("Bilibili 返回了无效的登录地址。")
     try:
         parsed = urlsplit(value)
         valid = (
             parsed.scheme == "https"
-            and parsed.hostname == "passport.bilibili.com"
+            and parsed.hostname
+            in ({"passport.bilibili.com", "account.bilibili.com"} if qrcode else {"passport.bilibili.com"})
             and parsed.port in (None, 443)
             and parsed.username is None
             and parsed.password is None
@@ -107,7 +108,7 @@ class WebQrLogin:
         key = data.get("qrcode_key")
         if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", key):
             raise QrLoginError("Bilibili 未返回有效的二维码。")
-        self.url, self._key = _passport_url(data.get("url")), key
+        self.url, self._key = _passport_url(data.get("url"), qrcode=True), key
 
     def get_credential(self) -> dict[str, str]:
         """仅在扫码确认并成功验证账号后返回凭据副本。"""

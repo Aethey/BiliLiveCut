@@ -200,3 +200,71 @@ def test_same_username_different_browsers_cannot_share_qr(
         assert first.get(f"/api/login/qrcode/{token}").status_code == 404
         first.cookies = original
         assert first.post(f"/api/login/qrcode/{token}/cancel").json()["status"] == "cancelled"
+
+
+async def test_docker_logout_during_account_validation_preserves_old_cookie(
+    temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core import settings_store
+    from app.core.docker_auth import AuthStore
+    from app.web import main, qr_login
+    from app.web.routers import auth
+
+    validating = asyncio.Event()
+    release = asyncio.Event()
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("generate"):
+            data = {
+                "url": "https://account.bilibili.com/h5/account-h5/auth/scan-web?k=fixture",
+                "qrcode_key": "fixture",
+            }
+        elif request.url.path.endswith("/nav"):
+            validating.set()
+            await release.wait()
+            data = {"isLogin": True, "mid": 123}
+        else:
+            data = {
+                "code": 0,
+                "url": "https://passport.bilibili.com/callback?SESSDATA=fixture&bili_jct="
+                + "a" * 32
+                + "&DedeUserID=123",
+            }
+        return httpx.Response(200, json={"code": 0, "data": data})
+
+    original_client = httpx.AsyncClient
+
+    def isolated_client(**kwargs: object) -> httpx.AsyncClient:
+        return original_client(transport=httpx.MockTransport(respond), **kwargs)
+
+    monkeypatch.setattr(qr_login.httpx, "AsyncClient", isolated_client)
+    manager = QrLoginManager()
+    monkeypatch.setattr(auth, "qr_logins", manager)
+    store = AuthStore(tmp_path / "auth")
+    store.boot("test-password-long")
+    monkeypatch.setattr(main, "_DOCKER_AUTH", store)
+    settings_store.set_setting("bilibili_cookie", "old-cookie")
+    try:
+        async with original_client(transport=httpx.ASGITransport(app=main.app), base_url="http://127.0.0.1") as client:
+            response = await client.post(
+                "/auth/login",
+                json={"username": "admin", "password": "test-password-long"},
+                headers={"Origin": "http://127.0.0.1"},
+            )
+            assert response.status_code == 200
+            csrf = (await client.get("/auth/status")).json()["csrf_token"]
+            headers = {"Origin": "http://127.0.0.1", "X-BLC-CSRF": csrf}
+            response = await client.post("/api/login/qrcode", headers=headers)
+            assert response.status_code == 200
+            task = manager.tasks[response.json()["task_id"]]
+            await asyncio.wait_for(validating.wait(), 3)
+            response = await client.post("/auth/logout", json={}, headers=headers)
+            assert response.status_code == 200
+            release.set()
+            assert task.worker is not None
+            await asyncio.wait_for(task.worker, 3)
+            assert task.status == "error" and not task.image
+            assert settings_store.get_setting("bilibili_cookie") == "old-cookie"
+    finally:
+        release.set()
+        await manager.stop()

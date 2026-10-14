@@ -12,7 +12,7 @@ import pytest
 from app.sources.bilibili.login import QrLoginError, QrState, WebQrLogin
 from app.web.qr_login import QrLoginManager
 
-QR = {"url": "https://passport.bilibili.com/scan?qrcode_key=fixture", "qrcode_key": "fixture"}
+QR = {"url": "https://account.bilibili.com/h5/account-h5/auth/scan-web?qrcode_key=fixture", "qrcode_key": "fixture"}
 CALLBACK = "https://passport.bilibili.com/callback?SESSDATA=session%2Cvalue&bili_jct=" + "a" * 32 + "&DedeUserID=123"
 SUCCESS = {"code": 0, "url": CALLBACK, "refresh_token": "refresh-fixture"}
 
