@@ -161,10 +161,12 @@ async function loadCookieStatus() {
     const info = await api("GET", "/api/cookie-status");
     const hint = $("#cookie-hint");
     if (info.has_cookie) {
-      hint.innerHTML = `\u5df2\u767b\u5f55 \u00b7 UID: <b>${esc(info.uid || "?")}</b>`;
+      hint.innerHTML = info.uid
+        ? `已保存登录凭据 · UID: <b>${esc(info.uid)}</b>`
+        : "已保存登录凭据；Cookie 中未包含 UID。";
       hint.className = "hint ok";
     } else {
-      hint.textContent = "尚未登录；公开弹幕可匿名采集，需要登录态的画质请先登录。";
+      hint.textContent = info.hint || "尚未登录；公开弹幕可匿名采集，需要登录态的画质请先登录。";
       hint.className = "hint warn";
     }
     hint.style.display = "";

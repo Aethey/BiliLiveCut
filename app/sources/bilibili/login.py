@@ -49,7 +49,11 @@ def _passport_url(value: object, *, qrcode: bool = False) -> str:
         valid = (
             parsed.scheme == "https"
             and parsed.hostname
-            in ({"passport.bilibili.com", "account.bilibili.com"} if qrcode else {"passport.bilibili.com"})
+            in (
+                {"passport.bilibili.com", "account.bilibili.com"}
+                if qrcode
+                else {"passport.bilibili.com", "passport.biligame.com"}
+            )
             and parsed.port in (None, 443)
             and parsed.username is None
             and parsed.password is None
@@ -162,6 +166,21 @@ class WebQrLogin:
                 if name in fields:
                     raise QrLoginError("Bilibili 返回了歧义登录凭据。")
                 fields[name] = value
+        # 成功响应也可通过 Set-Cookie 下发凭据；回调地址不一定含账号字段。
+        # 仅补齐缺失字段，已出现的无效 query 值仍由下面的校验拒绝。
+        cookie_fields: dict[str, str] = {}
+        for item in self.client.cookies.jar:
+            domain = item.domain.lower().lstrip(".")
+            name = item.name.lower()
+            if name not in {"sessdata", "bili_jct", "dedeuserid"} or not (
+                domain == "bilibili.com" or domain.endswith(".bilibili.com")
+            ):
+                continue
+            if name in cookie_fields and cookie_fields[name] != item.value:
+                raise QrLoginError("Bilibili 返回了歧义登录凭据。")
+            cookie_fields[name] = item.value
+        for name, value in cookie_fields.items():
+            fields.setdefault(name, value)
         uid = fields.get("dedeuserid", "")
         csrf = fields.get("bili_jct", "")
         if not re.fullmatch(r"[1-9][0-9]{0,19}", uid) or not re.fullmatch(r"[0-9a-fA-F]{32}", csrf):

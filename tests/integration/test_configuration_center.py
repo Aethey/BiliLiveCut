@@ -159,8 +159,8 @@ def test_cookie_clear_is_distinct_from_reset_to_environment(temp_db: None, monke
     from app.core.cookie import get_bilibili_cookie
     from app.web.login_handler import get_cookie_info
 
-    monkeypatch.setattr(settings, "bilibili_cookie", "DedeUserID=321; env-secret")
-    assert get_bilibili_cookie() == "DedeUserID=321; env-secret"
+    monkeypatch.setattr(settings, "bilibili_cookie", "SESSDATA=env-secret; DedeUserID=321")
+    assert get_bilibili_cookie() == "SESSDATA=env-secret; DedeUserID=321"
     assert get_cookie_info()["has_cookie"] is True
     save_configuration(ConfigurationChange(clear=["bilibili_cookie"]))
     assert get_bilibili_cookie() == ""
@@ -168,7 +168,7 @@ def test_cookie_clear_is_distinct_from_reset_to_environment(temp_db: None, monke
     save_configuration(ConfigurationChange(values={"bilibili_cookie": "   "}))
     assert get_bilibili_cookie() == ""
     save_configuration(ConfigurationChange(reset=["bilibili_cookie"]))
-    assert get_bilibili_cookie() == "DedeUserID=321; env-secret"
+    assert get_bilibili_cookie() == "SESSDATA=env-secret; DedeUserID=321"
 
 
 def test_concurrent_stale_forms_have_one_winner(temp_db: None) -> None:

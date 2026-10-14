@@ -132,6 +132,56 @@ async def test_callback_missing_required_cookie_fields_is_rejected() -> None:
             login.get_credential()
 
 
+@pytest.mark.parametrize(
+    "domain,query,uid,valid",
+    [
+        (".bilibili.com", "", 123, True),
+        ("passport.bilibili.com", "", 123, True),
+        (".bilibili.com.evil.test", "", 123, False),
+        (".bilibili.com", "&SESSDATA=", 123, False),
+        (".bilibili.com", "&bili_jct=invalid", 123, False),
+        (".bilibili.com", "", 456, False),
+    ],
+)
+async def test_header_credentials_require_trusted_domain_and_account_validation(
+    domain: str, query: str, uid: int, valid: bool
+) -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/nav"):
+            return httpx.Response(200, json={"code": 0, "data": {"isLogin": True, "mid": uid}})
+        data = (
+            QR
+            if request.url.path.endswith("generate")
+            else {
+                "code": 0,
+                "url": "https://passport.biligame.com/crossDomain?gourl=https%3A%2F%2Fwww.bilibili.com" + query,
+            }
+        )
+        return httpx.Response(200, json={"code": 0, "data": data})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        login = WebQrLogin(client)
+        await login.generate_qrcode()
+        for key, value in {
+            "SESSDATA": "session%2Cencoded",
+            "bili_jct": "a" * 32,
+            "DedeUserID": "123",
+        }.items():
+            client.cookies.set(key, value, domain=domain)
+        if valid:
+            assert await login.check_state() == QrState.VERIFY
+            with pytest.raises(QrLoginError):
+                login.get_credential()
+            await login.validate_credential()
+            assert login.get_credential()["DedeUserID"] == "123"
+        else:
+            with pytest.raises(QrLoginError):
+                await login.check_state()
+                await login.validate_credential()
+            with pytest.raises(QrLoginError):
+                login.get_credential()
+
+
 def test_svg_qr_needs_no_display_or_pillow(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)

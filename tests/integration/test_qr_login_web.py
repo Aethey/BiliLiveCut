@@ -12,8 +12,9 @@ from fastapi.testclient import TestClient
 from app.web.qr_login import LoginTask, QrLoginManager
 
 
+@pytest.mark.parametrize("header_credentials", [False, True])
 async def test_headless_qr_confirm_persists_cookie_without_returning_it(
-    temp_db: None, monkeypatch: pytest.MonkeyPatch
+    temp_db: None, monkeypatch: pytest.MonkeyPatch, header_credentials: bool
 ) -> None:
     from app.core import settings_store
     from app.web import main
@@ -31,7 +32,18 @@ async def test_headless_qr_confirm_persists_cookie_without_returning_it(
             data = {"url": "https://passport.bilibili.com/scan?qrcode_key=test-key", "qrcode_key": "test-key"}
         else:
             data = await events.get()
-        return httpx.Response(200, json={"code": 0, "data": data})
+        headers = []
+        if header_credentials and data.get("code") == 0:
+            data = {**data, "url": "https://passport.biligame.com/crossDomain?gourl=https%3A%2F%2Fwww.bilibili.com"}
+            headers = [
+                ("Set-Cookie", f"{key}={value}; Domain=.bilibili.com; Path=/; Secure")
+                for key, value in {
+                    "SESSDATA": "session%2Cencoded",
+                    "bili_jct": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "DedeUserID": "123",
+                }.items()
+            ]
+        return httpx.Response(200, json={"code": 0, "data": data}, headers=headers)
 
     original_client = httpx.AsyncClient
 
@@ -77,6 +89,7 @@ async def test_headless_qr_confirm_persists_cookie_without_returning_it(
             assert "session%2Cencoded" not in response.text and "private-refresh" not in response.text
             assert "SESSDATA=session%2Cencoded" in settings_store.get_setting("bilibili_cookie")
             assert "ac_time_value=private-refresh" in settings_store.get_setting("bilibili_cookie")
+            assert (await client.get("/api/cookie-status")).json() == {"has_cookie": True, "uid": "123"}
             assert (await client.post(f"/api/login/qrcode/{token}/cancel")).json()["status"] == "done"
         await manager.stop()
         assert "SESSDATA=session%2Cencoded" in settings_store.get_setting("bilibili_cookie")
