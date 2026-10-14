@@ -174,84 +174,213 @@ async function loadCookieStatus() {
 let _loginPolling = null;
 let _qrTaskId = null;
 let _loginGeneration = 0;
+let _qrDeadline = 0;
+let _qrFailures = 0;
+let _qrPaused = false;
+let _qrQuerying = false;
+let _qrCancelling = false;
+let _qrController = null;
+let _qrResumeRequested = false;
 
 function setLoginBusy(busy) {
   $("#btn-login").disabled = busy;
   $("#btn-browser-login").disabled = busy;
   $("#btn-cancel-login").style.display = busy && _qrTaskId ? "" : "none";
+  $("#btn-cancel-login").disabled = _qrCancelling;
+  $("#btn-resume-login").style.display = _qrPaused ? "" : "none";
+  $("#btn-resume-login").disabled = _qrQuerying || _qrCancelling;
+}
+
+function hideLoginQR() {
+  const image = $("#login-qrcode");
+  image.style.display = "none";
+  image.removeAttribute("src");
+}
+
+function stopLoginPoll() {
+  if (_loginPolling !== null) clearTimeout(_loginPolling);
+  _loginPolling = null;
+}
+
+async function qrRequest(method, path) {
+  const controller = new AbortController();
+  _qrController = controller;
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try { return await api(method, path, undefined, { signal: controller.signal }); }
+  finally {
+    clearTimeout(timeout);
+    if (_qrController === controller) _qrController = null;
+  }
+}
+
+function finishQR(message) {
+  ++_loginGeneration;
+  stopLoginPoll();
+  _qrTaskId = null;
+  _qrDeadline = 0;
+  _qrPaused = false;
+  hideLoginQR();
+  setLoginBusy(false);
+  $("#login-status").textContent = message;
+}
+
+async function renderQR(result, generation) {
+  if (generation !== _loginGeneration) return;
+  const messages = {
+    starting: "正在申请二维码…",
+    scan: "请用手机 Bilibili 扫描二维码。",
+    confirm: "已扫码，请在手机上确认登录。",
+    validating: "正在验证 Bilibili 账号，请稍候…",
+    committing: "正在保存登录结果，请稍候…",
+    timeout: "二维码已过期，请重新点击扫码登录。",
+    done: "登录成功！Cookie 已自动保存。",
+    cancelled: "扫码登录已取消。",
+    error: result.error || "扫码登录失败，请重试。",
+  };
+  if (!Object.hasOwn(messages, result.status)) throw new Error("服务返回了未知登录状态，请恢复查询。");
+  _qrFailures = 0;
+  _qrPaused = false;
+  $("#login-status").textContent = messages[result.status];
+  hideLoginQR();
+  if (["scan", "confirm"].includes(result.status) && result.qrcode) {
+    if (!/^data:image\/svg\+xml;base64,[A-Za-z0-9+/=]+$/.test(result.qrcode)) throw new Error("二维码格式无效。");
+    $("#login-qrcode").src = result.qrcode;
+    $("#login-qrcode").style.display = "";
+  }
+  if (["done", "timeout", "cancelled", "error"].includes(result.status)) {
+    finishQR(messages[result.status]);
+    if (result.status === "done") {
+      toast("Bilibili 登录成功");
+      await loadCookieStatus();
+      await loadConfiguration(true);
+    }
+    return;
+  }
+  if (Number.isFinite(result.expires_in)) {
+    _qrDeadline = Date.now() + Math.max(0, Math.min(600, result.expires_in)) * 1000;
+  }
+  setLoginBusy(true);
+  _loginPolling = setTimeout(() => pollQR(generation), 1500);
+}
+
+function qrFailure(error, generation) {
+  if (generation !== _loginGeneration) return;
+  hideLoginQR();
+  stopLoginPoll();
+  if (error.status === 404) {
+    finishQR("任务已过期或属于旧登录，请重新申请二维码。");
+    return;
+  }
+  _qrPaused = true;
+  if (error.status === 401 || error.status === 403) {
+    $("#login-status").textContent = "后台登录需要重新验证。登录后点击恢复状态；不会自动申请或取消二维码。";
+  } else if (_qrTaskId && ++_qrFailures <= 5 && (!_qrDeadline || Date.now() < _qrDeadline)) {
+    $("#login-status").textContent = `连接中断，正在恢复状态（${_qrFailures}/5）…`;
+    _loginPolling = setTimeout(() => pollQR(generation), Math.min(1500 * 2 ** (_qrFailures - 1), 15000) + Math.random() * 200);
+  } else {
+    $("#login-status").textContent = "连接中断，操作结果尚未确认。请点击恢复状态；不会自动重试写入操作。";
+  }
+  setLoginBusy(true);
+}
+
+async function pollQR(generation) {
+  if (generation !== _loginGeneration || !_qrTaskId || _qrQuerying || _qrCancelling) return;
+  stopLoginPoll();
+  _qrQuerying = true;
+  try {
+    await renderQR(await qrRequest("GET", `/api/login/qrcode/${encodeURIComponent(_qrTaskId)}`), generation);
+  } catch (error) { qrFailure(error, generation); }
+  finally {
+    _qrQuerying = false;
+    setLoginBusy(Boolean(_qrTaskId) || _qrPaused);
+    drainLoginResume();
+  }
+}
+
+async function resumeLogin(initial = false) {
+  if (_qrQuerying || _qrCancelling) return;
+  stopLoginPoll();
+  const generation = ++_loginGeneration;
+  _qrQuerying = true;
+  _qrFailures = 0;
+  try {
+    const current = await qrRequest("GET", "/api/login/qrcode");
+    if (generation !== _loginGeneration) return;
+    if (!current.task_id) {
+      finishQR(initial ? "" : "当前浏览器没有可恢复的扫码任务，请点击扫码登录。");
+      return;
+    }
+    _qrTaskId = current.task_id;
+    await renderQR(current, generation);
+  } catch (error) { qrFailure(error, generation); }
+  finally {
+    _qrQuerying = false;
+    setLoginBusy(Boolean(_qrTaskId) || _qrPaused);
+    drainLoginResume();
+  }
 }
 
 async function doLogin() {
-  if ($("#btn-login").disabled) return;
+  if ($("#btn-login").disabled || _qrQuerying) return;
   const generation = ++_loginGeneration;
-  const status = $("#login-status");
-  const image = $("#login-qrcode");
-  image.style.display = "none";
-  status.textContent = "正在申请二维码…";
+  _qrQuerying = true;
+  hideLoginQR();
+  $("#login-status").textContent = "正在申请二维码…";
   setLoginBusy(true);
   try {
-    const task = await api("POST", "/api/login/qrcode");
+    // 先建立浏览器归属并查询旧任务，刷新或丢失 POST 响应后不会盲目重建。
+    const current = await qrRequest("GET", "/api/login/qrcode");
+    if (generation !== _loginGeneration) return;
+    const task = current.task_id && !["done", "timeout", "cancelled", "error"].includes(current.status)
+      ? current : await qrRequest("POST", "/api/login/qrcode");
+    if (generation !== _loginGeneration) return;
     _qrTaskId = task.task_id;
-    setLoginBusy(true);
-    const poll = async () => {
-      try {
-        const result = await api("GET", `/api/login/qrcode/${encodeURIComponent(task.task_id)}`);
-        if (generation !== _loginGeneration) return;
-        status.textContent = {
-          starting: "正在申请二维码…",
-          scan: "请用手机 Bilibili 扫描二维码。",
-          confirm: "已扫码，请在手机上确认登录。",
-          timeout: "二维码已过期，请重新点击扫码登录。",
-          done: "登录成功！Cookie 已自动保存。",
-          cancelled: "扫码登录已取消。",
-          error: result.error || "扫码登录失败，请重试。",
-        }[result.status] || "登录状态异常，请重试。";
-        image.style.display = result.qrcode ? "" : "none";
-        if (result.qrcode) image.src = result.qrcode;
-        if (["done", "timeout", "cancelled", "error"].includes(result.status)) {
-          _qrTaskId = null;
-          _loginPolling = null;
-          setLoginBusy(false);
-          if (result.status === "done") {
-            toast("Bilibili 登录成功");
-            await loadCookieStatus();
-            await loadConfiguration(true);
-          }
-          return;
-        }
-        _loginPolling = setTimeout(poll, 1500);
-      } catch (error) {
-        if (generation !== _loginGeneration) return;
-        status.textContent = "状态查询失败：" + error.message;
-        // 保留任务 ID，用户可以取消，不能将仍在运行的任务当作已结束。
-        _loginPolling = null;
-      }
-    };
-    _loginPolling = setTimeout(poll, 500);
+    _qrDeadline = Date.now() + 600000;
+    await renderQR(task, generation);
   } catch (error) {
-    status.textContent = "申请失败：" + error.message;
-    _qrTaskId = null;
-    setLoginBusy(false);
+    if (generation !== _loginGeneration) return;
+    if (error.status === 409) finishQR(error.message);
+    else qrFailure(error, generation);
+  } finally {
+    _qrQuerying = false;
+    setLoginBusy(Boolean(_qrTaskId) || _qrPaused);
+    drainLoginResume();
   }
 }
 
 async function cancelLogin() {
-  if (!_qrTaskId) return;
+  if (!_qrTaskId || _qrCancelling) return;
   const token = _qrTaskId;
+  const generation = ++_loginGeneration;
+  stopLoginPoll();
+  _qrController?.abort();
+  _qrCancelling = true;
+  setLoginBusy(true);
+  $("#login-status").textContent = "正在确认取消结果；若已开始保存，将等待保存完成…";
   try {
-    const result = await api("POST", `/api/login/qrcode/${encodeURIComponent(token)}/cancel`);
-    ++_loginGeneration;
-    if (_loginPolling) clearTimeout(_loginPolling);
-    _loginPolling = null;
-    _qrTaskId = null;
-    $("#login-qrcode").style.display = "none";
-    $("#login-status").textContent = result.status === "done" ? "登录已完成，Cookie 已保存。" : "扫码登录已取消。";
-    setLoginBusy(false);
-    if (result.status === "done") await loadCookieStatus();
-  } catch (error) {
-    $("#login-status").textContent = "取消失败：" + error.message;
+    const result = await qrRequest("POST", `/api/login/qrcode/${encodeURIComponent(token)}/cancel`);
+    if (generation !== _loginGeneration) return;
+    await renderQR(result, generation);
+  } catch (error) { qrFailure(error, generation); }
+  finally {
+    _qrCancelling = false;
+    setLoginBusy(Boolean(_qrTaskId) || _qrPaused);
+    drainLoginResume();
   }
 }
+
+function requestLoginResume() {
+  if (_qrQuerying || _qrCancelling) { _qrResumeRequested = true; return; }
+  _qrResumeRequested = false;
+  return resumeLogin();
+}
+
+function drainLoginResume() {
+  if (_qrResumeRequested && !_qrQuerying && !_qrCancelling) requestLoginResume();
+}
+
+window.addEventListener("online", () => { if (_qrPaused) return requestLoginResume(); });
+window.addEventListener("blc:reauthenticated", () => { if (_qrTaskId || _qrPaused || _qrQuerying) return requestLoginResume(); });
 
 async function doBrowserLogin() {
   if ($("#btn-login").disabled) return;
@@ -447,6 +576,8 @@ document.addEventListener("DOMContentLoaded", () => {
   if (btnClear) btnClear.addEventListener("click", clearCookie);
   $("#btn-browser-login")?.addEventListener("click", doBrowserLogin);
   $("#btn-cancel-login")?.addEventListener("click", cancelLogin);
+  $("#btn-resume-login")?.addEventListener("click", () => resumeLogin());
+  resumeLogin(true);
 });
 
-export { loadLLM, collectLLM, llmRow, loadLogs, loadTasks, retryTask, cancelTask, loadCookieStatus, doLogin, doBrowserLogin, cancelLogin, clearCookie, loadTemplates, exportTemplate, detTempl, loadIntroTemplates, detIntro, hasLLMDraft };
+export { loadLLM, collectLLM, llmRow, loadLogs, loadTasks, retryTask, cancelTask, loadCookieStatus, doLogin, doBrowserLogin, cancelLogin, resumeLogin, clearCookie, loadTemplates, exportTemplate, detTempl, loadIntroTemplates, detIntro, hasLLMDraft };

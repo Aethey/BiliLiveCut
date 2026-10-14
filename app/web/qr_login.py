@@ -70,6 +70,18 @@ class QrLoginManager:
             return None
         return task
 
+    def current(self, owner: str) -> tuple[str, LoginTask] | None:
+        """恢复同一浏览器最近的任务，不暴露其他浏览器的 ID 或状态。"""
+        for token in reversed(list(self.tasks)):
+            task = self.get(token, owner)
+            if task is not None:
+                return token, task
+        return None
+
+    def remaining(self, task: LoginTask) -> float:
+        """返回服务端剩余有效秒数；客户端不使用服务端单调时钟绝对值。"""
+        return max(0.0, self.retention_seconds - (time.monotonic() - task.created))
+
     @staticmethod
     def _render(url: str) -> str:
         import qrcode

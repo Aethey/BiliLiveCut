@@ -106,6 +106,10 @@ def test_qr_routes_and_shutdown_without_browser(temp_db: None, monkeypatch: pyte
         assert response.headers["cache-control"] == "no-store"
         token = response.json()["task_id"]
         assert client.post("/api/login/qrcode").status_code == 409
+        restored = client.get("/api/login/qrcode")
+        assert restored.json()["task_id"] == token
+        assert restored.headers["cache-control"] == "no-store"
+        assert 0 < restored.json()["expires_in"] <= 600
         state = client.get(f"/api/login/qrcode/{token}")
         assert state.json()["status"] == "scan"
         assert state.json()["qrcode"].startswith("data:image/svg+xml;base64,")
@@ -196,6 +200,7 @@ def test_same_username_different_browsers_cannot_share_qr(
         assert first.get(f"/api/login/qrcode/{token}").status_code == 404
         assert first.post(f"/api/login/qrcode/{token}/cancel").status_code == 404
         assert first.post("/api/login/qrcode").status_code == 409
+        assert first.get("/api/login/qrcode").json() == {"task_id": None, "status": "idle"}
         first.cookies.set("blc_qr_browser", "forged.9999999999.signature", path="/api/login")
         assert first.get(f"/api/login/qrcode/{token}").status_code == 404
         first.cookies = original
@@ -268,3 +273,35 @@ async def test_docker_logout_during_account_validation_preserves_old_cookie(
     finally:
         release.set()
         await manager.stop()
+
+
+def test_qr_browser_renewal_preserves_task_identity(temp_db: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from app.web import main, qr_login
+    from app.web.routers import auth
+
+    async def run(self: QrLoginManager, task: LoginTask) -> None:
+        task.status = "scan"
+        await asyncio.Event().wait()
+
+    manager = QrLoginManager()
+    monkeypatch.setattr(QrLoginManager, "_run", run)
+    monkeypatch.setattr(auth, "qr_logins", manager)
+    monkeypatch.setattr(qr_login, "qr_logins", manager)
+    monkeypatch.setattr(main, "_DOCKER_AUTH", None)
+    monkeypatch.setattr(main, "_ADMIN_PASSWORD", "")
+    now = auth._login_time.time()
+    monkeypatch.setattr(auth, "_login_time", SimpleNamespace(time=lambda: now))
+    with TestClient(main.app) as client:
+        assert client.get("/api/login/qrcode").json()["task_id"] is None
+        old_browser = client.cookies.get("blc_qr_browser")
+        now += 1700
+        response = client.post("/api/login/qrcode")
+        assert response.status_code == 200
+        task_id = response.json()["task_id"]
+        renewed = client.cookies.get("blc_qr_browser")
+        assert old_browser != renewed
+        now += 200
+        assert client.get(f"/api/login/qrcode/{task_id}").status_code == 200
+        assert client.get("/api/login/qrcode").json()["task_id"] == task_id

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass, field
@@ -34,6 +35,10 @@ class QrState(StrEnum):
 
 class QrLoginError(RuntimeError):
     """不包含二维码密钥或账号凭据的协议错误。"""
+
+
+class QrLoginUnavailable(QrLoginError):
+    """平台短暂网络故障；仅允许有限重试固定地址的只读请求。"""
 
 
 def _passport_url(value: object, *, qrcode: bool = False) -> str:
@@ -78,6 +83,18 @@ class WebQrLogin:
     _credential: dict[str, str] | None = field(default=None, repr=False)
 
     async def _request(self, url: str, *, params: dict[str, str] | None = None, cookie: str = "") -> dict[str, object]:
+        for attempt in range(3):
+            try:
+                return await self._request_once(url, params=params, cookie=cookie)
+            except QrLoginUnavailable:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(0.5 * 2**attempt)
+        raise AssertionError("unreachable request retry state")
+
+    async def _request_once(
+        self, url: str, *, params: dict[str, str] | None = None, cookie: str = ""
+    ) -> dict[str, object]:
         try:
             headers = {**_HEADERS, **({"Cookie": cookie} if cookie else {})}
             async with self.client.stream(
@@ -90,9 +107,15 @@ class WebQrLogin:
                     if len(body) > _MAX_RESPONSE:
                         raise QrLoginError("Bilibili 登录接口响应过大。")
                 payload = json.loads(body)
-        except (httpx.HTTPError, ValueError) as exc:
+        except httpx.TransportError as exc:
             # HTTP 异常通常带请求 URL，其中可能包含 qrcode_key；不向界面暴露异常链。
-            raise QrLoginError("Bilibili 登录接口请求失败，请检查网络后重试。") from exc
+            raise QrLoginUnavailable("Bilibili 暂时无法连接，请检查网络后重试。") from exc
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429 or exc.response.status_code >= 500:
+                raise QrLoginUnavailable("Bilibili 暂时不可用，请稍后重试。") from exc
+            raise QrLoginError("Bilibili 登录接口拒绝请求，请重新申请二维码。") from exc
+        except (httpx.DecodingError, ValueError) as exc:
+            raise QrLoginError("Bilibili 登录接口返回了无效数据。") from exc
         if not isinstance(payload, dict) or type(payload.get("code")) is not int or payload["code"] != 0:
             raise QrLoginError("Bilibili 登录接口返回错误，未修改已保存的 Cookie。")
         data = payload.get("data")

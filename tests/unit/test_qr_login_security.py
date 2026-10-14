@@ -232,3 +232,50 @@ async def test_cancel_before_validation_does_not_write(monkeypatch: pytest.Monke
         assert manager.tasks[token].status == "cancelled" and not saved
     finally:
         await manager.stop()
+
+
+@pytest.mark.parametrize("recover", [True, False])
+async def test_platform_temporary_failure_has_bounded_read_retries(recover: bool) -> None:
+    seen: list[str] = []
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        seen.append(request.method)
+        if not recover or len(seen) < 2:
+            return httpx.Response(503)
+        return httpx.Response(200, json={"code": 0, "data": QR})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
+        login = WebQrLogin(client)
+        if recover:
+            await login.generate_qrcode()
+            assert len(seen) == 2
+        else:
+            with pytest.raises(QrLoginError):
+                await login.generate_qrcode()
+            assert len(seen) == 3
+    assert set(seen) == {"GET"}
+
+
+async def test_invalid_compression_is_terminal_and_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.web import qr_login
+
+    calls = 0
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, content=b"invalid-gzip-private-key", headers={"Content-Encoding": "gzip"})
+
+    client_type = httpx.AsyncClient
+
+    def client(**kwargs: object) -> httpx.AsyncClient:
+        return client_type(transport=httpx.MockTransport(reply), **kwargs)
+
+    monkeypatch.setattr(qr_login.httpx, "AsyncClient", client)
+    manager = QrLoginManager()
+    task = manager.tasks[manager.start("owner")]
+    assert task.worker is not None
+    await task.worker
+    assert task.status == "error" and task.image == ""
+    assert "private-key" not in task.error and calls == 1
+    await manager.stop()

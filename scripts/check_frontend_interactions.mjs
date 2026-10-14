@@ -85,6 +85,8 @@ class FakeElement {
   getContext() {
     return null;
   }
+
+  removeAttribute(name) { delete this[name]; }
 }
 
 const elements = new Map();
@@ -820,14 +822,20 @@ try {
   globalThis.setTimeout = callback => { const id = ++timerSequence; loginTimers.set(id, callback); return id; };
   globalThis.clearTimeout = id => loginTimers.delete(id);
   let qrState = "scan";
+  let qrActive = false;
+  let qrFailureStatus = 0;
   let loginCalls = [];
   globalThis.fetch = async (path, options) => {
     loginCalls.push([path, options.method]);
-    if (path === "/api/login/qrcode") return { ok: true, status: 200, json: async () => ({ task_id: "qr-task", status: "starting" }) };
+    if (path === "/api/login/qrcode") {
+      if (options.method === "POST") { qrActive = true; return { ok: true, status: 200, json: async () => ({ task_id: "qr-task", status: "starting", expires_in: 600 }) }; }
+      return { ok: true, status: 200, json: async () => qrActive ? ({ task_id: "qr-task", status: qrState, expires_in: 600 }) : ({ task_id: null, status: "idle" }) };
+    }
+    if (path === "/api/login/qrcode/qr-task" && qrFailureStatus) return { ok: false, status: qrFailureStatus, json: async () => ({ detail: "fixture network or auth error" }) };
     if (path === "/api/login/qrcode/qr-task") return { ok: true, status: 200, json: async () => ({
-      status: qrState, qrcode: ["scan", "confirm"].includes(qrState) ? "data:image/svg+xml;base64,PHN2Zy8+" : "", error: "",
+      status: qrState, expires_in: 600, qrcode: ["scan", "confirm"].includes(qrState) ? "data:image/svg+xml;base64,PHN2Zy8+" : "", error: "",
     }) };
-    if (path === "/api/login/qrcode/qr-task/cancel") return { ok: true, status: 200, json: async () => ({ status: "cancelled" }) };
+    if (path === "/api/login/qrcode/qr-task/cancel") { qrState = "cancelled"; return { ok: true, status: 200, json: async () => ({ status: "cancelled" }) }; }
     return savedFetch(path, options);
   };
   const loginTick = async () => {
@@ -848,7 +856,7 @@ try {
   assert.equal(element("login-qrcode").style.display, "none");
   assert.match(element("login-status").textContent, /过期/);
   assert.ok(!loginCalls.some(([path]) => path === "/api/login"), "QR login must not launch a server browser");
-  qrState = "scan"; await settingsUI.doLogin(); await loginTick();
+  qrState = "scan"; qrActive = false; await settingsUI.doLogin(); await loginTick();
   await settingsUI.cancelLogin();
   assert.ok(loginCalls.some(([path, method]) => path.endsWith("/cancel") && method === "POST"));
   assert.equal(element("btn-login").disabled, false);
@@ -856,6 +864,33 @@ try {
   await settingsUI.doLogin(); qrState = "done"; await loginTick();
   assert.match(element("login-status").textContent, /成功/);
   assert.equal(element("btn-browser-login").disabled, false);
+  // Recovery only reads; a dropped response or temporary outage never retries POST.
+  qrActive = false; qrState = "scan";
+  await settingsUI.doLogin(); await loginTick();
+  const writesBeforeRecovery = loginCalls.filter(([, method]) => method === "POST").length;
+  qrFailureStatus = 503;
+  for (let attempt = 0; attempt < 6; attempt += 1) await loginTick();
+  assert.match(element("login-status").textContent, /恢复状态/);
+  assert.equal(loginTimers.size, 0, "network retries must be bounded");
+  assert.equal(element("login-qrcode").src, undefined, "failed state clears QR pixels");
+  assert.equal(element("btn-resume-login").style.display, "");
+  qrFailureStatus = 0;
+  await settingsUI.resumeLogin(); await loginTick();
+  assert.match(element("login-status").textContent, /扫描/);
+  assert.equal(loginCalls.filter(([, method]) => method === "POST").length, writesBeforeRecovery);
+  qrFailureStatus = 401; await loginTick();
+  assert.match(element("login-status").textContent, /重新验证/);
+  assert.equal(loginTimers.size, 0, "expired auth must pause polling");
+  qrFailureStatus = 0;
+  await windowListeners.get("blc:reauthenticated")(); await settle();
+  await loginTick();
+  qrState = "validating"; await loginTick();
+  assert.match(element("login-status").textContent, /验证/);
+  assert.equal(element("login-qrcode").src, undefined);
+  qrState = "committing"; await loginTick();
+  assert.match(element("login-status").textContent, /保存/);
+  await settingsUI.cancelLogin();
+  assert.equal(element("btn-login").disabled, false);
   globalThis.fetch = savedFetch;
   globalThis.setTimeout = savedSetTimeout;
   globalThis.clearTimeout = savedClearTimeout;

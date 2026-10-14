@@ -293,9 +293,10 @@
           <button id="btn-login" class="primary">扫码登录</button>
           <button id="btn-browser-login">浏览器登录（服务器需有桌面）</button>
           <button id="btn-cancel-login" style="display:none">取消扫码</button>
+          <button id="btn-resume-login" style="display:none">恢复状态</button>
           <button id="btn-clear-cookie" class="danger">🗑 清除 Cookie</button>
         </div>
-        <p class="hint" id="login-status" style="margin-top:8px"></p>
+        <p class="hint" id="login-status" role="status" aria-live="polite" style="margin-top:8px"></p>
         <img id="login-qrcode" alt="Bilibili 登录二维码" width="256" height="256" style="display:none;background:white" />
         <hr style="margin:16px 0" />
         <p class="hint">

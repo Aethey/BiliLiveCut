@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from app.core.sanitize import safe_exception_summary
 from app.sources.bilibili.login import QrLoginError
 from app.web.login_handler import get_cookie_info, get_login_status, start_login
-from app.web.qr_login import qr_logins
+from app.web.qr_login import LoginTask, qr_logins
 
 _LOGIN_FAILURES: dict[str, list[float]] = {}
 _MAX_LOGIN_ATTEMPTS = 5
@@ -60,7 +60,11 @@ def _qr_browser(request: Request, *, create: bool = False) -> str:
             and signature.isascii()
             and secrets.compare_digest(signature, expected)
         ):
-            return token
+            if not create:
+                return token
+            # 续期不改变浏览器 nonce；已开始的任务仍属于同一浏览器。
+            payload = f"{nonce}.{int(_login_time.time()) + _QR_COOKIE_SECONDS}"
+            return payload + "." + hmac.digest(_QR_SECRET, payload.encode(), "sha256").hex()
     if not create:
         raise HTTPException(status_code=404, detail="登录任务不存在。")
     payload = f"{secrets.token_hex(16)}.{int(_login_time.time()) + _QR_COOKIE_SECONDS}"
@@ -71,7 +75,48 @@ def _qr_owner(request: Request, browser: str | None = None) -> str:
     """任务同时绑定认证身份和短时浏览器标识，切换会话不能访问旧任务。"""
     browser = browser or _qr_browser(request)
     identity = getattr(request.state, "auth_session", "") or request.headers.get("authorization", "")
-    return sha256(f"{request.state.auth_user}\0{identity}\0{browser}".encode()).hexdigest()
+    nonce = browser.partition(".")[0]
+    return sha256(f"{request.state.auth_user}\0{identity}\0{nonce}".encode()).hexdigest()
+
+
+def _qr_response(token: str, task: LoginTask) -> JSONResponse:
+    """统一返回可恢复状态与剩余期限，不包含任何账号凭据。"""
+    return JSONResponse(
+        {
+            "task_id": token,
+            "status": task.status,
+            "qrcode": task.image,
+            "error": task.error,
+            "expires_in": qr_logins.remaining(task),
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _qr_set_browser(response: JSONResponse, browser: str, request: Request) -> None:
+    response.set_cookie(
+        _QR_COOKIE,
+        browser,
+        max_age=_QR_COOKIE_SECONDS,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="strict",
+        path="/api/login",
+    )
+
+
+@router.get("/login/qrcode")
+async def qr_login_current(request: Request) -> JSONResponse:
+    """恢复本浏览器任务；仅签发浏览器标识，不创建或重放登录操作。"""
+    browser = _qr_browser(request, create=True)
+    current = qr_logins.current(_qr_owner(request, browser))
+    response = (
+        _qr_response(*current)
+        if current
+        else JSONResponse({"task_id": None, "status": "idle"}, headers={"Cache-Control": "no-store"})
+    )
+    _qr_set_browser(response, browser, request)
+    return response
 
 
 @router.post("/login/qrcode")
@@ -93,16 +138,10 @@ async def qr_login_start(request: Request) -> JSONResponse:
         token = qr_logins.start(_qr_owner(request, browser), authorize=authorized)
     except QrLoginError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    response = JSONResponse({"task_id": token, "status": "starting"}, headers={"Cache-Control": "no-store"})
-    response.set_cookie(
-        _QR_COOKIE,
-        browser,
-        max_age=_QR_COOKIE_SECONDS,
-        httponly=True,
-        secure=request.url.scheme == "https",
-        samesite="strict",
-        path="/api/login",
-    )
+    task = qr_logins.get(token, _qr_owner(request, browser))
+    assert task is not None
+    response = _qr_response(token, task)
+    _qr_set_browser(response, browser, request)
     return response
 
 
@@ -112,10 +151,7 @@ async def qr_login_status(task_id: str, request: Request) -> JSONResponse:
     task = qr_logins.get(task_id, _qr_owner(request))
     if task is None:
         raise HTTPException(status_code=404, detail="登录任务不存在。")
-    return JSONResponse(
-        {"status": task.status, "qrcode": task.image, "error": task.error},
-        headers={"Cache-Control": "no-store"},
-    )
+    return _qr_response(task_id, task)
 
 
 @router.post("/login/qrcode/{task_id}/cancel")
@@ -124,7 +160,9 @@ async def qr_login_cancel(task_id: str, request: Request) -> JSONResponse:
     if not await qr_logins.cancel(task_id, _qr_owner(request)):
         raise HTTPException(status_code=404, detail="登录任务不存在。")
     task = qr_logins.get(task_id, _qr_owner(request))
-    return JSONResponse({"status": task.status}, headers={"Cache-Control": "no-store"})
+    if task is None:
+        raise HTTPException(status_code=404, detail="登录任务已过期。")
+    return _qr_response(task_id, task)
 
 
 # ----------------------------- 账号登录 / Cookie 管理 ----------------------------- #
