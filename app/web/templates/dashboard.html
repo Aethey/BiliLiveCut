@@ -290,16 +290,20 @@
         <h3>Bilibili 账号登录</h3>
         <p class="hint" id="cookie-hint">载入中…</p>
         <div class="row">
-          <button id="btn-login" class="primary">🔑 登录</button>
+          <button id="btn-login" class="primary">扫码登录</button>
+          <button id="btn-browser-login">浏览器登录（服务器需有桌面）</button>
+          <button id="btn-cancel-login" style="display:none">取消扫码</button>
           <button id="btn-clear-cookie" class="danger">🗑 清除 Cookie</button>
         </div>
         <p class="hint" id="login-status" style="margin-top:8px"></p>
+        <img id="login-qrcode" alt="Bilibili 登录二维码" width="256" height="256" style="display:none;background:white" />
         <hr style="margin:16px 0" />
         <p class="hint">
           登录后系统自动收集 Bilibili 登录态 Cookie,用于平台允许的部分高清取流和登录优先的弹幕接口。<br/>
           登录弹幕接口报错时会立即转为匿名采集,并按配置间隔重试；达到单场失败上限后本场固定匿名。<br/>
-          点击「登录」将弹出无痕浏览器窗口,在窗口中完成扫码或密码登录后,
-          Cookie 会自动保存并关闭窗口。<br/>
+          点击「扫码登录」后，用手机 Bilibili 扫描本页二维码并确认，无需服务器桌面。<br/>
+          二维码过期后请重新申请；确认成功后 Cookie 自动保存。<br/>
+          「浏览器登录」在运行本程序的机器打开窗口，支持扫码或密码登录，仅适用于有桌面的部署。<br/>
           清除 Cookie 或退出登录后,公开弹幕仍可匿名采集；仅需要登录态的功能会受影响。
         </p>
       </div>

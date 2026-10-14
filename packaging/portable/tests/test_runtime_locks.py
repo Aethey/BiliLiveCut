@@ -52,7 +52,7 @@ def test_runtime_locks_are_complete_and_strict() -> None:
     py311 = _load_lock("py311")
     py312 = _load_lock("py312")
 
-    assert len(py311) == len(py312) == 117
+    assert len(py311) == len(py312) == 118
     assert set(py311) == set(py312)
     assert _direct_requirement_names() <= set(py311)
 
@@ -66,6 +66,7 @@ def test_runtime_locks_cover_core_application_imports() -> None:
         "openai",
         "pip",
         "playwright",
+        "qrcode",
         "psutil",
         "pydantic-settings",
         "pyyaml",

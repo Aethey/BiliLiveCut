@@ -468,7 +468,7 @@ BILIBILI_COOKIE=            # 可选登录态 Cookie，用于平台允许的部�
 ```
 
 > **重要**：公开弹幕不登录也能采集；存在 Cookie 时程序会优先使用登录接口，业务错误后立即改用无 Cookie、`uid=0` 的匿名链路。匿名连接期间会定时探测登录恢复，累计失败达到配置上限后本场固定匿名。Cookie 不会写入日志，也不会作为 WebSocket 请求头发送。
-> Portable 已包含 Playwright Python 组件。第一次使用【账号管理】时会优先在独立临时资料目录中启动电脑已安装的 Google Chrome，并保持浏览器 sandbox 开启；程序只读取这次受控登录窗口产生的 Bilibili Cookie，不读取日常 Chrome Profile。找不到可用 Chrome 才联网下载 Playwright Chromium，并保存到 `vendor/playwright-browsers/` 供后续复用。下载期间请保持 Launcher 窗口、网络连接和足够磁盘空间。
+> 【账号登录】默认通过“扫码登录”在网页显示二维码，用手机 Bilibili 扫描并确认后保存 Cookie，不需要安装或下载浏览器。Portable 同时保留“浏览器登录”：在独立临时资料目录中启动电脑已安装的 Google Chrome，并保持浏览器 sandbox 开启；只读取此次登录窗口产生的 Cookie，不读取日常 Chrome Profile。找不到可用 Chrome 才联网下载 Playwright Chromium，保存到 `vendor/playwright-browsers/` 供后续复用。
 
 ### ASR 语音转写（本地多引擎，无需联网）
 

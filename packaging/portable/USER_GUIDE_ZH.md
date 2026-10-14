@@ -301,10 +301,11 @@ storage\raw\session_<数字>\
 Cookie 不是公开直播录制或弹幕采集的必需项。程序会按网页 WBI 请求格式获取短期 token：存在 Cookie 时先尝试登录请求并使用 `DedeUserID` 鉴权；接口业务错误或登录鉴权被拒绝后，立即改用无 Cookie、`uid=0` 的匿名链路。匿名连接保持工作时会按配置间隔探测登录恢复，达到单场失败上限后不再尝试 Cookie。平台允许的部分高清晰度仍可能需要登录态。
 
 - 首次测试可保持 `COLLECT_DANMAKU=true`，在“弹幕热度”页选择本次“录制场次”，确认已经收到数据。以后可从同一下拉切回任何仍保存在数据库中的旧场次。
-- 点击“设置中心”→“账号登录”→“登录”后，程序会优先在独立临时资料目录中打开电脑已安装的 Google Chrome，并保持浏览器 sandbox 开启；它不会读取你的日常 Chrome Profile。
+- 点击“设置中心”→“账号登录”→“扫码登录”，用手机 Bilibili 扫描页面上的二维码并确认；确认成功后自动保存 Cookie。这种方式不需要 Chrome 或下载 Chromium。二维码过期后重新申请，或点击“取消扫码”结束轮询。
+- 也可点击“浏览器登录”。程序会优先在独立临时资料目录中打开电脑已安装的 Google Chrome，并保持浏览器 sandbox 开启；它不会读取你的日常 Chrome Profile。
 - 在这个由程序打开的独立登录窗口中完成 Bilibili 登录，程序会直接从本次受控浏览器上下文保存 Cookie；不要改用原先已经打开的普通 Chrome 窗口登录。
 - 如果没有找到可用的 Chrome，页面会显示“正在下载 Playwright Chromium”。程序会联网下载浏览器到 `vendor\playwright-browsers\`，完成后自动打开登录页；下载大小和耗时以 Playwright 当前版本为准。
-- 下载期间不要关闭 Launcher。失败时先检查网络、磁盘空间和安全软件，然后再次点击“登录”；已经完整下载的 Chromium 会被后续启动复用。
+- 浏览器下载期间不要关闭 Launcher。失败时先检查网络、磁盘空间和安全软件，然后再次点击“浏览器登录”；已经完整下载的 Chromium 会被后续启动复用。
 - 如果电脑只有 Edge，仍可用 Edge 访问 Web 控制台；账号登录窗口会按上述规则下载 Playwright Chromium。
 - 不要向他人提供 Cookie，也不要把 Cookie 粘贴到聊天、截图或问题报告中。
 - 如果测试人员不了解 Cookie 的含义，应继续匿名测试，不要手动提取登录态。
@@ -419,7 +420,7 @@ V0.1.18.9 Alpha 只接受由当前版本创建并精确通过校验的数据库�
 
 ### 账号登录提示正在下载 Chromium
 
-这是电脑中没有可用 Google Chrome 时的正常回退流程，不是重复安装整个程序。保持网络和 Launcher 窗口开启；下载完成后登录窗口会自动出现。以后会复用 `vendor\playwright-browsers\` 中的浏览器文件。
+这是“浏览器登录”在电脑没有可用 Google Chrome 时的回退流程。保持网络和 Launcher 窗口开启；下载完成后登录窗口会自动出现，以后会复用 `vendor\playwright-browsers\` 中的浏览器文件。“扫码登录”直接在管理页显示二维码，不需要下载浏览器。
 
 ### Full 安装出现 `wheelhouse is missing or empty`
 

@@ -172,11 +172,92 @@ async function loadCookieStatus() {
 }
 
 let _loginPolling = null;
+let _qrTaskId = null;
+let _loginGeneration = 0;
+
+function setLoginBusy(busy) {
+  $("#btn-login").disabled = busy;
+  $("#btn-browser-login").disabled = busy;
+  $("#btn-cancel-login").style.display = busy && _qrTaskId ? "" : "none";
+}
+
 async function doLogin() {
+  if ($("#btn-login").disabled) return;
+  const generation = ++_loginGeneration;
+  const status = $("#login-status");
+  const image = $("#login-qrcode");
+  image.style.display = "none";
+  status.textContent = "正在申请二维码…";
+  setLoginBusy(true);
+  try {
+    const task = await api("POST", "/api/login/qrcode");
+    _qrTaskId = task.task_id;
+    setLoginBusy(true);
+    const poll = async () => {
+      try {
+        const result = await api("GET", `/api/login/qrcode/${encodeURIComponent(task.task_id)}`);
+        if (generation !== _loginGeneration) return;
+        status.textContent = {
+          starting: "正在申请二维码…",
+          scan: "请用手机 Bilibili 扫描二维码。",
+          confirm: "已扫码，请在手机上确认登录。",
+          timeout: "二维码已过期，请重新点击扫码登录。",
+          done: "登录成功！Cookie 已自动保存。",
+          cancelled: "扫码登录已取消。",
+          error: result.error || "扫码登录失败，请重试。",
+        }[result.status] || "登录状态异常，请重试。";
+        image.style.display = result.qrcode ? "" : "none";
+        if (result.qrcode) image.src = result.qrcode;
+        if (["done", "timeout", "cancelled", "error"].includes(result.status)) {
+          _qrTaskId = null;
+          _loginPolling = null;
+          setLoginBusy(false);
+          if (result.status === "done") {
+            toast("Bilibili 登录成功");
+            await loadCookieStatus();
+            await loadConfiguration(true);
+          }
+          return;
+        }
+        _loginPolling = setTimeout(poll, 1500);
+      } catch (error) {
+        if (generation !== _loginGeneration) return;
+        status.textContent = "状态查询失败：" + error.message;
+        // 保留任务 ID，用户可以取消，不能将仍在运行的任务当作已结束。
+        _loginPolling = null;
+      }
+    };
+    _loginPolling = setTimeout(poll, 500);
+  } catch (error) {
+    status.textContent = "申请失败：" + error.message;
+    _qrTaskId = null;
+    setLoginBusy(false);
+  }
+}
+
+async function cancelLogin() {
+  if (!_qrTaskId) return;
+  const token = _qrTaskId;
+  try {
+    const result = await api("POST", `/api/login/qrcode/${encodeURIComponent(token)}/cancel`);
+    ++_loginGeneration;
+    if (_loginPolling) clearTimeout(_loginPolling);
+    _loginPolling = null;
+    _qrTaskId = null;
+    $("#login-qrcode").style.display = "none";
+    $("#login-status").textContent = result.status === "done" ? "登录已完成，Cookie 已保存。" : "扫码登录已取消。";
+    setLoginBusy(false);
+    if (result.status === "done") await loadCookieStatus();
+  } catch (error) {
+    $("#login-status").textContent = "取消失败：" + error.message;
+  }
+}
+
+async function doBrowserLogin() {
   if ($("#btn-login").disabled) return;
   const btn = $("#btn-login");
   const status = $("#login-status");
-  btn.disabled = true;
+  setLoginBusy(true);
   status.textContent = "\u6b63\u5728\u542f\u52a8\u6d4f\u89c8\u5668\u2026";
   try {
     const resp = await api("POST", "/api/login");
@@ -194,7 +275,7 @@ async function doLogin() {
           clearTimeout(_loginPolling);
           _loginPolling = null;
           status.textContent = "\u767b\u5f55\u6210\u529f\uff01Cookie \u5df2\u81ea\u52a8\u4fdd\u5b58\u3002";
-          btn.disabled = false;
+          setLoginBusy(false);
           toast("Bilibili \u767b\u5f55\u6210\u529f");
           await loadCookieStatus();
           await loadConfiguration(true);
@@ -202,20 +283,20 @@ async function doLogin() {
           clearTimeout(_loginPolling);
           _loginPolling = null;
           status.textContent = "\u767b\u5f55\u5931\u8d25: " + esc(s.error);
-          btn.disabled = false;
+          setLoginBusy(false);
         }
       } catch (e) {
         clearTimeout(_loginPolling);
         _loginPolling = null;
         status.textContent = "\u72b6\u6001\u67e5\u8be2\u5f02\u5e38: " + esc(e.message);
-        btn.disabled = false;
+        setLoginBusy(false);
       }
       if (btn.disabled) _loginPolling = setTimeout(poll, 2000);
     };
     _loginPolling = setTimeout(poll, 2000);
   } catch (e) {
     status.textContent = "\u542f\u52a8\u5931\u8d25: " + esc(e.message);
-    btn.disabled = false;
+    setLoginBusy(false);
   }
 }
 
@@ -364,6 +445,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnClear = $("#btn-clear-cookie");
   if (btnLogin) btnLogin.addEventListener("click", doLogin);
   if (btnClear) btnClear.addEventListener("click", clearCookie);
+  $("#btn-browser-login")?.addEventListener("click", doBrowserLogin);
+  $("#btn-cancel-login")?.addEventListener("click", cancelLogin);
 });
 
-export { loadLLM, collectLLM, llmRow, loadLogs, loadTasks, retryTask, cancelTask, loadCookieStatus, doLogin, clearCookie, loadTemplates, exportTemplate, detTempl, loadIntroTemplates, detIntro, hasLLMDraft };
+export { loadLLM, collectLLM, llmRow, loadLogs, loadTasks, retryTask, cancelTask, loadCookieStatus, doLogin, doBrowserLogin, cancelLogin, clearCookie, loadTemplates, exportTemplate, detTempl, loadIntroTemplates, detIntro, hasLLMDraft };

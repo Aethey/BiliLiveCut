@@ -184,6 +184,7 @@ async def dispatch(
             role = result["role"]
         elif session is not None:
             username, role = session["username"], session["role"]
+            request.state.auth_session = request.cookies.get(COOKIE_NAME, "")
             if request.method in _WRITES:
                 if not secrets.compare_digest(
                     request.headers.get("x-blc-csrf", "").encode(), session["csrf_token"].encode()

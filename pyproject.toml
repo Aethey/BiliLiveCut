@@ -54,6 +54,7 @@ web = [
     "jinja2>=3.1",
     "python-multipart>=0.0.18",
     "playwright>=1.61,<1.62",
+    "qrcode==8.2",           # 网页扫码生成 SVG，无需 Pillow 或服务器浏览器
 ]
 # 开发与测试工具。
 dev = [

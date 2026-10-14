@@ -812,6 +812,54 @@ try {
   assert.ok(!element("logs-list").innerHTML.includes("reference-123"), "log recovery must clear stale error");
   globalThis.fetch = savedFetch;
 
+  // Exercise the real QR login UI with deterministic polling and cancellation.
+  const savedSetTimeout = globalThis.setTimeout;
+  const savedClearTimeout = globalThis.clearTimeout;
+  const loginTimers = new Map();
+  let timerSequence = 0;
+  globalThis.setTimeout = callback => { const id = ++timerSequence; loginTimers.set(id, callback); return id; };
+  globalThis.clearTimeout = id => loginTimers.delete(id);
+  let qrState = "scan";
+  let loginCalls = [];
+  globalThis.fetch = async (path, options) => {
+    loginCalls.push([path, options.method]);
+    if (path === "/api/login/qrcode") return { ok: true, status: 200, json: async () => ({ task_id: "qr-task", status: "starting" }) };
+    if (path === "/api/login/qrcode/qr-task") return { ok: true, status: 200, json: async () => ({
+      status: qrState, qrcode: ["scan", "confirm"].includes(qrState) ? "data:image/svg+xml;base64,PHN2Zy8+" : "", error: "",
+    }) };
+    if (path === "/api/login/qrcode/qr-task/cancel") return { ok: true, status: 200, json: async () => ({ status: "cancelled" }) };
+    return savedFetch(path, options);
+  };
+  const loginTick = async () => {
+    const [id, callback] = loginTimers.entries().next().value;
+    loginTimers.delete(id);
+    await callback();
+  };
+  await settingsUI.doLogin();
+  assert.equal(element("btn-login").disabled, true);
+  assert.equal(element("btn-browser-login").disabled, true);
+  await loginTick();
+  assert.equal(element("login-qrcode").style.display, "");
+  assert.match(element("login-status").textContent, /扫描/);
+  qrState = "confirm"; await loginTick();
+  assert.match(element("login-status").textContent, /确认/);
+  qrState = "timeout"; await loginTick();
+  assert.equal(element("btn-login").disabled, false);
+  assert.equal(element("login-qrcode").style.display, "none");
+  assert.match(element("login-status").textContent, /过期/);
+  assert.ok(!loginCalls.some(([path]) => path === "/api/login"), "QR login must not launch a server browser");
+  qrState = "scan"; await settingsUI.doLogin(); await loginTick();
+  await settingsUI.cancelLogin();
+  assert.ok(loginCalls.some(([path, method]) => path.endsWith("/cancel") && method === "POST"));
+  assert.equal(element("btn-login").disabled, false);
+  assert.equal(loginTimers.size, 0, "cancellation must remove pending polls");
+  await settingsUI.doLogin(); qrState = "done"; await loginTick();
+  assert.match(element("login-status").textContent, /成功/);
+  assert.equal(element("btn-browser-login").disabled, false);
+  globalThis.fetch = savedFetch;
+  globalThis.setTimeout = savedSetTimeout;
+  globalThis.clearTimeout = savedClearTimeout;
+
   let logsRequested = false;
   globalThis.fetch = async (path, options) => {
     if (String(path).startsWith("/api/dashboard")) throw new Error("room database unavailable");
