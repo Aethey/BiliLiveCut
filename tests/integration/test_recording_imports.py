@@ -252,7 +252,11 @@ def test_import_page_progress_and_exact_session_results(temp_db: None, monkeypat
     page = client.get("/imports")
     assert page.status_code == 200
     assert '/?tab=models"' in page.text and "LLM 服务商" in page.text
-    assert '/imports"' in client.get("/").text
+    dashboard = client.get("/").text
+    assert '<button class="tab" data-tab="imports" type="button">录播分析</button>' in dashboard
+    assert 'id="tab-imports" class="panel imports-page"' in dashboard
+    assert dashboard.count('id="import-form"') == 1
+    assert 'id="import-form"' in page.text
     progress = client.get("/api/recording-imports").json()["imports"][0]["analysis"]
     assert progress == {"total": 3, "done": 2, "failed": 0, "retrying": 1, "asr_unavailable": 1, "transcripts": 1}
     timeline = client.get(f"/api/sessions/timeline?session_id={imported_session_id}").json()

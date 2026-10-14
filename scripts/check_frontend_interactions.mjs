@@ -109,7 +109,9 @@ const danmakuTab = element("danmaku-tab", ["tab"]);
 danmakuTab.dataset.tab = "danmaku";
 const logsTab = element("logs-tab", ["tab"]);
 logsTab.dataset.tab = "logs";
-const tabs = [roomsTab, candidatesTab, modelsTab, featuresTab, transcriptsTab, danmakuTab, logsTab];
+const importsTab = element("imports-tab", ["tab"]);
+importsTab.dataset.tab = "imports";
+const tabs = [roomsTab, candidatesTab, modelsTab, featuresTab, transcriptsTab, danmakuTab, logsTab, importsTab];
 const roomsPanel = element("tab-rooms", ["panel", "active"]);
 const candidatesPanel = element("tab-candidates", ["panel"]);
 const modelsPanel = element("tab-models", ["panel"]);
@@ -117,7 +119,8 @@ const featuresPanel = element("tab-features", ["panel"]);
 const transcriptsPanel = element("tab-transcripts", ["panel"]);
 const danmakuPanel = element("tab-danmaku", ["panel"]);
 const logsPanel = element("tab-logs", ["panel"]);
-const panels = [roomsPanel, candidatesPanel, modelsPanel, featuresPanel, transcriptsPanel, danmakuPanel, logsPanel];
+const importsPanel = element("tab-imports", ["panel"]);
+const panels = [roomsPanel, candidatesPanel, modelsPanel, featuresPanel, transcriptsPanel, danmakuPanel, logsPanel, importsPanel];
 
 const llmDraftFields = new Map([
   [".llm-name", { value: "草稿模型" }],
@@ -150,6 +153,7 @@ globalThis.addEventListener = (type, listener) => {
 };
 globalThis.document = {
   querySelector(selector) {
+    if (selector === "body.imports-page") return null;
     return selector.startsWith("#") ? element(selector.slice(1)) : element(selector);
   },
   querySelectorAll(selector) {
@@ -343,6 +347,8 @@ globalThis.fetch = async (path, options = {}) => {
       transcriptRows[0].text = JSON.parse(options.body || "{}").corrected_text;
     }
     payload = { transcript: transcriptRows[0], learned_aliases: { "查里斯": "查理斯" } };
+  } else if (requestPath === "/api/recording-imports") {
+    payload = { imports: [], engine: "whisper", max_video_bytes: 50 * 1024 ** 3, max_comment_bytes: 32 * 1024 ** 2 };
   } else if (requestPath === "/api/rooms/1/start") {
     dashboardRooms[0].running = true;
     dashboardRooms[0].recording_state = "starting";
@@ -718,6 +724,23 @@ try {
   windowListeners.get("beforeunload")(dirtyBeforeUnload);
   assert.equal(dirtyBeforeUnload.defaultPrevented, true, "unsaved transcript correction did not block navigation");
   assert.equal(dirtyBeforeUnload.returnValue, "", "unsaved transcript correction did not request browser confirmation");
+  await importsTab.emit("click");
+  await settle();
+  assert.equal(importsPanel.classList.contains("active"), true, "recording imports did not open inside the dashboard");
+  assert.equal(element("transcript-text-41").value, "人工纠正后的正文", "recording imports navigation discarded a transcript draft");
+  assert.ok(requests.includes("/api/recording-imports"), "recording imports tab did not load its records");
+  assert.match(element("imports-list").innerHTML, /还没有导入记录/, "an empty import list stayed in its loading state");
+  element("import-title").value = "尚未提交的录播标题";
+  const selectedImportFile = { name: "草稿录播.mp4", size: 1024 };
+  element("import-video").files = [selectedImportFile];
+  await transcriptsTab.emit("click");
+  await settle();
+  await importsTab.emit("click");
+  await settle();
+  assert.equal(element("import-title").value, "尚未提交的录播标题", "tab switching discarded the import title");
+  assert.equal(element("import-video").files[0], selectedImportFile, "tab switching discarded the selected video");
+  element("import-title").value = "";
+  element("import-video").files = [];
   await transcriptsTab.emit("click");
   await settle();
   assert.equal(

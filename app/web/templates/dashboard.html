@@ -28,7 +28,7 @@
       <span class="tabs-label">录制</span>
       <button class="tab active" data-tab="rooms">直播间</button>
       <button class="tab" data-tab="recording">录制状态</button>
-      <a class="import-nav-link" href="/imports">录播分析</a>
+      <button class="tab" data-tab="imports" type="button">录播分析</button>
       <button class="tab" data-tab="schedules">录制预约</button>
       <button class="tab" data-tab="transcripts">实时转写</button>
       <button class="tab" data-tab="danmaku">弹幕热度</button>
@@ -65,6 +65,9 @@
       <button class="tab" data-tab="intro-templates">片头片尾</button>
     </nav>
     {% include 'configuration.html' %}
+    <section id="tab-imports" class="panel imports-page">
+      {% include 'recording_import_content.html' %}
+    </section>
     <!-- 直播间 -->
     <section id="tab-rooms" class="panel active">
       <div class="card add-room">

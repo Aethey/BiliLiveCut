@@ -43,8 +43,6 @@
   --red: #f85149;
   --yellow: #d29922;
 }
-.import-nav-link { padding: 10px 14px; color: var(--muted); text-decoration: none; align-self: center; white-space: nowrap; }
-.import-nav-link:hover { color: var(--accent); }
 .imports-page .topbar nav { display: flex; gap: 20px; }
 .imports-page a { color: var(--accent); text-decoration: none; }
 .imports-main { max-width: 1180px; margin: 0 auto; padding: 36px 24px 64px; }

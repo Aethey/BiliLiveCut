@@ -1,4 +1,4 @@
-// 独立录播分析页：分步流式上传、持久作业和分析结果导航。
+// 录播分析：工作台标签与独立页面共用分步上传、持久作业和分析结果导航。
 import { $, api, esc } from "./common.js";
 
 let records = [];
@@ -9,13 +9,18 @@ let busy = false;
 let cancelled = false;
 let activeUpload = null;
 let listLoading = false;
-let listSignature = "";
+let listSignature = null;
 let actionPending = false;
 let actionError = "";
 let pageActive = true;
 let pollTimer = null;
 let videoLimit = 50 * 1024 ** 3;
 let commentLimit = 32 * 1024 ** 2;
+
+export function hasRecordingImportDraft() {
+  return busy || Boolean($("#import-video").files?.length || $("#import-comments").files?.length)
+    || (!draft && !pendingDeclaration && Boolean($("#import-title").value.trim()));
+}
 
 export function uploadFile(path, file, onProgress, onRequest) {
   return new Promise((resolve, reject) => {
@@ -163,7 +168,7 @@ function recordCard(record) {
     <div class="row import-actions">${controls}</div></article>`;
 }
 
-async function refreshImports() {
+export async function refreshImports() {
   if (busy || listLoading || actionPending) return;
   listLoading = true;
   const revision = operationRevision;
@@ -191,7 +196,12 @@ async function refreshImports() {
         $("#imports-list").querySelector(`[data-id="${focused.id}"][data-action="${focused.action}"]`)?.focus();
       }
     }
-  } catch (error) { $("#imports-list-error").textContent = `读取失败：${error.message}`; }
+  } catch (error) {
+    $("#imports-list-error").textContent = `读取失败：${error.message}`;
+    if (listSignature === null) {
+      $("#imports-list").innerHTML = '<div class="card empty">导入记录读取失败，请点击“刷新状态”重试。</div>';
+    }
+  }
   finally { listLoading = false; }
 }
 
@@ -234,14 +244,16 @@ $("#imports-list").addEventListener("click", async event => {
   finally { actionPending = false; button.disabled = false; await refreshImports(); }
 });
 window.addEventListener("beforeunload", event => {
-  if (!busy) return;
+  if (!hasRecordingImportDraft()) return;
   event.preventDefault(); event.returnValue = "";
 });
 async function poll() {
   if (!document.hidden) await refreshImports();
   if (pageActive) pollTimer = window.setTimeout(poll, 3000);
 }
-window.addEventListener("pagehide", () => { pageActive = false; window.clearTimeout(pollTimer); });
-window.addEventListener("pageshow", event => { if (event.persisted) { pageActive = true; poll(); } });
 renderDraft();
-poll();
+if (document.querySelector("body.imports-page")) {
+  window.addEventListener("pagehide", () => { pageActive = false; window.clearTimeout(pollTimer); });
+  window.addEventListener("pageshow", event => { if (event.persisted) { pageActive = true; poll(); } });
+  poll();
+}
