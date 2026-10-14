@@ -100,9 +100,10 @@ def test_payload_native_build_copies_only_current_windows_abi(monkeypatch: Monke
     staging_dir = tmp_path / "staging"
     result = builder._compile_and_copy_native_modules(staging_dir)
 
-    assert (staging_dir / "licenses/libsais-LICENSE.txt").read_bytes() == b"Apache License 2.0 fixture"
+    assert (staging_dir / "app/accelerators/licenses/libsais-LICENSE.txt").read_bytes() == b"Apache License 2.0 fixture"
+    assert "app/accelerators/licenses/libsais-LICENSE.txt" in builder._collect_included_files(staging_dir)
     assert result == {"c": True, "cython": True, "repeat": True, "rust": True}
-    copied = {path.name for path in (staging_dir / "app" / "accelerators").iterdir()}
+    copied = {path.name for path in (staging_dir / "app" / "accelerators").iterdir() if path.is_file()}
     assert copied == {
         "_c_speedups.cp312-win_amd64.pyd",
         "_cython_speedups.cp312-win_amd64.pyd",

@@ -6,6 +6,6 @@
 
 普通源码安装和 wheel 默认编译新模块。显式 `BLC_SKIP_C_EXTENSIONS=1` 的安装使用同语义 Python 参考算法（O(N log N)），不依赖本地编译工具；C++ 算法的时间和辅助空间为 O(N)。短输入使用有固定上界的精确扫描。算法和测量边界见 [独立内核说明](repeat-cpu-kernel.md)。
 
-Windows Payload 必须新生成匹配当前 Python ABI 的 C、Cython、C++ 和 Rust 模块；构建成功但缺失文件、只留下旧文件、包含本机路径均拒绝打包。Payload 随附 `licenses/libsais-LICENSE.txt`，wheel 和 Docker 也保留第三方许可证。Docker CPU 镜像原有设备策略不变。CI 分别验证有原生模块和无原生模块的实际入口；发布验收同时核对文件和加载后端。
+Windows Payload 必须新生成匹配当前 Python ABI 的 C、Cython、C++ 和 Rust 模块；构建成功但缺失文件、只留下旧文件、包含本机路径均拒绝打包。Payload 随附 `app/accelerators/licenses/libsais-LICENSE.txt`，wheel 和 Docker 也保留第三方许可证。Docker CPU 镜像原有设备策略不变。CI 分别验证有原生模块和无原生模块的实际入口；发布验收同时核对文件和加载后端。
 
 回归覆盖任意周期、Unicode 大小写展开、局部循环修复、正常强调、两个后端的质量结果一致，以及禁止加载模型库时仍能运行。每项加速结论只针对记录中的平台和样本；完整转写速度仍取决于模型推理和输入，不以局部内核倍率替代端到端测量。

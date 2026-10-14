@@ -131,7 +131,7 @@ def main() -> int:  # noqa: D103
             f"app/accelerators/_cython_speedups.{abi}-win_amd64.pyd",
             f"app/accelerators/_repeat_speedups.{abi}-win_amd64.pyd",
             "app/accelerators/_rust_speedups.pyd",
-            "licenses/libsais-LICENSE.txt",
+            "app/accelerators/licenses/libsais-LICENSE.txt",
         }
         missing_native = sorted(required_native - entries)
         if missing_native:

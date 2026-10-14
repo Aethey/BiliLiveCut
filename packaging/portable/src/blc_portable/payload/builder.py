@@ -1,7 +1,7 @@
 """Payload 构建器 — 构建 source_payload.zip 和完整 Manifest。
 
 流程:
-1. 从固定的当前发布基线 9f80d3c 提取源码 → staging/
+1. 从固定的当前发布基线 bd81fc9 提取源码 → staging/
 2. 校验源码快照本身就是 0.1.18.9-alpha
 3. 构建 ZIP (收集 included_files 集合)
 4. 基于 included_files 生成 Manifest (文件数/Hash 与 ZIP 严格一致)
@@ -284,7 +284,7 @@ def _compile_and_copy_native_modules(staging_dir: Path) -> dict[str, bool]:
         shutil.copy2(source, destination)
         _logger.info("Copied native module: %s (%d bytes)", source.name, destination.stat().st_size)
 
-    licenses = staging_dir / "licenses"
+    licenses = staging_accelerators / "licenses"
     licenses.mkdir(parents=True, exist_ok=True)
     shutil.copy2(repo_root / "tools/native/repeat/vendor/libsais/LICENSE", licenses / "libsais-LICENSE.txt")
     return results
