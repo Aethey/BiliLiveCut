@@ -6,6 +6,7 @@ import hashlib
 import itertools
 import json
 import random
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -103,3 +104,34 @@ def test_vendored_suffix_array_sources_match_reviewed_hashes() -> None:
         data = (root / name).read_bytes()
         assert len(data) == entry["vendored_bytes"]
         assert hashlib.sha256(data).hexdigest() == entry["vendored_sha256"]
+
+
+@pytest.mark.parametrize("failure", ["missing", "source", "license", "manifest"])
+def test_release_audit_rejects_changed_native_dependency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    from scripts import release_audit
+
+    source = Path(__file__).resolve().parents[2] / "tools/native/repeat/vendor/libsais"
+    target = tmp_path / "tools/native/repeat/vendor/libsais"
+    shutil.copytree(source, target)
+    monkeypatch.setattr(release_audit, "REPO_ROOT", tmp_path)
+    baseline = release_audit.AuditResult()
+    release_audit.check_native_repeat_sources(baseline)
+    assert baseline.exit_code == release_audit.EXIT_OK
+    if failure == "missing":
+        (target / "LICENSE").unlink()
+    elif failure == "source":
+        with (target / "src/libsais.c").open("ab") as output:
+            output.write(b"unexpected change")
+    elif failure == "license":
+        lock = json.loads((target / "UPSTREAM.json").read_text(encoding="utf-8"))
+        lock["license"] = "MIT"
+        (target / "UPSTREAM.json").write_text(json.dumps(lock), encoding="utf-8")
+    else:
+        (target / "UPSTREAM.json").write_text("{invalid", encoding="utf-8")
+    result = release_audit.AuditResult()
+    release_audit.check_native_repeat_sources(result)
+    assert result.exit_code == release_audit.EXIT_FAIL

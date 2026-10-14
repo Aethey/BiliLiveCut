@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import sys
 import tomllib
@@ -305,6 +306,30 @@ def check_ci_bypass(audit: AuditResult) -> None:
         )
 
 
+def check_native_repeat_sources(audit: AuditResult) -> None:
+    """固定原生依赖的来源、许可证与逐文件身份，缺失或改变时阻断发布。"""
+    root = REPO_ROOT / "tools/native/repeat/vendor/libsais"
+    valid = False
+    try:
+        lock = json.loads((root / "UPSTREAM.json").read_text(encoding="utf-8"))
+        names = {"src/libsais.c", "include/libsais.h", "LICENSE"}
+        valid = (
+            lock["commit"] == "ce90878d784b5ff7d019300535675e4a2e22aae0"
+            and lock["license"] == "Apache-2.0"
+            and lock["openmp"] is False
+            and set(lock["files"]) == names
+        )
+        if valid:
+            for name in names:
+                data = (root / name).read_bytes()
+                record = lock["files"][name]
+                valid = valid and len(data) == record["vendored_bytes"]
+                valid = valid and hashlib.sha256(data).hexdigest() == record["vendored_sha256"]
+    except (OSError, ValueError, TypeError, KeyError):
+        valid = False
+    audit.check("重复检测原生依赖来源、许可证与文件哈希一致", valid)
+
+
 def check_distribution_config(audit: AuditResult) -> None:
     """Check wheel/sdist runtime content and fail-closed release tooling."""
     pyproject_path = REPO_ROOT / "pyproject.toml"
@@ -340,13 +365,15 @@ def check_distribution_config(audit: AuditResult) -> None:
         "仓库根 LICENSE 缺失或内容不完整",
     )
     audit.check(
-        "Python 包元数据声明项目 LICENSE",
-        pyproject["project"].get("license") == "MIT" and pyproject["project"].get("license-files") == ["LICENSE"],
+        "Python 包元数据声明项目与 libsais 许可证",
+        pyproject["project"].get("license") == "MIT"
+        and pyproject["project"].get("license-files") == ["LICENSE", "tools/native/repeat/vendor/libsais/LICENSE"],
     )
     audit.check(
         "构建后端支持 SPDX 许可证元数据",
         "setuptools>=77" in pyproject["build-system"].get("requires", []),
     )
+    check_native_repeat_sources(audit)
     direct_build_requirements = 'python -m pip install --upgrade pip "setuptools>=77" "Cython==3.2.9"'
     audit.check(
         "直接 setup.py 构建显式安装声明的构建后端",
