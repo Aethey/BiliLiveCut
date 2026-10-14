@@ -54,16 +54,18 @@ def _qr_browser(request: Request, *, create: bool = False) -> str:
         if (
             separator
             and len(nonce) == 32
+            and all(char in "0123456789abcdef" for char in nonce)
             and expires.isascii()
             and expires.isdecimal()
             and _login_time.time() < int(expires) <= _login_time.time() + _QR_COOKIE_SECONDS
             and signature.isascii()
             and secrets.compare_digest(signature, expected)
         ):
-            if not create:
-                return token
             # 续期不改变浏览器 nonce；已开始的任务仍属于同一浏览器。
-            payload = f"{nonce}.{int(_login_time.time()) + _QR_COOKIE_SECONDS}"
+            # 签名通过后从数值重建规范文本，不把请求中的原始片段写入响应 Cookie。
+            nonce_number = int(nonce, 16)
+            expires_at = int(_login_time.time()) + _QR_COOKIE_SECONDS if create else int(expires)
+            payload = f"{nonce_number:032x}.{expires_at}"
             return payload + "." + hmac.digest(_QR_SECRET, payload.encode(), "sha256").hex()
     if not create:
         raise HTTPException(status_code=404, detail="登录任务不存在。")
