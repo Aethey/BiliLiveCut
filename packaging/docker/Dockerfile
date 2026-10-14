@@ -7,15 +7,37 @@ RUN --mount=from=uv,source=/uv,target=/bin/uv \
     /bin/uv --no-cache pip install --python /usr/local/bin/python --require-hashes --no-deps \
     -r /tmp/requirements-system.lock
 
+# 固定官方 libass 源包和补丁；未合并补丁的维护身份随镜像保留，完整回归尚未验收。
+FROM python-base AS libass-builder
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential pkg-config nasm xz-utils patch \
+       libfontconfig-dev libfreetype-dev libharfbuzz-dev libfribidi-dev libunibreak-dev \
+    && rm -rf /var/lib/apt/lists/*
+ADD --checksum=sha256:2dca25c0e0c837ddf00b52011b3f82cac1e4ddd3ad018227806b0c2288864acc \
+    https://github.com/libass/libass/releases/download/0.17.5/libass-0.17.5.tar.xz /tmp/libass.tar.xz
+COPY packaging/docker/patches/libass-cve-2026-95127.patch /tmp/libass.patch
+COPY packaging/docker/patches/libass-source.json /tmp/libass-source.json
+WORKDIR /tmp/libass
+RUN echo "0636cdd5088b033063a1459d07dbf66b4a5e94083d0b478e37a14440820b331c  /tmp/libass.patch" | sha256sum -c - \
+    && tar -xf /tmp/libass.tar.xz --strip-components=1 \
+    && patch --batch --fuzz=0 -p1 < /tmp/libass.patch \
+    && ./configure --prefix=/opt/ffmpeg --disable-static --enable-fontconfig --enable-libunibreak \
+    && make -j 4 \
+    && make install \
+    && mkdir -p /opt/ffmpeg/share/source/libass \
+    && cp /tmp/libass.tar.xz /tmp/libass.patch /tmp/libass-source.json COPYING /opt/ffmpeg/share/source/libass/
+
 # FFmpeg 使用官方签名发行源码；命令行与 PyAV 共用同一套已修复共享库。
 FROM python-base AS ffmpeg-builder
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential pkg-config nasm xz-utils \
-       libass-dev libfontconfig-dev libfreetype-dev libharfbuzz-dev libfribidi-dev \
+       libfontconfig-dev libfreetype-dev libharfbuzz-dev libfribidi-dev libunibreak-dev \
        libx264-dev libx265-dev libvpx-dev libopus-dev libmp3lame-dev libvorbis-dev libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 ADD --checksum=sha256:8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e \
     https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz /tmp/ffmpeg.tar.xz
+COPY --from=libass-builder /opt/ffmpeg /opt/ffmpeg
+ENV PKG_CONFIG_PATH=/opt/ffmpeg/lib/pkgconfig LD_LIBRARY_PATH=/opt/ffmpeg/lib
 WORKDIR /tmp/ffmpeg
 RUN tar -xf /tmp/ffmpeg.tar.xz --strip-components=1 \
     && ./configure --prefix=/opt/ffmpeg --enable-shared --disable-static \
@@ -33,7 +55,7 @@ FROM python-base AS builder
 COPY --from=uv /uv /bin/uv
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential pkg-config cargo rustc \
-       libass9 libfontconfig1 libfreetype6 libharfbuzz0b libfribidi0 \
+       libfontconfig1 libfreetype6 libharfbuzz0b libfribidi0 libunibreak6 \
        libx264-164 libx265-215 libvpx9 libopus0 libmp3lame0 libvorbis0a libvorbisenc2 libssl3t64 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -75,7 +97,7 @@ RUN --mount=from=uv,source=/uv,target=/bin/uv \
     && python -I -c "import ensurepip; from pathlib import Path; [p.unlink() for p in (Path(ensurepip.__file__).parent / '_bundled').glob('*.whl')]"
 RUN apt-get update \
     && apt-get install -y --no-install-recommends fonts-noto-cjk fontconfig libgomp1 liblzma5 \
-       libass9 libfontconfig1 libfreetype6 libharfbuzz0b libfribidi0 \
+       libfontconfig1 libfreetype6 libharfbuzz0b libfribidi0 libunibreak6 \
        libx264-164 libx265-215 libvpx9 libopus0 libmp3lame0 libvorbis0a libvorbisenc2 libssl3t64 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 1000 --create-home appuser \

@@ -34,3 +34,6 @@
 
 # Preserve pinned upstream byte hashes on every checkout platform.
 tools/native/repeat/vendor/libsais/** text eol=lf
+
+# Preserve reviewed libass patch bytes for checksum validation.
+packaging/docker/patches/*.patch text eol=lf
