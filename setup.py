@@ -31,6 +31,21 @@ if not _skip_extensions:
             extra_link_args=(["/Brepro"] if sys.platform == "win32" else []),
         )
         _extensions.append(_r2)
+
+        _repeat = Extension(
+            "app.accelerators._repeat_speedups",
+            sources=[
+                "tools/native/cython/_repeat_speedups.pyx",
+                "tools/native/repeat/repeat.cpp",
+                "tools/native/repeat/vendor/libsais/src/libsais.c",
+            ],
+            include_dirs=["tools/native/repeat", "tools/native/repeat/vendor/libsais/include"],
+            depends=["tools/native/repeat/repeat.hpp", "tools/native/repeat/vendor/libsais/include/libsais.h"],
+            language="c++",
+            extra_compile_args=(["/O2", "/utf-8", "/std:c++17"] if sys.platform == "win32" else ["-O3", "-std=c++17"]),
+            extra_link_args=(["/Brepro"] if sys.platform == "win32" else []),
+        )
+        _extensions.append(_repeat)
     except ImportError:
         # Cython 未安装：跳过编译，由加速分派层使用 Python 参考实现。
         pass

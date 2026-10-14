@@ -31,3 +31,6 @@
 *.ts binary
 *.mp3 binary
 *.wav binary
+
+# Preserve pinned upstream byte hashes on every checkout platform.
+tools/native/repeat/vendor/libsais/** text eol=lf

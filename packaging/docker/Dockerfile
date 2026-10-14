@@ -58,6 +58,7 @@ COPY docs/live-source-plugins.md docs/douyin-plugin-handoff.md ./docs/
 COPY plugin ./plugin
 COPY tools/native/c ./tools/native/c
 COPY tools/native/cython ./tools/native/cython
+COPY tools/native/repeat ./tools/native/repeat
 COPY tools/native/rust ./tools/native/rust
 COPY tools/native/build_rust.py ./tools/native/build_rust.py
 RUN /app/.venv/bin/python tools/native/build_rust.py
@@ -104,6 +105,7 @@ WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 COPY packaging/docker/entrypoint.py packaging/docker/healthcheck.py ./docker/
 COPY tools/native/rust/THIRD_PARTY_NOTICES.md /usr/share/doc/bili-live-cut-rust/THIRD_PARTY_NOTICES.md
+COPY tools/native/repeat/vendor/libsais/LICENSE /usr/share/doc/bili-live-cut-repeat/LICENSE-libsais
 USER appuser
 VOLUME ["/data"]
 EXPOSE 8000

@@ -1,0 +1,93 @@
+{
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.12.14",
+  "baseline": "PR original Cython",
+  "baseline_sha256": "ceed0da5c828a826ab52947cfe13041061c4c0beb46337acae934f8bb250d0d5",
+  "results": [
+    {
+      "case": "empty",
+      "codepoints": 0,
+      "baseline_seconds": 9.24500054679811e-08,
+      "kernel_seconds": 2.909999602707103e-08,
+      "speedup": 3.176976566662658
+    },
+    {
+      "case": "short-normal",
+      "codepoints": 24,
+      "baseline_seconds": 1.1564699998416471e-05,
+      "kernel_seconds": 6.22500003373716e-07,
+      "speedup": 18.577831222072522
+    },
+    {
+      "case": "short-loop",
+      "codepoints": 48,
+      "baseline_seconds": 5.07340000331169e-06,
+      "kernel_seconds": 3.517500008456409e-07,
+      "speedup": 14.423311986111578
+    },
+    {
+      "case": "boundary-256",
+      "codepoints": 256,
+      "baseline_seconds": 0.0001534851000033086,
+      "kernel_seconds": 2.5541099996189587e-05,
+      "speedup": 6.009337891719881
+    },
+    {
+      "case": "boundary-257",
+      "codepoints": 257,
+      "baseline_seconds": 0.0001479937500334927,
+      "kernel_seconds": 2.636874978634296e-05,
+      "speedup": 5.612467456084793
+    },
+    {
+      "case": "long-whole-period",
+      "codepoints": 128000,
+      "baseline_seconds": 0.021014400001149625,
+      "kernel_seconds": 0.0008072999989963137,
+      "speedup": 26.030471977302184
+    },
+    {
+      "case": "long-local-period",
+      "codepoints": 128012,
+      "baseline_seconds": 0.021017650004068855,
+      "kernel_seconds": 0.014347249998536427,
+      "speedup": 1.4649253345563005
+    },
+    {
+      "case": "long-uniform",
+      "codepoints": 128000,
+      "baseline_seconds": 0.030602250000811182,
+      "kernel_seconds": 0.000893999997060746,
+      "speedup": 34.230704811436155
+    },
+    {
+      "case": "noise-16000",
+      "codepoints": 16000,
+      "baseline_seconds": 0.026717499997175764,
+      "kernel_seconds": 0.0026373000000603497,
+      "speedup": 10.130626017731917
+    },
+    {
+      "case": "noise-32000",
+      "codepoints": 32000,
+      "baseline_seconds": 0.05935204999695998,
+      "kernel_seconds": 0.005097200002637692,
+      "speedup": 11.644049667709048
+    },
+    {
+      "case": "noise-64000",
+      "codepoints": 64000,
+      "baseline_seconds": 0.13242309999623103,
+      "kernel_seconds": 0.010295450003468432,
+      "speedup": 12.862293532737185
+    },
+    {
+      "case": "noise-128000",
+      "codepoints": 128000,
+      "baseline_seconds": 0.2793597999989288,
+      "kernel_seconds": 0.021963649996905588,
+      "speedup": 12.71918829694915
+    }
+  ],
+  "kernel_sha256": "f7b86d07999fb3d1f87bb5396cc319ddf6752d15ce5281f46a56314aa675335a"
+}
