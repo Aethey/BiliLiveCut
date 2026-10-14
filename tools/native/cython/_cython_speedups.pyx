@@ -603,27 +603,72 @@ def text_novelty(str current not None, str baseline not None, *, bint include_en
 
 
 
+cdef list _repeat_z(list symbols):
+    """线性计算公共前缀长度，复用已匹配区间。"""
+    cdef Py_ssize_t size = len(symbols)
+    cdef Py_ssize_t left = 0, right = 0, index, length
+    cdef list matches = [0] * size
+    for index in range(1, size):
+        length = min(right - index, <Py_ssize_t>matches[index - left]) if index < right else 0
+        while index + length < size and symbols[length] == symbols[index + length]:
+            length += 1
+        matches[index] = length
+        if index + length > right:
+            left = index
+            right = index + length
+    return matches
+
+
 def consecutive_repeat_details(str text not None) -> tuple[int, int, int]:
-    """逐周期反向累计相等后缀，O(32N) 时间/O(1) 额外空间，保留最早平局。"""
-    cdef Py_ssize_t size = len(text)
-    cdef Py_ssize_t unit, start, run, repeats, coverage
+    """分治检测任意长度连续重复，O(N log N) 时间/O(N) 空间。"""
+    cdef list symbols = list(text)
+    cdef Py_ssize_t size = len(symbols)
+    cdef Py_ssize_t offset, end, length, middle, right_length, unit, anchor
+    cdef Py_ssize_t start, stop, suffix, repeats, coverage, absolute_start
     cdef Py_ssize_t best_start = 0, best_unit = 0, best_repeats = 0, best_coverage = 0
-    for unit in range(1, min(32, size // 3) + 1):
-        run = 0
-        for start in range(size - unit - 1, -1, -1):
-            if PyUnicode_READ_CHAR(text, start) == PyUnicode_READ_CHAR(text, start + unit):
-                run += 1
-            else:
-                run = 0
-            repeats = 1 + run // unit
-            if repeats < 3:
-                continue
-            coverage = repeats * unit
-            if coverage > best_coverage or (coverage == best_coverage and unit == best_unit and start < best_start):
-                best_start = start
-                best_unit = unit
-                best_repeats = repeats
-                best_coverage = coverage
+    cdef list pending = [(0, size)]
+    cdef list section, left, right, reversed_left, left_suffix, right_prefix, forward, backward
+    while pending:
+        offset, end = pending.pop()
+        length = end - offset
+        if length < 3 or length < best_coverage:
+            continue
+        section = symbols[offset:end]
+        middle = length // 2
+        right_length = length - middle
+        left = section[:middle]
+        right = section[middle:]
+        reversed_left = left[::-1]
+        # 空字符串哨兵不会与输入的任意 Unicode 单字符冲突。
+        left_suffix = _repeat_z(reversed_left)
+        right_prefix = _repeat_z(right)
+        forward = _repeat_z(right + [""] + section)
+        backward = _repeat_z(reversed_left + [""] + section[::-1])
+        for unit in range(1, length // 3 + 1):
+            suffix = left_suffix[unit] if unit < middle else 0
+            for anchor in range(2):
+                if anchor == 0:
+                    start = middle - unit - suffix
+                    stop = middle + <Py_ssize_t>forward[right_length + 1 + middle - unit]
+                else:
+                    start = middle - <Py_ssize_t>backward[middle + 1 + right_length - unit]
+                    stop = middle + unit + <Py_ssize_t>right_prefix[unit]
+                repeats = (stop - start) // unit
+                coverage = repeats * unit
+                absolute_start = offset + start
+                if repeats < 3:
+                    continue
+                if coverage > best_coverage or (coverage == best_coverage and (
+                    unit < best_unit or (unit == best_unit and absolute_start < best_start)
+                )):
+                    best_start = absolute_start
+                    best_unit = unit
+                    best_repeats = repeats
+                    best_coverage = coverage
+                    if coverage == size:
+                        return best_start, best_unit, best_repeats
+        pending.append((offset + middle, end))
+        pending.append((offset, offset + middle))
     return best_start, best_unit, best_repeats
 
 
