@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import hmac
+import secrets
 import time as _login_time
 from hashlib import sha256
 from typing import Any
@@ -36,20 +39,71 @@ def _record_login_failure(ip: str) -> None:
 router = APIRouter()
 
 
-def _qr_owner(request: Request) -> str:
-    """网页登录限定到会话，Basic/本机模式限定到已认证操作者。"""
-    identity = getattr(request.state, "auth_session", "") or request.state.auth_user
-    return sha256(identity.encode()).hexdigest()
+_QR_COOKIE = "blc_qr_browser"
+_QR_SECRET = secrets.token_bytes(32)
+_QR_COOKIE_SECONDS = 1800
+
+
+def _qr_browser(request: Request, *, create: bool = False) -> str:
+    """只接受本进程签发的短时浏览器标识，不用用户名代替浏览器会话。"""
+    token = request.cookies.get(_QR_COOKIE, "")
+    if len(token) <= 200:
+        payload, separator, signature = token.rpartition(".")
+        nonce, _, expires = payload.partition(".")
+        expected = hmac.digest(_QR_SECRET, payload.encode(), "sha256").hex()
+        if (
+            separator
+            and len(nonce) == 32
+            and expires.isascii()
+            and expires.isdecimal()
+            and _login_time.time() < int(expires) <= _login_time.time() + _QR_COOKIE_SECONDS
+            and signature.isascii()
+            and secrets.compare_digest(signature, expected)
+        ):
+            return token
+    if not create:
+        raise HTTPException(status_code=404, detail="登录任务不存在。")
+    payload = f"{secrets.token_hex(16)}.{int(_login_time.time()) + _QR_COOKIE_SECONDS}"
+    return payload + "." + hmac.digest(_QR_SECRET, payload.encode(), "sha256").hex()
+
+
+def _qr_owner(request: Request, browser: str | None = None) -> str:
+    """任务同时绑定认证身份和短时浏览器标识，切换会话不能访问旧任务。"""
+    browser = browser or _qr_browser(request)
+    identity = getattr(request.state, "auth_session", "") or request.headers.get("authorization", "")
+    return sha256(f"{request.state.auth_user}\0{identity}\0{browser}".encode()).hexdigest()
 
 
 @router.post("/login/qrcode")
 async def qr_login_start(request: Request) -> JSONResponse:
     """申请网页扫码任务，无需服务器桌面。"""
+    from app.web import main
+
+    browser = _qr_browser(request, create=True)
+    session = getattr(request.state, "auth_session", "")
+    store = main._DOCKER_AUTH
+
+    async def authorized() -> bool:
+        if session and store is not None:
+            current = await asyncio.to_thread(store.session, session, touch=False)
+            return current is not None and current["role"] == "admin"
+        return True  # Basic 与本机模式已由每次路由请求的认证中间件校验。
+
     try:
-        token = qr_logins.start(_qr_owner(request))
+        token = qr_logins.start(_qr_owner(request, browser), authorize=authorized)
     except QrLoginError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return JSONResponse({"task_id": token, "status": "starting"}, headers={"Cache-Control": "no-store"})
+    response = JSONResponse({"task_id": token, "status": "starting"}, headers={"Cache-Control": "no-store"})
+    response.set_cookie(
+        _QR_COOKIE,
+        browser,
+        max_age=_QR_COOKIE_SECONDS,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="strict",
+        path="/api/login",
+    )
+    return response
 
 
 @router.get("/login/qrcode/{task_id}")

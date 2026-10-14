@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
-from app.web.qr_login import QrLoginManager
+from app.web.qr_login import LoginTask, QrLoginManager
 
 
-async def test_headless_qr_confirm_persists_cookie_without_returning_it(temp_db, monkeypatch) -> None:
+async def test_headless_qr_confirm_persists_cookie_without_returning_it(
+    temp_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from app.core import settings_store
     from app.web import main
     from app.web import qr_login as service
@@ -20,7 +24,9 @@ async def test_headless_qr_confirm_persists_cookie_without_returning_it(temp_db,
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     events = asyncio.Queue()
 
-    async def respond(request):
+    async def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/nav"):
+            return httpx.Response(200, json={"code": 0, "data": {"isLogin": True, "mid": 123}})
         if request.url.path.endswith("generate"):
             data = {"url": "https://passport.bilibili.com/scan?qrcode_key=test-key", "qrcode_key": "test-key"}
         else:
@@ -29,7 +35,7 @@ async def test_headless_qr_confirm_persists_cookie_without_returning_it(temp_db,
 
     original_client = httpx.AsyncClient
 
-    def isolated_client(*args, **kwargs):
+    def isolated_client(*args: object, **kwargs: object) -> httpx.AsyncClient:
         kwargs.setdefault("transport", httpx.MockTransport(respond))
         return original_client(*args, **kwargs)
 
@@ -40,8 +46,8 @@ async def test_headless_qr_confirm_persists_cookie_without_returning_it(temp_db,
     monkeypatch.setattr(service, "qr_logins", manager)
     settings_store.set_setting("bilibili_cookie", "old-cookie")
 
-    async def wait_state(token, state):
-        async def wait():
+    async def wait_state(token: str, state: str) -> None:
+        async def wait() -> None:
             while manager.tasks[token].status != state:
                 await asyncio.sleep(0.005)
 
@@ -61,7 +67,7 @@ async def test_headless_qr_confirm_persists_cookie_without_returning_it(temp_db,
             await events.put(
                 {
                     "code": 0,
-                    "url": "https://passport.bilibili.com/callback?SESSDATA=session%2Cencoded&bili_jct=csrf&DedeUserID=123",
+                    "url": "https://passport.bilibili.com/callback?SESSDATA=session%2Cencoded&bili_jct=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&DedeUserID=123",
                     "refresh_token": "private-refresh",
                 }
             )
@@ -78,12 +84,12 @@ async def test_headless_qr_confirm_persists_cookie_without_returning_it(temp_db,
         await manager.stop()
 
 
-def test_qr_routes_and_shutdown_without_browser(temp_db, monkeypatch) -> None:
+def test_qr_routes_and_shutdown_without_browser(temp_db: None, monkeypatch: pytest.MonkeyPatch) -> None:
     from app.web import main
     from app.web.main import app
     from app.web.routers import auth
 
-    async def run(self, task):
+    async def run(self: QrLoginManager, task: LoginTask) -> None:
         task.status = "scan"
         task.image = "data:image/svg+xml;base64,PHN2Zy8+"
         await asyncio.Event().wait()
@@ -113,7 +119,9 @@ def test_qr_routes_and_shutdown_without_browser(temp_db, monkeypatch) -> None:
     assert not manager.tasks
 
 
-def test_qr_task_is_bound_to_validated_browser_session(temp_db, tmp_path, monkeypatch) -> None:
+def test_qr_task_is_bound_to_validated_browser_session(
+    temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import httpx
 
     from app.core.docker_auth import AuthStore
@@ -122,7 +130,7 @@ def test_qr_task_is_bound_to_validated_browser_session(temp_db, tmp_path, monkey
     from app.web.main import app
     from app.web.routers import auth
 
-    async def run(self, task):
+    async def run(self: QrLoginManager, task: LoginTask) -> None:
         task.status = "scan"
         await asyncio.Event().wait()
 
@@ -141,10 +149,10 @@ def test_qr_task_is_bound_to_validated_browser_session(temp_db, tmp_path, monkey
             headers={"Origin": "http://testserver"},
         )
         csrf = client.get("/auth/status").json()["csrf_token"]
-        first_cookie = httpx.Cookies(client.cookies)
         response = client.post("/api/login/qrcode", headers={"X-BLC-CSRF": csrf})
         assert response.status_code == 200
         token = response.json()["task_id"]
+        first_cookie = httpx.Cookies(client.cookies)
         assert client.get(f"/api/login/qrcode/{token}").status_code == 200
         client.cookies.clear()
         client.post(
@@ -155,3 +163,40 @@ def test_qr_task_is_bound_to_validated_browser_session(temp_db, tmp_path, monkey
         assert client.get(f"/api/login/qrcode/{token}").status_code == 404
         client.cookies = first_cookie
         assert client.get(f"/api/login/qrcode/{token}").status_code == 200
+
+
+@pytest.mark.parametrize("mode", ["local", "basic"])
+def test_same_username_different_browsers_cannot_share_qr(
+    mode: str, temp_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.web import main, qr_login
+    from app.web.routers import auth
+
+    async def run(self: QrLoginManager, task: LoginTask) -> None:
+        task.status = "scan"
+        await asyncio.Event().wait()
+
+    manager = QrLoginManager()
+    monkeypatch.setattr(QrLoginManager, "_run", run)
+    monkeypatch.setattr(auth, "qr_logins", manager)
+    monkeypatch.setattr(qr_login, "qr_logins", manager)
+    monkeypatch.setattr(main, "_DOCKER_AUTH", None)
+    monkeypatch.setattr(main, "_ADMIN_PASSWORD", "fixture-password" if mode == "basic" else "")
+    with TestClient(main.app, base_url="https://testserver") as first:
+        credentials = ("admin", "fixture-password") if mode == "basic" else None
+        first.auth = credentials
+        start = first.post("/api/login/qrcode")
+        assert start.status_code == 200
+        token = start.json()["task_id"]
+        header = start.headers["set-cookie"]
+        assert "HttpOnly" in header and "Secure" in header and "SameSite=strict" in header
+        assert first.get(f"/api/login/qrcode/{token}").status_code == 200
+        original = httpx.Cookies(first.cookies)
+        first.cookies.clear()
+        assert first.get(f"/api/login/qrcode/{token}").status_code == 404
+        assert first.post(f"/api/login/qrcode/{token}/cancel").status_code == 404
+        assert first.post("/api/login/qrcode").status_code == 409
+        first.cookies.set("blc_qr_browser", "forged.9999999999.signature", path="/api/login")
+        assert first.get(f"/api/login/qrcode/{token}").status_code == 404
+        first.cookies = original
+        assert first.post(f"/api/login/qrcode/{token}/cancel").json()["status"] == "cancelled"

@@ -16,10 +16,10 @@ from app.web.qr_login import QrLoginManager
 QR = {"url": "https://passport.bilibili.com/scan?qrcode_key=test-key", "qrcode_key": "test-key"}
 
 
-def success(session: str = "session%2Cencoded") -> dict:
+def success(session: str = "session%2Cencoded") -> dict[str, object]:
     return {
         "code": 0,
-        "url": f"https://passport.bilibili.com/callback?SESSDATA={session}&bili_jct=csrf&DedeUserID=123",
+        "url": f"https://passport.bilibili.com/callback?SESSDATA={session}&bili_jct=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&DedeUserID=123",
         "refresh_token": "private-refresh",
     }
 
@@ -33,6 +33,8 @@ async def test_web_qr_sequence_and_credentials(session: str, encoded: str) -> No
 
     def handle(request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        if request.url.path.endswith("/nav"):
+            return httpx.Response(200, json={"code": 0, "data": {"isLogin": True, "mid": 123}})
         return httpx.Response(
             200, json={"code": 0, "data": QR if request.url.path.endswith("generate") else next(events)}
         )
@@ -47,30 +49,31 @@ async def test_web_qr_sequence_and_credentials(session: str, encoded: str) -> No
         assert await login.check_state() == QrState.CONF
         with pytest.raises(QrLoginError):
             login.get_credential()
-        assert await login.check_state() == QrState.DONE
+        assert await login.check_state() == QrState.VERIFY
+        with pytest.raises(QrLoginError):
+            login.get_credential()
+        await login.validate_credential()
         assert login.get_credential() == {
             "SESSDATA": encoded,
-            "buvid3": "",
-            "buvid4": "",
-            "bili_jct": "csrf",
+            "bili_jct": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "ac_time_value": "private-refresh",
             "DedeUserID": "123",
-            "sessdata": encoded,
-            "dedeuserid": "123",
         }
         copy = login.get_credential()
         copy["SESSDATA"] = "tampered"
         assert login.get_credential()["SESSDATA"] == encoded
     assert all(request.method == "GET" for request in requests)
     assert dict(requests[0].url.params) == {"source": "main-fe-header"}
-    assert all(dict(request.url.params) == {"qrcode_key": "test-key"} for request in requests[1:])
+    assert all(dict(request.url.params) == {"qrcode_key": "test-key"} for request in requests[1:-1])
     assert all(request.headers["referer"] == "https://www.bilibili.com" for request in requests)
+    assert requests[-1].url == "https://api.bilibili.com/x/web-interface/nav"
+    assert f"SESSDATA={encoded}" in requests[-1].headers["cookie"]
 
 
 @pytest.mark.parametrize(
     "body,status", [({"code": -412, "data": {}}, 200), ({"code": 0, "data": None}, 200), ({}, 503)]
 )
-async def test_protocol_failures_do_not_include_private_payload(body: dict, status: int) -> None:
+async def test_protocol_failures_do_not_include_private_payload(body: dict[str, object], status: int) -> None:
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(lambda request: httpx.Response(status, json=body))
     ) as client:
@@ -101,7 +104,7 @@ async def test_expired_qr_is_not_automatically_replaced() -> None:
 
 
 @pytest.mark.parametrize("event", [{"code": 999}, {"code": 0, "url": "https://invalid/", "refresh_token": "private"}])
-async def test_unusable_completion_does_not_produce_cookie(event: dict) -> None:
+async def test_unusable_completion_does_not_produce_cookie(event: dict[str, object]) -> None:
     def handle(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"code": 0, "data": QR if request.url.path.endswith("generate") else event})
 
@@ -114,7 +117,7 @@ async def test_unusable_completion_does_not_produce_cookie(event: dict) -> None:
             login.get_credential()
 
 
-async def test_callback_preserves_optional_empty_cookie_fields() -> None:
+async def test_callback_missing_required_cookie_fields_is_rejected() -> None:
     data = {"code": 0, "url": "https://passport.bilibili.com/callback?SESSDATA=session", "refresh_token": ""}
 
     def handle(request: httpx.Request) -> httpx.Response:
@@ -123,16 +126,10 @@ async def test_callback_preserves_optional_empty_cookie_fields() -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
         login = WebQrLogin(client)
         await login.generate_qrcode()
-        assert await login.check_state() == QrState.DONE
-        assert login.get_credential() == {
-            "SESSDATA": "session",
-            "buvid3": "",
-            "buvid4": "",
-            "bili_jct": "",
-            "ac_time_value": "",
-            "sessdata": "session",
-            "dedeuserid": "",
-        }
+        with pytest.raises(QrLoginError):
+            await login.check_state()
+        with pytest.raises(QrLoginError):
+            login.get_credential()
 
 
 def test_svg_qr_needs_no_display_or_pillow(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -152,7 +149,8 @@ async def test_manager_saves_only_after_confirmation(last: QrState, monkeypatch:
 
     saved = []
     generate = AsyncMock()
-    check = AsyncMock(side_effect=[QrState.SCAN, QrState.CONF, last])
+    check = AsyncMock(side_effect=[QrState.SCAN, QrState.CONF, QrState.VERIFY if last == QrState.DONE else last])
+    monkeypatch.setattr(service.WebQrLogin, "validate_credential", AsyncMock())
     monkeypatch.setattr(service.WebQrLogin, "generate_qrcode", generate)
     monkeypatch.setattr(service.WebQrLogin, "check_state", check)
     monkeypatch.setattr(
@@ -160,7 +158,7 @@ async def test_manager_saves_only_after_confirmation(last: QrState, monkeypatch:
         "get_credential",
         lambda self: {
             "SESSDATA": "session%2Cencoded",
-            "bili_jct": "csrf",
+            "bili_jct": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "DedeUserID": "123",
             "ac_time_value": "private-refresh",
         },
