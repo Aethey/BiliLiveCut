@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from app.core.docker_auth import AuthError
 from app.core.sanitize import safe_exception_summary
 from app.sources.bilibili.login import QrLoginError
 from app.web.login_handler import get_cookie_info, get_login_status, start_login
@@ -129,15 +130,26 @@ async def qr_login_start(request: Request) -> JSONResponse:
     browser = _qr_browser(request, create=True)
     session = getattr(request.state, "auth_session", "")
     store = main._DOCKER_AUTH
+    credential_version = getattr(request.state, "auth_credential_version", "")
 
     async def authorized() -> bool:
-        if session and store is not None:
-            current = await asyncio.to_thread(store.session, session, touch=False)
-            return current is not None and current["role"] == "admin"
-        return True  # Basic 与本机模式已由每次路由请求的认证中间件校验。
+        if store is None:
+            return True  # 本机模式继续由路由中间件校验。
+        return await asyncio.to_thread(store.admin_authorized, session=session, credential_version=credential_version)
+
+    def persist(cookie: str) -> None:
+        from app.web.login_handler import _save_cookie
+
+        if store is None:
+            _save_cookie(cookie)
+            return
+        try:
+            store.run_admin_action(lambda: _save_cookie(cookie), session=session, credential_version=credential_version)
+        except AuthError as exc:
+            raise QrLoginError(str(exc)) from exc
 
     try:
-        token = qr_logins.start(_qr_owner(request, browser), authorize=authorized)
+        token = qr_logins.start(_qr_owner(request, browser), authorize=authorized, persist=persist)
     except QrLoginError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     task = qr_logins.get(token, _qr_owner(request, browser))

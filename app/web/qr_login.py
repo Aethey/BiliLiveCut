@@ -30,6 +30,7 @@ class LoginTask:
     error: str = ""
     worker: asyncio.Task[None] | None = field(default=None, repr=False)
     authorize: Callable[[], Awaitable[bool]] | None = field(default=None, repr=False)
+    persist: Callable[[str], None] | None = field(default=None, repr=False)
 
 
 class QrLoginManager:
@@ -42,7 +43,13 @@ class QrLoginManager:
     def __init__(self) -> None:
         self.tasks: dict[str, LoginTask] = {}
 
-    def start(self, owner: str, *, authorize: Callable[[], Awaitable[bool]] | None = None) -> str:
+    def start(
+        self,
+        owner: str,
+        *,
+        authorize: Callable[[], Awaitable[bool]] | None = None,
+        persist: Callable[[str], None] | None = None,
+    ) -> str:
         """创建唯一活动任务，避免不同浏览器轮流覆盖全局账号。"""
         for token, task in list(self.tasks.items()):
             if task.worker is not None and task.worker.done() and self._expired(task):
@@ -52,7 +59,7 @@ class QrLoginManager:
         if len(self.tasks) >= self.max_tasks:
             raise QrLoginError("登录任务过多，请稍后重试。")
         token = secrets.token_urlsafe(24)
-        task = LoginTask(owner, authorize=authorize)
+        task = LoginTask(owner, authorize=authorize, persist=persist)
         self.tasks[token] = task
         task.worker = asyncio.create_task(self._run(task))
         return token
@@ -130,7 +137,7 @@ class QrLoginManager:
             # 此状态转换至持久化启动之间没有 await。取消/关闭从此只等待结果，
             # 不取消工作线程，不把已经保存的账号报告为 cancelled。
             task.status = "committing"
-            await asyncio.to_thread(_save_cookie, cookie)
+            await asyncio.to_thread(task.persist or _save_cookie, cookie)
             task.status = QrState.DONE
         except TimeoutError:
             task.status = QrState.TIMEOUT
@@ -153,6 +160,7 @@ class QrLoginManager:
         finally:
             task.image = ""
             task.authorize = None
+            task.persist = None
 
     async def cancel(self, token: str, owner: str) -> bool:
         """保存开始前取消；开始后等待真实保存结果，不清除已保存 Cookie。"""

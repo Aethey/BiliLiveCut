@@ -182,6 +182,7 @@ async def dispatch(
             if result is None:
                 return _json({"detail": "认证失败。"}, 401)
             role = result["role"]
+            request.state.auth_credential_version = result["credential_version"]
         elif session is not None:
             username, role = session["username"], session["role"]
             request.state.auth_session = request.cookies.get(COOKIE_NAME, "")
