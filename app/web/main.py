@@ -147,6 +147,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     async with AsyncExitStack() as cleanup:
         try:
+            from app.web.qr_login import qr_logins
+
+            cleanup.push_async_callback(_stop_service, "qr_login", qr_logins.stop)
             cleanup.push_async_callback(asyncio.to_thread, stop_metrics_collector)
             start_metrics_collector(interval_s=60)
             cleanup.push_async_callback(_stop_service, "trends", trend_scheduler.stop)

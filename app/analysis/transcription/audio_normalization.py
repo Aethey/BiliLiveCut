@@ -86,6 +86,7 @@ def _run_normalization(
         encoding="utf-8",
         errors="replace",
         start_new_session=os.name != "nt",
+        creationflags=0x00000004 if os.name == "nt" else 0,  # CREATE_SUSPENDED
     ) as process:
         try:
             tree = ProcessTree(process.pid)
@@ -94,6 +95,7 @@ def _run_normalization(
             process.communicate(timeout=5)
             raise
         try:
+            tree.resume_suspended()
             while True:
                 check_cancelled()
                 if time.monotonic() - started > _NORMALIZE_TIMEOUT_S:

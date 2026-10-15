@@ -384,25 +384,68 @@ def cluster_groups(matrix: list[list[float]], threshold: float) -> list[tuple[in
     return result
 
 
+def _repeat_z(symbols: list[str]) -> list[int]:
+    """在线性时间内计算各后缀与前缀的公共长度。"""
+    size = len(symbols)
+    matches = [0] * size
+    left = right = 0
+    for index in range(1, size):
+        if index < right:
+            matches[index] = min(right - index, matches[index - left])
+        length = matches[index]
+        while index + length < size and symbols[length] == symbols[index + length]:
+            length += 1
+        matches[index] = length
+        if index + length > right:
+            left, right = index, index + length
+    return matches
+
+
 def consecutive_repeat_details(text: str) -> tuple[int, int, int]:
-    """返回最佳连续重复的起点、单元长度和次数。"""
-    text_length = len(text)
+    """分治检测任意长度的连续重复，O(N log N) 时间、O(N) 空间。"""
+    symbols = list(text)
+    size = len(symbols)
     best = (0, 0, 0)
     best_coverage = 0
-    max_unit_length = min(32, text_length // 3)
-    for unit_length in range(1, max_unit_length + 1):
-        last_start = text_length - unit_length * 3
-        for start in range(last_start + 1):
-            unit = text[start : start + unit_length]
-            cursor = start + unit_length
-            repeats = 1
-            while text[cursor : cursor + unit_length] == unit:
-                repeats += 1
-                cursor += unit_length
-            coverage = repeats * unit_length
-            if repeats >= 3 and coverage > best_coverage:
-                best = (start, unit_length, repeats)
-                best_coverage = coverage
+    pending = [(0, size)]
+    while pending:
+        offset, end = pending.pop()
+        length = end - offset
+        if length < 3 or length < best_coverage:
+            continue
+        section = symbols[offset:end]
+        middle = length // 2
+        right_length = length - middle
+        left = section[:middle]
+        right = section[middle:]
+        reversed_left = left[::-1]
+        # 空字符串是独立的哨兵符号，不会与任何 Unicode 单字符相等。
+        left_suffix = _repeat_z(reversed_left)
+        right_prefix = _repeat_z(right)
+        forward = _repeat_z(right + [""] + section)
+        backward = _repeat_z(reversed_left + [""] + section[::-1])
+        for unit in range(1, length // 3 + 1):
+            suffix = left_suffix[unit] if unit < middle else 0
+            # 两种跨中点锚点：middle-unit / middle，以及 middle / middle+unit。
+            for start, stop in (
+                (middle - unit - suffix, middle + forward[right_length + 1 + middle - unit]),
+                (middle - backward[middle + 1 + right_length - unit], middle + unit + right_prefix[unit]),
+            ):
+                repeats = (stop - start) // unit
+                coverage = repeats * unit
+                absolute_start = offset + start
+                if repeats >= 3 and (
+                    coverage > best_coverage
+                    or coverage == best_coverage
+                    and (unit, absolute_start) < (best[1], best[0])
+                ):
+                    best = (absolute_start, unit, repeats)
+                    best_coverage = coverage
+                    if coverage == size:
+                        return best
+        # 每层处理的总字符数是 O(N)，候选区间只做常数次计算，不展开全部子串。
+        pending.append((offset + middle, end))
+        pending.append((offset, offset + middle))
     return best
 
 

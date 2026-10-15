@@ -88,7 +88,9 @@ def test_project_and_third_party_license_boundaries() -> None:
     assert "Copyright (c) 2026 StarGazerQQD" in license_text
     assert "Permission is hereby granted" in license_text
     assert project["license"] == "MIT"
-    assert project["license-files"] == ["LICENSE"]
+    assert project["license-files"] == ["LICENSE", "tools/native/repeat/vendor/libsais/LICENSE"]
+    vendor_license = REPO_ROOT / "tools/native/repeat/vendor/libsais/LICENSE"
+    assert "Apache License" in vendor_license.read_text(encoding="utf-8")
     assert "setuptools>=77" in _pyproject()["build-system"]["requires"]
     for content in (readme, portable_readme):
         assert "Copyright (c) 2026 StarGazerQQD" in content

@@ -67,6 +67,16 @@ except ImportError:
     _logger.info("加速模块(Cython): 使用 Python 参考实现")
 
 
+# C++17: 独立的精确重复检测内核；只接收 Unicode 文本，不接触设备。
+try:
+    from app.accelerators import _repeat_speedups as _repeat_backend  # type: ignore[import]
+
+    _logger.info("加速模块(C++): 已加载 app.accelerators._repeat_speedups")
+except ImportError:
+    _repeat_backend = None
+    _logger.info("加速模块(C++): 使用 Python 重复检测参考实现")
+
+
 # Rust: rayon 聚类矩阵、并查集/簇内统计与弹幕文本特征。
 try:
     from app.accelerators import _rust_speedups as _rust_backend  # type: ignore[import]
@@ -88,11 +98,13 @@ def _float64_contiguous(values: Sequence[float]) -> Any:
 
 def consecutive_repeat_details(text: str) -> tuple[int, int, int]:
     """检测精确字符循环；不访问模型、张量或设备。"""
+    if not isinstance(text, str):
+        raise TypeError("text 必须是 str")
     if len(text) < 3:
         return 0, 0, 0
-    if _cython_backend is None:
+    if _repeat_backend is None:
         return _fallback_round2.consecutive_repeat_details(text)
-    return _cython_backend.consecutive_repeat_details(text)
+    return _repeat_backend.consecutive_repeat_details(text)
 
 
 def review_text_statistics(text: str, hotwords: list[str] | None = None) -> tuple[int, int, str | None]:
@@ -277,6 +289,11 @@ def get_cython_backend() -> str:
     return _CYTHON_BACKEND
 
 
+def get_repeat_backend() -> str:
+    """返回精确重复检测后端：``C++`` 或 ``python``。"""
+    return "C++" if _repeat_backend is not None else "python"
+
+
 def get_rust_backend() -> str:
     """返回并行聚类与弹幕文本后端：``Rust+rayon`` 或 ``python``。"""
     return _RUST_BACKEND
@@ -313,6 +330,7 @@ __all__ = [
     "get_cluster_backend",
     "get_cython_backend",
     "get_rust_backend",
+    "get_repeat_backend",
     "group_srt_blocks",
     "robust_relative_uplift",
 ]

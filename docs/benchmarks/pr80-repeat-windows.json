@@ -1,0 +1,245 @@
+{
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.12.14",
+  "baseline": "main Cython (period <=32)",
+  "baseline_commit": "e0a1bfe9cf3ad0560f5c8f1115ed9da11772f9d1",
+  "baseline_sha256": "a006f9a64647e0621300113c29986f6150564072111066e236edc411182eae48",
+  "kernel_sha256": "9efb502603c2e4588a7391e0fab86633fe0885ba10a1daa9236fba7484b6d351",
+  "kernel_source_sha256": "8346f6cba87b4fdffc4608794bbd2cebda1187db13414a79707177081ce4af5b",
+  "results": [
+    {
+      "case": "empty",
+      "codepoints": 0,
+      "result": [
+        0,
+        0,
+        0
+      ],
+      "baseline_seconds": 4.142055342658564e-08,
+      "kernel_seconds": 3.139169716866396e-08,
+      "speedup": 1.3194748026536378
+    },
+    {
+      "case": "short-normal",
+      "codepoints": 24,
+      "result": [
+        0,
+        0,
+        0
+      ],
+      "baseline_seconds": 5.011759019398471e-07,
+      "kernel_seconds": 1.6714044108945524e-07,
+      "speedup": 2.998531646040187
+    },
+    {
+      "case": "short-loop",
+      "codepoints": 48,
+      "result": [
+        0,
+        3,
+        16
+      ],
+      "baseline_seconds": 2.0814526585838487e-06,
+      "kernel_seconds": 1.9711477525054346e-07,
+      "speedup": 10.559597351026632
+    },
+    {
+      "case": "noise-256",
+      "codepoints": 256,
+      "result": [
+        202,
+        2,
+        3
+      ],
+      "baseline_seconds": 2.2818800000095507e-05,
+      "kernel_seconds": 3.7870471570684155e-06,
+      "speedup": 6.025486098715425
+    },
+    {
+      "case": "noise-257",
+      "codepoints": 257,
+      "result": [
+        174,
+        1,
+        6
+      ],
+      "baseline_seconds": 2.004086134150407e-05,
+      "kernel_seconds": 3.915579378889873e-06,
+      "speedup": 5.118236511702634
+    },
+    {
+      "case": "noise-1000",
+      "codepoints": 1000,
+      "result": [
+        86,
+        3,
+        3
+      ],
+      "baseline_seconds": 8.435247934154959e-05,
+      "kernel_seconds": 2.681619318164766e-05,
+      "speedup": 3.145579940081814
+    },
+    {
+      "case": "noise-16000",
+      "codepoints": 16000,
+      "result": [
+        9600,
+        4,
+        3
+      ],
+      "baseline_seconds": 0.001374725000005128,
+      "kernel_seconds": 0.000991799999956995,
+      "speedup": 1.3860909458204647
+    },
+    {
+      "case": "noise-32000",
+      "codepoints": 32000,
+      "result": [
+        16214,
+        4,
+        3
+      ],
+      "baseline_seconds": 0.00282323749979696,
+      "kernel_seconds": 0.0020897000001489437,
+      "speedup": 1.3510252665912492
+    },
+    {
+      "case": "noise-64000",
+      "codepoints": 64000,
+      "result": [
+        48120,
+        4,
+        3
+      ],
+      "baseline_seconds": 0.005667399998856126,
+      "kernel_seconds": 0.00433480000065174,
+      "speedup": 1.307419026945656
+    },
+    {
+      "case": "noise-128000",
+      "codepoints": 128000,
+      "result": [
+        26773,
+        4,
+        3
+      ],
+      "baseline_seconds": 0.011033500001455346,
+      "kernel_seconds": 0.008869233332613172,
+      "speedup": 1.2440195885797616
+    },
+    {
+      "case": "noise-511",
+      "codepoints": 511,
+      "result": [
+        33,
+        2,
+        3
+      ],
+      "baseline_seconds": 4.354784313381613e-05,
+      "kernel_seconds": 7.443415039194973e-06,
+      "speedup": 5.850519271665651
+    },
+    {
+      "case": "noise-512",
+      "codepoints": 512,
+      "result": [
+        158,
+        1,
+        5
+      ],
+      "baseline_seconds": 4.3495342475106965e-05,
+      "kernel_seconds": 7.242316898495064e-06,
+      "speedup": 6.005722075506692
+    },
+    {
+      "case": "noise-513",
+      "codepoints": 513,
+      "result": [
+        339,
+        2,
+        3
+      ],
+      "baseline_seconds": 4.4388862553502814e-05,
+      "kernel_seconds": 1.5051137599342362e-05,
+      "speedup": 2.949203158932141
+    },
+    {
+      "case": "long-whole-period-16",
+      "codepoints": 128000,
+      "result": [
+        0,
+        16,
+        8000
+      ],
+      "baseline_seconds": 0.010935333334297562,
+      "kernel_seconds": 0.0006909428572855956,
+      "speedup": 15.826682653986147
+    },
+    {
+      "case": "long-local-period-16",
+      "codepoints": 128012,
+      "result": [
+        6,
+        16,
+        8000
+      ],
+      "baseline_seconds": 0.01282553333294345,
+      "kernel_seconds": 0.0021944874997643637,
+      "speedup": 5.844432166654224
+    },
+    {
+      "case": "long-uniform",
+      "codepoints": 128000,
+      "result": [
+        0,
+        1,
+        128000
+      ],
+      "baseline_seconds": 0.012163833334246496,
+      "kernel_seconds": 0.0007112526317972591,
+      "speedup": 17.101987100574647
+    }
+  ],
+  "extended_semantics": [
+    {
+      "period": 33,
+      "codepoints": 33012,
+      "result": [
+        6,
+        33,
+        1000
+      ],
+      "kernel_seconds": 0.000435004651080817
+    },
+    {
+      "period": 64,
+      "codepoints": 64012,
+      "result": [
+        6,
+        64,
+        1000
+      ],
+      "kernel_seconds": 0.0013079812501928245
+    },
+    {
+      "period": 128,
+      "codepoints": 128012,
+      "result": [
+        6,
+        128,
+        1000
+      ],
+      "kernel_seconds": 0.0024966250002762536
+    },
+    {
+      "period": 257,
+      "codepoints": 257012,
+      "result": [
+        6,
+        257,
+        1000
+      ],
+      "kernel_seconds": 0.004958939999050926
+    }
+  ]
+}

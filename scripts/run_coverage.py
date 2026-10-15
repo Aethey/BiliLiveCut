@@ -24,7 +24,7 @@
 要求:
     - 不需要 setuptools,只依赖标准库 (xml.etree)
     - 不需要 BLC_SKIP_C_EXTENSIONS 的补充逻辑（因为检查 native 本身就是诊断，不是决定覆盖率）
-    - macOS 允许跳过 C 扩展（通过 BLC_SKIP_C_EXTENSIONS 环境变量），但仍会输出警告
+    - 原生 CI（包括 macOS Clang）在调用前验证扩展；独立 Python 回退矩阵另行验收
 """
 
 from __future__ import annotations

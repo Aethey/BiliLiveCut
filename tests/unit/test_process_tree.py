@@ -84,3 +84,24 @@ def test_concurrent_cleanup_sends_one_group_termination(posix_signals: tuple[Moc
             result.result(timeout=5)
     killpg.assert_called_once_with(1234, 9)
     kill.assert_not_called()
+
+
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_resume_failure_reclaims_tree_and_preserves_original_error(
+    posix_signals: tuple[Mock, Mock], monkeypatch: pytest.MonkeyPatch, cleanup_fails: bool
+) -> None:
+    tree = process_tree.ProcessTree(1234)
+    denied = PermissionError("resume denied")
+    resume = Mock(side_effect=denied)
+    factory = Mock(return_value=SimpleNamespace(resume=resume))
+    cleanup = Mock(side_effect=RuntimeError("cleanup unavailable") if cleanup_fails else None)
+    monkeypatch.setattr(process_tree, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(process_tree, "psutil", SimpleNamespace(Process=factory, Error=OSError))
+    monkeypatch.setattr(tree, "terminate", cleanup)
+    with pytest.raises(PermissionError) as raised:
+        tree.resume_suspended()
+    assert raised.value is denied
+    factory.assert_called_once_with(1234)
+    cleanup.assert_called_once_with()
+    if cleanup_fails:
+        assert "cleanup unavailable" in " ".join(denied.__notes__)

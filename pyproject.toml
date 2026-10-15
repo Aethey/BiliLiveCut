@@ -1,10 +1,10 @@
 [project]
 name = "bili-live-cut"
-version = "0.1.18.9-alpha"
+version = "0.1.19.0-alpha"
 description = "AI 直播实时切片系统:监听 Bilibili 直播,自动录制、转写、识别高光、生成切片与文案"
 readme = "README.md"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "tools/native/repeat/vendor/libsais/LICENSE"]
 requires-python = ">=3.11"
 
 # 阶段1(本地录制 MVP)所需的核心运行依赖。
@@ -54,6 +54,7 @@ web = [
     "jinja2>=3.1",
     "python-multipart>=0.0.18",
     "playwright>=1.61,<1.62",
+    "qrcode==8.2",           # 网页扫码生成 SVG，无需 Pillow 或服务器浏览器
 ]
 # 开发与测试工具。
 dev = [
@@ -90,6 +91,10 @@ cache-keys = [
     { file = "setup.py" },
     { file = "tools/native/c/*.c" },
     { file = "tools/native/cython/*.pyx" },
+    { file = "tools/native/repeat/**/*.cpp" },
+    { file = "tools/native/repeat/**/*.hpp" },
+    { file = "tools/native/repeat/vendor/libsais/src/*.c" },
+    { file = "tools/native/repeat/vendor/libsais/include/*.h" },
     { env = "BLC_SKIP_C_EXTENSIONS" },
 ]
 

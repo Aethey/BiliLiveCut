@@ -1,6 +1,6 @@
 # BiliLiveCut · 即插即用版（`packaging/portable/`）
 
-**版本：V0.1.18.9 Alpha** (`0.1.18.9-alpha`)
+**版本：V0.1.19.0 Alpha** (`0.1.19.0-alpha`)
 
 本版将 PCM、聚类、新颖度、ASR 文本检测与复核统计收敛到独立 CPU 内核，优化滚动基线和原生模块分配；修复模型下载进度初始化死锁。保留模型/CUDA 调用与已有安装契约。详细排错见[使用指南](../../docs/usage.md#排错)。升级仍使用全新目录与新数据库。
 
@@ -16,7 +16,7 @@ Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装�
 
 ---
 
-## V0.1.18.9 Alpha：Event-first 热点与原生加速
+## V0.1.19.0 Alpha：Event-first 热点与原生加速
 
 - 弹幕、音频、SenseVoice、ASR 与趋势先形成带稳定 ID 的热点事件；ASR 缺失或质量不足不再阻断自动切片，缺失证据会重归一化而不是记零分。
 - 热点可以跨连续原始分段更新和合并，一个分段也可以保留多个无关事件；真实录制缺口是不可跨越的媒体边界。
@@ -36,7 +36,7 @@ Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装�
 - V0.1.17.2～V0.1.17.4 统一保护所有自动刷新页面的草稿、选择、展开状态和滚动位置；实时转写可按完整历史场次筛选、显示源 TS 并无损导出无黑首帧 MP4，每次录制前重新查询标题和主播名。
 - 整场结束后会把同场全部最终 ASR 作为一个完整上下文交给 LLM 分析，不直接拼接分段或节点摘要；人工纠错和重分析会使旧总结失效。
 
-逐项版本记录见 [0.1.17 系列 Changelog](../../docs/changelog/CHANGELOG_PRE_0.1.17.md)。当前 V0.1.18.9 不迁移 0.1.17.x 的数据库、Runtime、Payload 或已安装清单；请解压到全新目录并使用当前版本创建的新数据库。原始录像、成片和人工导出资料可作为普通文件独立保留。
+逐项版本记录见 [0.1.17 系列 Changelog](../../docs/changelog/CHANGELOG_PRE_0.1.17.md)。当前 V0.1.19.0 不迁移 0.1.17.x 的数据库、Runtime、Payload 或已安装清单；请解压到全新目录并使用当前版本创建的新数据库。原始录像、成片和人工导出资料可作为普通文件独立保留。
 
 ## V0.1.16.5 Alpha：严重正确性修复
 
@@ -243,7 +243,7 @@ python build_engine_pack.py --from-cache  # 从已验证缓存构建
 
 输出:
 
-- dist/engine-pack/BiliLiveCut-EnginePack-0.1.18.9-alpha.zip
+- dist/engine-pack/BiliLiveCut-EnginePack-0.1.19.0-alpha.zip
 - dist/engine-pack/engine-pack-manifest.json
 - dist/engine-pack/CRC32SUMS.txt
 - dist/engine-pack/SHA256SUMS.txt
@@ -352,7 +352,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── runtime/                  # ★ Runtime 版本管理
 │   ├── current.json          #   当前激活的 Release 信息
 │   └── releases/
-│       └── 0.1.18.9-alpha+<source-sha>+<payload-hash>/  # 内容寻址的固定版本源码
+│       └── 0.1.19.0-alpha+<source-sha>+<payload-hash>/  # 内容寻址的固定版本源码
 │
 ├── .venv/                    # Python 虚拟环境（launcher.exe 自动创建）
 ├── models/                   # 四引擎 ASR 模型 (由 Engine Pack 或在线下载安装)
@@ -468,7 +468,7 @@ BILIBILI_COOKIE=            # 可选登录态 Cookie，用于平台允许的部�
 ```
 
 > **重要**：公开弹幕不登录也能采集；存在 Cookie 时程序会优先使用登录接口，业务错误后立即改用无 Cookie、`uid=0` 的匿名链路。匿名连接期间会定时探测登录恢复，累计失败达到配置上限后本场固定匿名。Cookie 不会写入日志，也不会作为 WebSocket 请求头发送。
-> Portable 已包含 Playwright Python 组件。第一次使用【账号管理】时会优先在独立临时资料目录中启动电脑已安装的 Google Chrome，并保持浏览器 sandbox 开启；程序只读取这次受控登录窗口产生的 Bilibili Cookie，不读取日常 Chrome Profile。找不到可用 Chrome 才联网下载 Playwright Chromium，并保存到 `vendor/playwright-browsers/` 供后续复用。下载期间请保持 Launcher 窗口、网络连接和足够磁盘空间。
+> 【账号登录】默认通过“扫码登录”在网页显示二维码，用手机 Bilibili 扫描并确认后保存 Cookie，不需要安装或下载浏览器。Portable 同时保留“浏览器登录”：在独立临时资料目录中启动电脑已安装的 Google Chrome，并保持浏览器 sandbox 开启；只读取此次登录窗口产生的 Cookie，不读取日常 Chrome Profile。找不到可用 Chrome 才联网下载 Playwright Chromium，保存到 `vendor/playwright-browsers/` 供后续复用。
 
 ### ASR 语音转写（本地多引擎，无需联网）
 
@@ -611,7 +611,7 @@ BILIUP_UPLOAD_CMD=                          # 自定义上传命令模板
 
 ## 回主工程
 
-此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于 `v0.1.18.9-Alpha` 的发布基线 Commit。
+此 `packaging/portable/` 目录是**发布给最终用户的即插即用版本**，源码固定于本版本构建清单记录的 `source_commit`，不随远端分支变化。
 
 - **主仓库**: [README](../../README.md)
 - **完整变更日志**: [CHANGELOG](../../CHANGELOG.md)

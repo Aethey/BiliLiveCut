@@ -1,8 +1,8 @@
 """Payload 构建器 — 构建 source_payload.zip 和完整 Manifest。
 
 流程:
-1. 从固定的当前发布基线 e4563ed 提取源码 → staging/
-2. 校验源码快照本身就是 0.1.18.9-alpha
+1. 从固定的当前发布基线 16b5f2b 提取源码 → staging/
+2. 校验源码快照本身就是 0.1.19.0-alpha
 3. 构建 ZIP (收集 included_files 集合)
 4. 基于 included_files 生成 Manifest (文件数/Hash 与 ZIP 严格一致)
 5. 逐文件交叉校验 ZIP vs Manifest
@@ -175,19 +175,20 @@ def _expected_windows_native_modules(accelerator_dir: Path) -> dict[str, Path]:
     return {
         "c": accelerator_dir / f"_c_speedups{suffix}",
         "cython": accelerator_dir / f"_cython_speedups{suffix}",
+        "repeat": accelerator_dir / f"_repeat_speedups{suffix}",
         "rust": accelerator_dir / "_rust_speedups.pyd",
     }
 
 
 def _compile_and_copy_native_modules(staging_dir: Path) -> dict[str, bool]:
-    """编译 C/Cython/Rust 原生加速模块并复制到 staging 目录。"""
+    """编译 C/Cython/C++/Rust 原生加速模块并复制到 staging 目录。"""
     import subprocess as _sp
 
     repo_root = PORTABLE_ROOT.parent.parent
     accelerator_dir = repo_root / "app" / "accelerators"
     staging_accelerators = staging_dir / "app" / "accelerators"
     staging_accelerators.mkdir(parents=True, exist_ok=True)
-    results = {"c": False, "cython": False, "rust": False}
+    results = {"c": False, "cython": False, "repeat": False, "rust": False}
 
     if TARGET_PLATFORM != "win_x64":
         raise RuntimeError(f"不支持的 Payload 目标平台：{TARGET_PLATFORM}")
@@ -195,6 +196,9 @@ def _compile_and_copy_native_modules(staging_dir: Path) -> dict[str, bool]:
         raise RuntimeError(f"{TARGET_PLATFORM} Payload 必须在 Windows 构建，当前平台为 {sys.platform}")
 
     expected = _expected_windows_native_modules(accelerator_dir)
+    # 构建返回零仍须生成新文件；旧产物不能冒充本次成功。
+    for artifact in expected.values():
+        artifact.unlink(missing_ok=True)
 
     def _run_build(name: str, command: list[str], timeout: int) -> bool:
         """运行单个原生构建，并以目标文件实际存在作为成功条件。"""
@@ -251,6 +255,10 @@ def _compile_and_copy_native_modules(staging_dir: Path) -> dict[str, bool]:
             300,
         )
 
+        results["repeat"] = results["cython"] and expected["repeat"].is_file()
+        if not results["repeat"]:
+            _logger.warning("C++ repeat extension is missing after Cython build: %s", expected["repeat"])
+
     # ── Rust 扩展 ──
     _logger.info("Compiling Rust extension...")
     results["rust"] = _run_build(
@@ -259,7 +267,7 @@ def _compile_and_copy_native_modules(staging_dir: Path) -> dict[str, bool]:
         300,
     )
 
-    missing_required = [name for name in ("c", "cython", "rust") if not results[name]]
+    missing_required = [name for name in ("c", "cython", "repeat", "rust") if not results[name]]
     if missing_required:
         raise RuntimeError(f"Windows Payload 缺少必需原生模块：{', '.join(missing_required)}")
 
@@ -276,6 +284,9 @@ def _compile_and_copy_native_modules(staging_dir: Path) -> dict[str, bool]:
         shutil.copy2(source, destination)
         _logger.info("Copied native module: %s (%d bytes)", source.name, destination.stat().st_size)
 
+    licenses = staging_accelerators / "licenses"
+    licenses.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(repo_root / "tools/native/repeat/vendor/libsais/LICENSE", licenses / "libsais-LICENSE.txt")
     return results
 
 

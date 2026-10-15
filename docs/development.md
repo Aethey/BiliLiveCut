@@ -58,6 +58,8 @@ Windows 的 `FFMPEG_PATH`、`FFPROBE_PATH` 应指向真实二进制文件，避�
 
 ### 原生扩展构建与安装排错
 
+重复检测扩展按语言分别编译：libsais 保持 C 源码，Cython 包装与内核使用 C++17，再链接为同一扩展。C++ 标准参数不会传入 C 编译器。macOS CI 使用 Clang 构建并强制验证三个原生扩展可加载，然后运行完整测试；Python 回退安装继续由独立矩阵验证。
+
 Python 镜像配置见[使用指南](usage.md#python-依赖源)。普通源码运行缺少原生扩展时可按函数回退到 Python 参考实现；完整验证和 Portable 发行需要对应 ABI 的 C、Cython、Rust 三个扩展。Windows C/Cython 构建需要可用的 MSVC 工具链，Rust 需要 Rust 工具链。
 
 默认安装编译 C/Cython；uv 与 pip 使用相同构建后端。Ubuntu 使用系统 Python 3.12 时，`Python.h: No such file or directory` 表示缺少开发头文件，可执行 `sudo apt-get install build-essential python3.12-dev`（其他 Python 版本安装对应的开发包）。uv 也可管理 Python：`uv python install 3.12` 后使用 `uv sync --locked --managed-python`，仍需 C 编译器；若已有使用系统 Python 的 `.venv`，应先退出并将该环境移走，再创建新环境。
@@ -153,6 +155,10 @@ python scripts/check_local_asr.py --models-dir "D:/测试安装/models" --audio 
 - 长期有效的配置说明、架构决策和发行约束留在正式文档，随实现同步维护。一次性任务清单、排查过程和运行日志可留在 PR、Issue 或本地 `.local/` 中，不作为当前使用指南。
 - `.local/` 从 Git 跟踪、源码分发包和 Docker 构建上下文中排除。整理历史记录时先提炼仍有效的内容，核对引用，再保留本地原件；不要通过重写 Git 历史删除已经提交的记录。
 
-ASR 文本检测通过独立 Cython CPU 内核执行：重复检测按最多 32 个字符的周期扫描，精确保留起点与平局顺序；复核内核仅返回字符计数和首个热词冲突，风险权重、复核阈值及模型/CUDA 调度仍在原业务层。`casefold()` 展开字符的原文映射按展开长度维护，局部修复保留两次重复。`tests/unit/test_cpu_asr_statistics.py` 比较旧判定、Unicode 和随机输入；性能命令 `python scripts/benchmark_cpu_kernels.py --output benchmark.json` 包含完整分派调用开销。
+ASR 文本重复检测的 Cython 和 Python 回退均采用 O(N log N) 时间、O(N) 空间的分治算法，以线性公共前缀匹配表计算跨中点的最大周期区间，不枚举全部重复子串，也不再限制重复单元为 32 个字符。至少重复三次才计入候选，优先最大覆盖长度，平局时优先较短单元、再优先较早起点。空字符串作为匹配表中的独立哨兵符号，不与 Unicode 单字符冲突。复核内核仅返回字符计数和首个热词冲突，风险权重、复核阈值及模型/CUDA 调度仍在原业务层。`casefold()` 展开字符的原文映射按展开长度维护，局部修复保留两次重复。`tests/unit/test_cpu_asr_statistics.py` 使用独立小输入穷举参考，对照两种生产实现，并覆盖长周期、Unicode、平局及十万字符输入；性能命令 `python scripts/benchmark_cpu_kernels.py --output benchmark.json` 包含完整分派调用开销。
 
 滚动中位数/MAD 复制到经过长度溢出检查的独立数值缓冲区，排序不修改调用方历史；有限值过滤保留，不使用 `-ffast-math` 或 `/fp:fast`。列表/元组直接进入内核，其他数值序列转换为连续 float64。Rust 矩阵预计算关键词集合、直接累计加权余弦，按行计算上三角后镜像填充；释放 GIL 时仅访问 Rust 拥有的数据。小矩阵串行，大矩阵按行并行；没有修改 Torch/CTranslate2 或设备选择。
+
+原生构建参数测试通过 `distutils.ccompiler.new_compiler` 创建真实编译器，并在 `subprocess.check_call` 边界记录编译与链接命令，避免私有类的重复导入或内部进程方法变化影响 setuptools 版本间的验收；C/C++ 参数、对象链接与扩展元数据恢复均保留断言。
+
+Windows 可取消媒体命令和受控 ASR 标准化使用 `CREATE_SUSPENDED` 创建子进程，先加入 kill-on-close Job，再通过现有 psutil 恢复执行；恢复失败须回收整个 Job 并保留原错误。该顺序避免短命 FFmpeg 先退出造成接管失败，也阻止接管前创建不受监管的后代。POSIX 独立进程组和 ASR 模型进程的 IPC 启动握手保持原有机制。

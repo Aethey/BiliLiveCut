@@ -41,7 +41,10 @@ def run_cancellable(
 
     if shutdown_event.is_set():
         raise ProcessShutdownError("服务正在关闭，不再启动媒体命令")
-    if os.name != "nt":
+    if os.name == "nt":
+        # 在 Job 接管前禁止子进程执行、退出或创建不受监管的后代。
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | 0x00000004  # CREATE_SUSPENDED
+    else:
         kwargs["start_new_session"] = True
     process = subprocess.Popen(command, text=text, **kwargs)
     try:
@@ -54,6 +57,7 @@ def run_cancellable(
     started = time.monotonic()
     stdout = stderr = None
     try:
+        tree.resume_suspended()
         while True:
             if shutdown_event.is_set():
                 raise ProcessShutdownError("服务关闭，中止媒体命令")

@@ -8,14 +8,19 @@ RUN --mount=from=uv,source=/uv,target=/bin/uv \
     -r /tmp/requirements-system.lock
 
 # FFmpeg 使用官方签名发行源码；命令行与 PyAV 共用同一套已修复共享库。
+# 字幕渲染使用 Debian 官方 libass-dev/libass9，不维护外加补丁。
 FROM python-base AS ffmpeg-builder
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential pkg-config nasm xz-utils \
+    && apt-get install -y --no-install-recommends build-essential pkg-config nasm xz-utils curl \
        libass-dev libfontconfig-dev libfreetype-dev libharfbuzz-dev libfribidi-dev \
        libx264-dev libx265-dev libvpx-dev libopus-dev libmp3lame-dev libvorbis-dev libssl-dev \
     && rm -rf /var/lib/apt/lists/*
-ADD --checksum=sha256:8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e \
-    https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz /tmp/ffmpeg.tar.xz
+# 官方源暂时不可达时有限重试；只有固定摘要校验通过的源码才能进入解压与编译。
+RUN curl --fail --show-error --silent --location --proto '=https' --proto-redir '=https' \
+       --connect-timeout 20 --max-time 180 --retry 3 --retry-delay 5 --retry-max-time 600 --retry-all-errors \
+       --output /tmp/ffmpeg.tar.xz https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz \
+    && echo '8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e  /tmp/ffmpeg.tar.xz' \
+       | sha256sum --check --strict
 WORKDIR /tmp/ffmpeg
 RUN tar -xf /tmp/ffmpeg.tar.xz --strip-components=1 \
     && ./configure --prefix=/opt/ffmpeg --enable-shared --disable-static \
@@ -58,6 +63,7 @@ COPY docs/live-source-plugins.md docs/douyin-plugin-handoff.md ./docs/
 COPY plugin ./plugin
 COPY tools/native/c ./tools/native/c
 COPY tools/native/cython ./tools/native/cython
+COPY tools/native/repeat ./tools/native/repeat
 COPY tools/native/rust ./tools/native/rust
 COPY tools/native/build_rust.py ./tools/native/build_rust.py
 RUN /app/.venv/bin/python tools/native/build_rust.py
@@ -65,15 +71,18 @@ RUN uv sync --locked --no-dev --extra asr-all --extra llm --extra web --no-edita
     --inexact \
     && uv pip check --python /app/.venv/bin/python \
     && /app/.venv/bin/python -I -c "import app.accelerators, pathlib, shutil; shutil.copy2('/app/app/accelerators/_rust_speedups.so', pathlib.Path(app.accelerators.__file__).parent / '_rust_speedups.so')" \
-    && PATH="/opt/ffmpeg/bin:$PATH" /app/.venv/bin/python -I -c "from app.accelerators import _c_speedups, _cython_speedups, _rust_speedups; import torch, torchaudio; from funasr import AutoModel; import av; assert torch.version.cuda is None; assert av.ffmpeg_version_info == '9.0.2'"
+    && PATH="/opt/ffmpeg/bin:$PATH" /app/.venv/bin/python -I -c "from app.accelerators import _c_speedups, _cython_speedups, _repeat_speedups, _rust_speedups; import torch, torchaudio; from funasr import AutoModel; import av; assert torch.version.cuda is None; assert av.ffmpeg_version_info == '9.0.2'"
 
 FROM python-base AS runtime
 # 运行容器通过重建镜像更新依赖，不保留系统安装工具及其可重新安装的旧引导 wheel。
 RUN --mount=from=uv,source=/uv,target=/bin/uv \
     /bin/uv --no-cache pip uninstall --python /usr/local/bin/python pip \
     && python -I -c "import ensurepip; from pathlib import Path; [p.unlink() for p in (Path(ensurepip.__file__).parent / '_bundled').glob('*.whl')]"
+# 保留 libass 的官方变更日志，使 dpkg --verify 能核验完整包，其他 slim 裁剪规则不变。
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends fonts-noto-cjk fontconfig libgomp1 liblzma5 \
+    && apt-get install -y --no-install-recommends \
+       -o 'Dpkg::Options::=--path-include=/usr/share/doc/libass9/changelog*' \
+       fonts-noto-cjk fontconfig libgomp1 liblzma5 \
        libass9 libfontconfig1 libfreetype6 libharfbuzz0b libfribidi0 \
        libx264-164 libx265-215 libvpx9 libopus0 libmp3lame0 libvorbis0a libvorbisenc2 libssl3t64 \
     && rm -rf /var/lib/apt/lists/* \
@@ -104,6 +113,7 @@ WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 COPY packaging/docker/entrypoint.py packaging/docker/healthcheck.py ./docker/
 COPY tools/native/rust/THIRD_PARTY_NOTICES.md /usr/share/doc/bili-live-cut-rust/THIRD_PARTY_NOTICES.md
+COPY tools/native/repeat/vendor/libsais/LICENSE /usr/share/doc/bili-live-cut-repeat/LICENSE-libsais
 USER appuser
 VOLUME ["/data"]
 EXPOSE 8000

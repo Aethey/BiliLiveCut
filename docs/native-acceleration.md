@@ -1,6 +1,6 @@
 # 原生加速模块
 
-适用版本：`0.1.18.9-alpha`。
+适用版本：`0.1.19.0-alpha`。
 
 Rust 构建通过 `CARGO_ENCODED_RUSTFLAGS` 传递路径映射，保留显式编译选项，避免用户目录或 Cargo 缓存路径嵌入原生模块；含空格的路径保持完整。Payload 在收录原生模块前检查 UTF-8/UTF-16 本机构建路径，发现残留则拒绝构建。
 
@@ -18,7 +18,7 @@ BiliLiveCut 只保留当前 `app.accelerators` 原生接口。业务代码统一
 |---|---|---|---|
 | 并查集与簇内平均相似度 | Rust | 独立 CPU 内核 | 保留连接顺序、根编号、簇顺序与浮点累加顺序；计算期间释放 GIL |
 | 文本词项、实体与新颖度 | Cython | 独立 CPU 字符内核 | 保留 Python Unicode 小写规则与原 ASCII/CJK 分词范围，避免创建临时差集/并集 |
-| ASR 连续重复检测 | Cython | 独立 CPU 字符内核 | O(32N) 有界周期扫描，保留最早平局与原阈值；casefold 展开保留原文映射 |
+| ASR 连续重复检测 | C++17 / Python | 独立 CPU 字符内核 | C++ 使用 O(N) 后缀数组与 Lyndon 候选、精确分段和 LCP 上界剪枝；Python 参考路径 O(N log N)。不限周期，至少三次，平局取较短周期和较早起点；详见[内核说明](repeat-cpu-kernel.md) |
 | ASR 复核风险统计 | Cython | 字符计数与首个热词冲突 | 保留 Python 风险权重、原因顺序及模型调用条件 |
 | PCM16 采样计数、精确平方和与峰值 | Cython | 独立 CPU 字节内核 | 单遍整数计算，保留取消与 WAV 完整性检查；分块累积避免长音频溢出 |
 | 候选聚类 N×N 相似度矩阵 | Rust + rayon | 归入 `_rust_speedups` | 预计算关键词并直接累计加权余弦；按行生成矩阵，拥有数据后释放 GIL，128 项起按行并行 |

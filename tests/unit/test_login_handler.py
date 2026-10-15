@@ -14,6 +14,36 @@ if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
 
 
+@pytest.mark.parametrize(
+    "cookie,expected",
+    [
+        ("", {"has_cookie": False}),
+        ("SESSDATA=session; DedeUserID=123", {"has_cookie": True, "uid": "123"}),
+        ("sessdata=session; dedeuserid=123", {"has_cookie": True, "uid": "123"}),
+        ("SESSDATA=session; DEDEUSERID = 123", {"has_cookie": True, "uid": "123"}),
+        ("SESSDATA=session; sessdata=; dedeuserid=123", {"has_cookie": True, "uid": "123"}),
+        ("SESSDATA=session; X-DedeUserID=123", {"has_cookie": True, "uid": None}),
+        ("SESSDATA=session; DedeUserID=abc", {"has_cookie": True, "uid": None}),
+    ],
+)
+def test_cookie_summary_recognizes_session_and_uid(monkeypatch: MonkeyPatch, cookie: str, expected: dict) -> None:
+    from app.core import cookie as cookie_module
+
+    monkeypatch.setattr(cookie_module, "get_bilibili_cookie", lambda: cookie)
+    assert login_handler.get_cookie_info() == expected
+
+
+@pytest.mark.parametrize("cookie", ["SESSDATA=; ac_time_value=private-refresh; dedeuserid=", "DedeUserID=123"])
+def test_empty_session_does_not_report_logged_in(monkeypatch: MonkeyPatch, cookie: str) -> None:
+    from app.core import cookie as cookie_module
+
+    monkeypatch.setattr(cookie_module, "get_bilibili_cookie", lambda: cookie)
+    info = login_handler.get_cookie_info()
+    assert info["has_cookie"] is False
+    assert "SESSDATA" in info["hint"]
+    assert "private-refresh" not in str(info)
+
+
 class FakeBrowserError(Exception):
     """模拟 Playwright 浏览器启动异常。"""
 

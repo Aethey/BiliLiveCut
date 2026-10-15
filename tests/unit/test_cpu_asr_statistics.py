@@ -18,6 +18,27 @@ if TYPE_CHECKING:
     from pytest import MonkeyPatch
 
 
+def brute_repeat_details(text: str) -> tuple[int, int, int]:
+    """仅供小输入对照的穷举算法，周期长度不设 32 字符上限。"""
+    if len(text) > 512:
+        raise ValueError("穷举参考仅用于小输入")
+    best = (0, 0, 0)
+    best_coverage = 0
+    for unit_length in range(1, len(text) // 3 + 1):
+        for start in range(len(text) - unit_length * 3 + 1):
+            unit = text[start : start + unit_length]
+            cursor = start + unit_length
+            repeats = 1
+            while text[cursor : cursor + unit_length] == unit:
+                repeats += 1
+                cursor += unit_length
+            coverage = repeats * unit_length
+            if repeats >= 3 and coverage > best_coverage:
+                best = (start, unit_length, repeats)
+                best_coverage = coverage
+    return best
+
+
 def previous_review_risk_score(
     segment: ASRSegmentResult,
     hotwords: list[str] | None = None,
@@ -104,7 +125,9 @@ def previous_review_risk_score(
 def test_repeat_exhaustive_short_text(length: int) -> None:
     for characters in itertools.product("a中😀", repeat=length):
         text = "".join(characters)
-        assert native.consecutive_repeat_details(text) == reference.consecutive_repeat_details(text)
+        expected = brute_repeat_details(text)
+        assert reference.consecutive_repeat_details(text) == expected
+        assert native.consecutive_repeat_details(text) == expected
 
 
 def test_repeat_random_periods_ties_and_unicode() -> None:
@@ -113,9 +136,10 @@ def test_repeat_random_periods_ties_and_unicode() -> None:
     for _ in range(350):
         unit = "".join(rng.choices(alphabet, k=rng.randrange(1, 36)))
         text = "".join(rng.choices(alphabet, k=rng.randrange(40))) + unit * rng.randrange(1, 10)
-        assert native.consecutive_repeat_details(text) == reference.consecutive_repeat_details(text)
+        expected = brute_repeat_details(text)
+        assert reference.consecutive_repeat_details(text) == expected
+        assert native.consecutive_repeat_details(text) == expected
     assert native.consecutive_repeat_details("abcabcabcXYZdefdefdef") == (0, 3, 3)
-    assert native.consecutive_repeat_details("a" * 100000) == (0, 1, 100000)
 
 
 def test_casefold_indexes_cover_expanded_characters() -> None:
@@ -164,5 +188,74 @@ def test_review_risk_matches_original_decisions_and_reason_order() -> None:
 
 def test_asr_statistics_python_only_backend(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(native, "_cython_backend", None)
+    monkeypatch.setattr(native, "_repeat_backend", None)
     assert native.consecutive_repeat_details("abc" * 4) == (0, 3, 4)
+    unit = "".join(chr(0x4E00 + index) for index in range(64))
+    assert native.consecutive_repeat_details(unit * 3) == (0, 64, 3)
     assert native.review_text_statistics("原原原原", ["原神"]) == (1, 0, "原神")
+
+
+@pytest.mark.parametrize("function", [reference.consecutive_repeat_details, native.consecutive_repeat_details])
+@pytest.mark.parametrize("period", [32, 33, 64, 257, 4096])
+def test_unrestricted_period_with_context_and_partial_suffix(function, period: int) -> None:
+    unit = "".join(chr(0x4E00 + index) for index in range(period))
+    assert function("前😀" + unit * 4 + unit[:5] + "🛑后") == (2, period, 4)
+
+
+@pytest.mark.parametrize("function", [reference.consecutive_repeat_details, native.consecutive_repeat_details])
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("", (0, 0, 0)),
+        ("aa", (0, 0, 0)),
+        ("aaa", (0, 1, 3)),
+        ("abab", (0, 0, 0)),
+        ("abc" * 3 + "X" + "a" * 9, (10, 1, 9)),
+        ("abc" * 3 + "X" + "def" * 3, (0, 3, 3)),
+        ("ababababa", (0, 2, 4)),
+        ("a\0\ud800😀" * 4, (0, 4, 4)),
+    ],
+)
+def test_repeat_ties_minimum_count_and_unicode(function, text: str, expected: tuple[int, int, int]) -> None:
+    assert function(text) == expected
+
+
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize("function", [reference.consecutive_repeat_details, native.consecutive_repeat_details])
+def test_long_inputs_do_not_rescan_repeated_suffixes(function) -> None:
+    assert function("a" * 100000) == (0, 1, 100000)
+    assert function("前😀" + "a" * 100000 + "🛑后") == (2, 1, 100000)
+    assert function("".join(chr(index) for index in range(20000))) == (0, 0, 0)
+
+
+def test_repetition_prefix_matching_work_grows_nlogn(monkeypatch: MonkeyPatch) -> None:
+    original = reference._repeat_z
+    work = 0
+
+    def counted(symbols: list[str]) -> list[int]:
+        nonlocal work
+        work += len(symbols)
+        return original(symbols)
+
+    monkeypatch.setattr(reference, "_repeat_z", counted)
+    for size in [1024, 2048, 4096]:
+        work = 0
+        assert reference.consecutive_repeat_details("".join(chr(index) for index in range(size))) == (0, 0, 0)
+        assert work <= 6 * size * size.bit_length()
+
+
+@pytest.mark.parametrize("force_python", [False, True])
+def test_long_period_quality_and_local_repair(force_python: bool, monkeypatch: MonkeyPatch) -> None:
+    from app.analysis.transcription.quality import assess_transcript_quality
+
+    if force_python:
+        monkeypatch.setattr(native, "_repeat_backend", None)
+    unit = "".join(chr(0x4E00 + index) for index in range(80))
+    prefix = "".join(chr(0x6000 + index) for index in range(700))
+    suffix = "".join(chr(0x7000 + index) for index in range(700))
+    assert assess_transcript_quality(unit * 3).reason == "degenerate_repetition"
+    result = repair_local_decode_loop(prefix + unit * 4 + suffix)
+    assert result.changed
+    assert result.text == prefix + unit * 2 + suffix
+    assert result.removed_characters == 160
+    assert assess_transcript_quality(result.text).usable

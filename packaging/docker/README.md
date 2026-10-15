@@ -1,6 +1,6 @@
 # BiliLiveCut Docker 部署
 
-本目录提供 BiliLiveCut `v0.1.18.9-Alpha` 的 CPU 镜像。构建上下文为仓库根目录；容器以 UID/GID 1000 的 `appuser` 运行单实例 Web 服务，内含 FFmpeg、中文字体、C/Cython/Rust 扩展及配套 CPU PyTorch/TorchAudio。业务操作见[使用指南](../../docs/usage.md)。
+本目录提供 BiliLiveCut `v0.1.19.0-Alpha` 的 CPU 镜像。构建上下文为仓库根目录；容器以 UID/GID 1000 的 `appuser` 运行单实例 Web 服务，内含 FFmpeg、中文字体、C/Cython/Rust 扩展及配套 CPU PyTorch/TorchAudio。业务操作见[使用指南](../../docs/usage.md)。
 
 ## 首次启动
 
@@ -111,7 +111,9 @@ Compose 默认移除全部 Linux capabilities，并设置 `no-new-privileges`，
 
 ## 登录限制
 
-Web 与录制不需要桌面。当前“自动登录”功能在运行应用的机器打开有界面 Chromium，容器没有远程桌面或二维码转发入口；请在设置页手动填写 Bilibili Cookie。此镜像不预装浏览器桌面组件，浏览器包和 Xvfb 也不能单独解决远程交互问题。
+Web、录制及 Bilibili 扫码登录不需要桌面。在“账号登录”页点击“扫码登录”，用手机 Bilibili 扫描网页上的二维码并确认；服务端保存 Cookie，无需安装 Chrome、Chromium 或 Xvfb。扫码后未确认时不会保存登录态，二维码过期后需重新申请，也可点击“取消扫码”。手动填写 Cookie 的方式继续可用。
+
+“浏览器登录”仍会在运行应用的机器打开有界面浏览器，仅适用于有桌面的部署；此镜像不提供远程桌面。
 
 ## 构建和依赖更新
 
@@ -120,6 +122,8 @@ Web 与录制不需要桌面。当前“自动登录”功能在运行应用的�
 基础系统使用 Debian 13（Trixie）的 Python 3.12 镜像。构建阶段的系统 pip 通过 `requirements-system.lock` 固定版本和哈希；运行阶段移除 pip 及 ensurepip 自带的旧引导 wheel，应用虚拟环境不受影响。容器依赖通过修改锁文件并重建镜像更新，不支持在运行容器内临时执行 pip 或 apt 安装。账号创建完成后，精确移除 apt、libapt-pkg7.0、sqv、mount、passwd、adduser、libsemanage2、libsemanage-common、libsepol2；不自动移除依赖，不强制删除 Debian 必需或受保护包。保留 dpkg 清单供漏洞扫描，也保留证书、时区、现有 UID/GID 1000 账号及媒体和 Python 运行库。容器挂载由宿主 Docker 管理，无需镜像内 mount 命令；后台密码由应用认证库管理，不依赖系统 passwd。派生镜像如需另建系统账号或安装系统包，应在运行镜像裁剪前的构建阶段完成。验收分别检查应用与系统 Python，要求安装工具已移除；系统环境若出现额外第三方包，仍必须逐个审计。
 
 命令行 FFmpeg 与 PyAV 使用同一套从官方 9.0.2 源码编译的共享库，避免 PyAV wheel 另行携带旧版 FFmpeg。源码已核验官方发行签名并固定 SHA-256；完整源码与 GPLv3 许可证随镜像置于 `/opt/ffmpeg/share/source/`。构建保留 CPU 编解码、网络录制、字幕及中文文本滤镜；此无头 CPU 镜像不提供 ffplay 桌面播放器。
+
+字幕渲染恢复使用 Debian 官方 `libass-dev`（构建）和 `libass9`（运行），不再下载 libass 源包或应用外加补丁。FFmpeg 和 PyAV 加载同一套 Debian 共享库，实际包版本由最终镜像的 `dpkg-query -W libass9` 查询。运行镜像保留 libass 官方包的完整文件（包括两份变更日志），验收核对包文件完整性、共享库实际加载路径，并执行中文 SRT 烧录；官方包中的未修复漏洞仍须如实保留在系统包扫描结果中，不能视为已修复。
 
 CPU 运行锁采用官方 Torch 2.13.0 与 TorchAudio 2.11.0 的 CPU wheel；具体兼容范围由官方 wheel 元数据、依赖一致性检查和真实 PCM 解码共同验证。旧 Torch 2.10.0 命中已知漏洞记录，不能继续作为构建基线。
 
@@ -151,3 +155,7 @@ uv run --no-project --python 3.12 --with playwright==1.61.0 python scripts/smoke
 基础 Python 和 uv 镜像按已验收的 SHA-256 digest 固定，新增 Action 使用完整提交。更新镜像时应核对官方来源并重新运行构建、依赖审计和容器验收，不能只移动标签。
 
 Docker CI 分别从最终镜像的 `/app/.venv/bin/python` 和 `/usr/local/bin/python` 提取实际安装包清单，包含 Linux 专属依赖和 CPU Torch，并核对系统安装工具已移除；只在查询公共漏洞记录时将官方 Torch/TorchAudio 的 `+cpu` 映射到相同公共版本。原始清单与完整报告分别保留在 `.local/docker-audit/application/` 和 `.local/docker-audit/system/`；系统无第三方包时只记录清单检查及未执行漏洞查询，不生成 pip-audit 报告。未知本地版本、包被跳过、版本不符、报告不完整、查询失败或任一已知漏洞均阻断验收，不采用漏洞忽略名单。应用自身通过源码审计和测试验收；此检查不等同于 Debian 系统包扫描，也不证明任意外部模型或插件可信。
+
+### 构建时的源码下载
+
+FFmpeg 9.0.2 仅从官方 HTTPS 地址下载，最多重试 3 次；连接、单次传输及总重试均设有超时上限。下载成功后须通过固定 SHA-256 校验才会解压和编译，连接失败或内容不符都会中止构建。curl 仅安装在构建阶段，不进入运行镜像。

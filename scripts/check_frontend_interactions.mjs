@@ -85,6 +85,8 @@ class FakeElement {
   getContext() {
     return null;
   }
+
+  removeAttribute(name) { delete this[name]; }
 }
 
 const elements = new Map();
@@ -107,7 +109,9 @@ const danmakuTab = element("danmaku-tab", ["tab"]);
 danmakuTab.dataset.tab = "danmaku";
 const logsTab = element("logs-tab", ["tab"]);
 logsTab.dataset.tab = "logs";
-const tabs = [roomsTab, candidatesTab, modelsTab, featuresTab, transcriptsTab, danmakuTab, logsTab];
+const importsTab = element("imports-tab", ["tab"]);
+importsTab.dataset.tab = "imports";
+const tabs = [roomsTab, candidatesTab, modelsTab, featuresTab, transcriptsTab, danmakuTab, logsTab, importsTab];
 const roomsPanel = element("tab-rooms", ["panel", "active"]);
 const candidatesPanel = element("tab-candidates", ["panel"]);
 const modelsPanel = element("tab-models", ["panel"]);
@@ -115,7 +119,8 @@ const featuresPanel = element("tab-features", ["panel"]);
 const transcriptsPanel = element("tab-transcripts", ["panel"]);
 const danmakuPanel = element("tab-danmaku", ["panel"]);
 const logsPanel = element("tab-logs", ["panel"]);
-const panels = [roomsPanel, candidatesPanel, modelsPanel, featuresPanel, transcriptsPanel, danmakuPanel, logsPanel];
+const importsPanel = element("tab-imports", ["panel"]);
+const panels = [roomsPanel, candidatesPanel, modelsPanel, featuresPanel, transcriptsPanel, danmakuPanel, logsPanel, importsPanel];
 
 const llmDraftFields = new Map([
   [".llm-name", { value: "草稿模型" }],
@@ -148,6 +153,7 @@ globalThis.addEventListener = (type, listener) => {
 };
 globalThis.document = {
   querySelector(selector) {
+    if (selector === "body.imports-page") return null;
     return selector.startsWith("#") ? element(selector.slice(1)) : element(selector);
   },
   querySelectorAll(selector) {
@@ -341,6 +347,8 @@ globalThis.fetch = async (path, options = {}) => {
       transcriptRows[0].text = JSON.parse(options.body || "{}").corrected_text;
     }
     payload = { transcript: transcriptRows[0], learned_aliases: { "查里斯": "查理斯" } };
+  } else if (requestPath === "/api/recording-imports") {
+    payload = { imports: [], engine: "whisper", max_video_bytes: 50 * 1024 ** 3, max_comment_bytes: 32 * 1024 ** 2 };
   } else if (requestPath === "/api/rooms/1/start") {
     dashboardRooms[0].running = true;
     dashboardRooms[0].recording_state = "starting";
@@ -716,6 +724,23 @@ try {
   windowListeners.get("beforeunload")(dirtyBeforeUnload);
   assert.equal(dirtyBeforeUnload.defaultPrevented, true, "unsaved transcript correction did not block navigation");
   assert.equal(dirtyBeforeUnload.returnValue, "", "unsaved transcript correction did not request browser confirmation");
+  await importsTab.emit("click");
+  await settle();
+  assert.equal(importsPanel.classList.contains("active"), true, "recording imports did not open inside the dashboard");
+  assert.equal(element("transcript-text-41").value, "人工纠正后的正文", "recording imports navigation discarded a transcript draft");
+  assert.ok(requests.includes("/api/recording-imports"), "recording imports tab did not load its records");
+  assert.match(element("imports-list").innerHTML, /还没有导入记录/, "an empty import list stayed in its loading state");
+  element("import-title").value = "尚未提交的录播标题";
+  const selectedImportFile = { name: "草稿录播.mp4", size: 1024 };
+  element("import-video").files = [selectedImportFile];
+  await transcriptsTab.emit("click");
+  await settle();
+  await importsTab.emit("click");
+  await settle();
+  assert.equal(element("import-title").value, "尚未提交的录播标题", "tab switching discarded the import title");
+  assert.equal(element("import-video").files[0], selectedImportFile, "tab switching discarded the selected video");
+  element("import-title").value = "";
+  element("import-video").files = [];
   await transcriptsTab.emit("click");
   await settle();
   assert.equal(
@@ -811,6 +836,87 @@ try {
   await settingsUI.loadLogs();
   assert.ok(!element("logs-list").innerHTML.includes("reference-123"), "log recovery must clear stale error");
   globalThis.fetch = savedFetch;
+
+  // Exercise the real QR login UI with deterministic polling and cancellation.
+  const savedSetTimeout = globalThis.setTimeout;
+  const savedClearTimeout = globalThis.clearTimeout;
+  const loginTimers = new Map();
+  let timerSequence = 0;
+  globalThis.setTimeout = callback => { const id = ++timerSequence; loginTimers.set(id, callback); return id; };
+  globalThis.clearTimeout = id => loginTimers.delete(id);
+  let qrState = "scan";
+  let qrActive = false;
+  let qrFailureStatus = 0;
+  let loginCalls = [];
+  globalThis.fetch = async (path, options) => {
+    loginCalls.push([path, options.method]);
+    if (path === "/api/login/qrcode") {
+      if (options.method === "POST") { qrActive = true; return { ok: true, status: 200, json: async () => ({ task_id: "qr-task", status: "starting", expires_in: 600 }) }; }
+      return { ok: true, status: 200, json: async () => qrActive ? ({ task_id: "qr-task", status: qrState, expires_in: 600 }) : ({ task_id: null, status: "idle" }) };
+    }
+    if (path === "/api/login/qrcode/qr-task" && qrFailureStatus) return { ok: false, status: qrFailureStatus, json: async () => ({ detail: "fixture network or auth error" }) };
+    if (path === "/api/login/qrcode/qr-task") return { ok: true, status: 200, json: async () => ({
+      status: qrState, expires_in: 600, qrcode: ["scan", "confirm"].includes(qrState) ? "data:image/svg+xml;base64,PHN2Zy8+" : "", error: "",
+    }) };
+    if (path === "/api/login/qrcode/qr-task/cancel") { qrState = "cancelled"; return { ok: true, status: 200, json: async () => ({ status: "cancelled" }) }; }
+    return savedFetch(path, options);
+  };
+  const loginTick = async () => {
+    const [id, callback] = loginTimers.entries().next().value;
+    loginTimers.delete(id);
+    await callback();
+  };
+  await settingsUI.doLogin();
+  assert.equal(element("btn-login").disabled, true);
+  assert.equal(element("btn-browser-login").disabled, true);
+  await loginTick();
+  assert.equal(element("login-qrcode").style.display, "");
+  assert.match(element("login-status").textContent, /扫描/);
+  qrState = "confirm"; await loginTick();
+  assert.match(element("login-status").textContent, /确认/);
+  qrState = "timeout"; await loginTick();
+  assert.equal(element("btn-login").disabled, false);
+  assert.equal(element("login-qrcode").style.display, "none");
+  assert.match(element("login-status").textContent, /过期/);
+  assert.ok(!loginCalls.some(([path]) => path === "/api/login"), "QR login must not launch a server browser");
+  qrState = "scan"; qrActive = false; await settingsUI.doLogin(); await loginTick();
+  await settingsUI.cancelLogin();
+  assert.ok(loginCalls.some(([path, method]) => path.endsWith("/cancel") && method === "POST"));
+  assert.equal(element("btn-login").disabled, false);
+  assert.equal(loginTimers.size, 0, "cancellation must remove pending polls");
+  await settingsUI.doLogin(); qrState = "done"; await loginTick();
+  assert.match(element("login-status").textContent, /成功/);
+  assert.equal(element("btn-browser-login").disabled, false);
+  // Recovery only reads; a dropped response or temporary outage never retries POST.
+  qrActive = false; qrState = "scan";
+  await settingsUI.doLogin(); await loginTick();
+  const writesBeforeRecovery = loginCalls.filter(([, method]) => method === "POST").length;
+  qrFailureStatus = 503;
+  for (let attempt = 0; attempt < 6; attempt += 1) await loginTick();
+  assert.match(element("login-status").textContent, /恢复状态/);
+  assert.equal(loginTimers.size, 0, "network retries must be bounded");
+  assert.equal(element("login-qrcode").src, undefined, "failed state clears QR pixels");
+  assert.equal(element("btn-resume-login").style.display, "");
+  qrFailureStatus = 0;
+  await settingsUI.resumeLogin(); await loginTick();
+  assert.match(element("login-status").textContent, /扫描/);
+  assert.equal(loginCalls.filter(([, method]) => method === "POST").length, writesBeforeRecovery);
+  qrFailureStatus = 401; await loginTick();
+  assert.match(element("login-status").textContent, /重新验证/);
+  assert.equal(loginTimers.size, 0, "expired auth must pause polling");
+  qrFailureStatus = 0;
+  await windowListeners.get("blc:reauthenticated")(); await settle();
+  await loginTick();
+  qrState = "validating"; await loginTick();
+  assert.match(element("login-status").textContent, /验证/);
+  assert.equal(element("login-qrcode").src, undefined);
+  qrState = "committing"; await loginTick();
+  assert.match(element("login-status").textContent, /保存/);
+  await settingsUI.cancelLogin();
+  assert.equal(element("btn-login").disabled, false);
+  globalThis.fetch = savedFetch;
+  globalThis.setTimeout = savedSetTimeout;
+  globalThis.clearTimeout = savedClearTimeout;
 
   let logsRequested = false;
   globalThis.fetch = async (path, options) => {

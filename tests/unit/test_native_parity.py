@@ -258,9 +258,10 @@ class TestBackendReporting:
 
     def test_current_native_namespace_is_reported(self) -> None:
         """Cython 与 Rust 后端均应有独立诊断结果。"""
-        from app.accelerators.dispatcher import get_cython_backend, get_rust_backend
+        from app.accelerators.dispatcher import get_cython_backend, get_repeat_backend, get_rust_backend
 
         assert get_cython_backend() in ("Cython", "python")
+        assert get_repeat_backend() in ("C++", "python")
         assert get_rust_backend() in ("Rust+rayon", "python")
 
     @pytest.mark.parametrize(

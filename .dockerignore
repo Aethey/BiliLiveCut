@@ -86,3 +86,6 @@ logs_*.zip
 
 # 临时测试列表快照
 /tests-*.txt
+
+# Rebuild the Cython C++ binding from its reviewed .pyx source.
+tools/native/cython/_repeat_speedups.cpp

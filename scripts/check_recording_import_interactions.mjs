@@ -44,10 +44,12 @@ let failAction = false;
 let holdUpload = false;
 let uploadRequest = null;
 let releaseRead = null;
+let failRead = true;
 const response = (data, status = 200) => ({ ok: status < 400, status, json: async () => structuredClone(data) });
 globalThis.fetch = async (url, options) => {
   requests.push({ url, method: options.method, body: options.body });
   if (options.method === "GET") {
+    if (failRead) return response({ detail: "读取服务暂时不可用" }, 503);
     const snapshot = { imports: structuredClone(records), max_video_bytes: 50 * 1024 ** 3, max_comment_bytes: 32 * 1024 ** 2, engine: "whisper" };
     if (releaseRead === true) await new Promise(resolve => { releaseRead = resolve; });
     return response(snapshot);
@@ -98,6 +100,16 @@ const select = (title, comments = null) => {
 };
 const submit = () => element("import-form").emit("submit");
 const refresh = () => element("imports-refresh").emit("click");
+await settle();
+assert.match(element("imports-list-error").textContent, /503/);
+assert.match(element("imports-list").innerHTML, /读取失败/);
+assert.doesNotMatch(element("imports-list").innerHTML, /正在读取导入记录/);
+failRead = false;
+await refresh();
+assert.match(element("imports-list").innerHTML, /还没有导入记录/);
+assert.equal(element("imports-list-error").textContent, "");
+await refresh();
+assert.match(element("imports-list").innerHTML, /还没有导入记录/);
 const action = (record, name) => element("imports-list").emit("click", { closest: () => ({ dataset: { id: record.id, action: name } }) });
 await settle();
 

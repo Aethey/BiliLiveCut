@@ -97,3 +97,6 @@ logs_*.zip
 # Portable 构建产物
 /packaging/portable/build/
 /packaging/portable/dist/
+
+# Cython C++ binding generated during builds.
+tools/native/cython/_repeat_speedups.cpp

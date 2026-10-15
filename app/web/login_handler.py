@@ -259,12 +259,19 @@ def get_cookie_info() -> dict:
 
     raw = get_bilibili_cookie()
 
-    # 安全摘要: 只输出 DedeUserID 值
+    # 有 Cookie 字符串不代表已经取得登录凭据，至少应有非空的 SESSDATA。
     if not raw:
         return {"has_cookie": False}
 
-    match = re.search(r"DedeUserID=(\d+)", raw)
-    uid = match.group(1) if match else None
+    fields = {}
+    for part in raw.split(";"):
+        key, separator, value = part.strip().partition("=")
+        if separator and value.strip():
+            fields[key.strip().casefold()] = value.strip()
+    if not fields.get("sessdata"):
+        return {"has_cookie": False, "hint": "已保存的 Cookie 缺少 SESSDATA，请重新扫码登录。"}
+    value = fields.get("dedeuserid", "")
+    uid = value if re.fullmatch(r"[0-9]+", value) else None
 
     return {
         "has_cookie": True,

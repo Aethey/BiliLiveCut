@@ -12,6 +12,7 @@ import { loadLLM, loadLogs, loadTasks, retryTask, cancelTask, loadCookieStatus, 
 import { loadMonitor, triggerMaintenance } from "./js/monitor.js";
 import { loadJobs, cancelJob, retryJob } from "./js/jobs.js";
 import { loadPlugins, hasPluginMutationPending } from "./js/plugins.js";
+import { refreshImports, hasRecordingImportDraft } from "./js/recording-imports.js";
 
 // 挂载全局函数:供 HTML 内联 onclick 使用
 window.saveRoom = saveRoom;
@@ -52,7 +53,8 @@ function hasUnsavedDashboardDraft() {
     || hasTranscriptDraft()
     || hasTrendDraft()
     || hasLLMDraft()
-    || hasPluginMutationPending();
+    || hasPluginMutationPending()
+    || hasRecordingImportDraft();
 }
 
 window.addEventListener("beforeunload", (event) => {
@@ -100,7 +102,7 @@ document.addEventListener("click", event => {
 // ----------------------------- 轮询 ----------------------------- //
 const loaders = {
   settings: loadConfiguration,
-  rooms: loadRooms, recording: loadRecording, transcripts: loadTranscripts,
+  rooms: loadRooms, recording: loadRecording, imports: refreshImports, transcripts: loadTranscripts,
   danmaku: loadDanmaku, trends: loadTrends, candidates: loadSessionTimelines,
   clips: loadClips, uploads: loadUploads, features: loadFeatureSwitches, models: loadLLM, logs: loadLogs,
   schedules: loadSchedules, login: loadCookieStatus, tasks: async () => Promise.all([loadTasks(), loadJobs()]),

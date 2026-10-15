@@ -1,0 +1,31 @@
+{
+  "repository": "https://github.com/IlyaGrebnov/libsais",
+  "version": "2.10.4",
+  "commit": "ce90878d784b5ff7d019300535675e4a2e22aae0",
+  "license": "Apache-2.0",
+  "openmp": false,
+  "files": {
+    "src/libsais.c": {
+      "bytes": 388397,
+      "sha256": "1eeec709186bb28c02c1d7113809d19db9e83045ebd3ce6b4654ddad4659df61",
+      "git_blob": "179cb3ae6e3454b56d32e6cd53ce345854a3809a",
+      "vendored_sha256": "c8c45dd1c2ea750e71a051224920b57ae7a4965e682e11792a1da9d62e66688e",
+      "vendored_bytes": 388216
+    },
+    "include/libsais.h": {
+      "bytes": 23796,
+      "sha256": "5a855c8f159abf78dafcab96dc20240b81a308f0099f6fa1f7def47450b0f3df",
+      "git_blob": "c34342ee29018c2cfcf40eab4c8bbe704cda9c3e",
+      "vendored_sha256": "797d4d0ffe40e81d4f42af86ded1383eba573d3f6c0cc7c086e65e82b0cb09eb",
+      "vendored_bytes": 23792
+    },
+    "LICENSE": {
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "git_blob": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "vendored_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "vendored_bytes": 11358
+    }
+  },
+  "local_change": "Remove trailing ASCII whitespace only; preserve code, copyright and license text."
+}

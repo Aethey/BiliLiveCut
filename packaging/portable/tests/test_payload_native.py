@@ -30,6 +30,9 @@ def _prepare_builder(monkeypatch: MonkeyPatch, tmp_path: Path) -> tuple[ModuleTy
     monkeypatch.setattr(builder.sys, "platform", "win32")
     monkeypatch.setattr(builder, "_windows_extension_suffix", lambda: ".cp312-win_amd64.pyd")
     monkeypatch.setattr(builder.importlib.util, "find_spec", lambda _name: object())
+    license_file = tmp_path / "tools/native/repeat/vendor/libsais/LICENSE"
+    license_file.parent.mkdir(parents=True)
+    license_file.write_bytes(b"Apache License 2.0 fixture")
     return builder, accelerator_dir
 
 
@@ -50,7 +53,7 @@ def test_payload_native_build_rejects_false_success(monkeypatch: MonkeyPatch, tm
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    with pytest.raises(RuntimeError, match="缺少必需原生模块：c, cython, rust"):
+    with pytest.raises(RuntimeError, match="缺少必需原生模块：c, cython, repeat, rust"):
         builder._compile_and_copy_native_modules(tmp_path / "staging")
 
 
@@ -64,6 +67,7 @@ def test_payload_native_build_requires_rust(monkeypatch: MonkeyPatch, tmp_path: 
             (accelerator_dir / "_c_speedups.cp312-win_amd64.pyd").write_bytes(b"c")
         elif script_name == "setup.py":
             (accelerator_dir / "_cython_speedups.cp312-win_amd64.pyd").write_bytes(b"cython")
+            (accelerator_dir / "_repeat_speedups.cp312-win_amd64.pyd").write_bytes(b"repeat")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -80,6 +84,7 @@ def test_payload_native_build_copies_only_current_windows_abi(monkeypatch: Monke
         "build_rust.py": accelerator_dir / "_rust_speedups.pyd",
     }
     (accelerator_dir / "_cython_speedups.cp314-win_amd64.pyd").write_bytes(b"old")
+    (accelerator_dir / "_repeat_speedups.cp314-win_amd64.pyd").write_bytes(b"old")
     (accelerator_dir / "_c_speedups.cpython-312-x86_64-linux-gnu.so").write_bytes(b"foreign")
 
     def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
@@ -87,18 +92,23 @@ def test_payload_native_build_copies_only_current_windows_abi(monkeypatch: Monke
         if script_name in {"setup.py", "setup_c.py"}:
             assert command[-2:] == ["--inplace", "--force"]
         expected[script_name].write_bytes(script_name.encode("ascii"))
+        if script_name == "setup.py":
+            (accelerator_dir / "_repeat_speedups.cp312-win_amd64.pyd").write_bytes(b"repeat")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     staging_dir = tmp_path / "staging"
     result = builder._compile_and_copy_native_modules(staging_dir)
 
-    assert result == {"c": True, "cython": True, "rust": True}
-    copied = {path.name for path in (staging_dir / "app" / "accelerators").iterdir()}
+    assert (staging_dir / "app/accelerators/licenses/libsais-LICENSE.txt").read_bytes() == b"Apache License 2.0 fixture"
+    assert "app/accelerators/licenses/libsais-LICENSE.txt" in builder._collect_included_files(staging_dir)
+    assert result == {"c": True, "cython": True, "repeat": True, "rust": True}
+    copied = {path.name for path in (staging_dir / "app" / "accelerators").iterdir() if path.is_file()}
     assert copied == {
         "_c_speedups.cp312-win_amd64.pyd",
         "_cython_speedups.cp312-win_amd64.pyd",
         "_rust_speedups.pyd",
+        "_repeat_speedups.cp312-win_amd64.pyd",
     }
 
 
@@ -117,6 +127,8 @@ def test_payload_native_build_rejects_embedded_private_source_path(
         name = Path(command[1]).name
         content = str(tmp_path / "private-source.rs").encode(encoding) if name == "build_rust.py" else b"native"
         expected[name].write_bytes(content)
+        if name == "setup.py":
+            (accelerator_dir / "_repeat_speedups.cp312-win_amd64.pyd").write_bytes(b"repeat")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -124,3 +136,25 @@ def test_payload_native_build_rejects_embedded_private_source_path(
     with pytest.raises(RuntimeError, match="原生模块包含本机构建路径"):
         builder._compile_and_copy_native_modules(staging)
     assert not (staging / "app/accelerators/_rust_speedups.pyd").exists()
+
+
+@pytest.mark.parametrize("stale", [False, True])
+def test_payload_native_build_requires_fresh_repeat_module(
+    monkeypatch: MonkeyPatch, tmp_path: Path, stale: bool
+) -> None:
+    builder, accelerator_dir = _prepare_builder(monkeypatch, tmp_path)
+    if stale:
+        (accelerator_dir / "_repeat_speedups.cp312-win_amd64.pyd").write_bytes(b"stale")
+    expected = {
+        "setup_c.py": "_c_speedups.cp312-win_amd64.pyd",
+        "setup.py": "_cython_speedups.cp312-win_amd64.pyd",
+        "build_rust.py": "_rust_speedups.pyd",
+    }
+
+    def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        (accelerator_dir / expected[Path(command[1]).name]).write_bytes(b"native")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="缺少必需原生模块：repeat"):
+        builder._compile_and_copy_native_modules(tmp_path / "staging")

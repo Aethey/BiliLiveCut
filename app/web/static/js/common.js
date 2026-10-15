@@ -9,8 +9,8 @@ export function sessionTitle(row) {
     ? `${title}（上次获取）` : title;
 }
 
-async function api(method, path, body) {
-  const opts = { method, headers: { "Content-Type": "application/json" } };
+async function api(method, path, body, { signal } = {}) {
+  const opts = { method, headers: { "Content-Type": "application/json" }, signal };
   if (body !== undefined) opts.body = JSON.stringify(body);
   const resp = await fetch(path, opts);
   if (!resp.ok) {

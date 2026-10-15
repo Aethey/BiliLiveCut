@@ -161,10 +161,12 @@ async function loadCookieStatus() {
     const info = await api("GET", "/api/cookie-status");
     const hint = $("#cookie-hint");
     if (info.has_cookie) {
-      hint.innerHTML = `\u5df2\u767b\u5f55 \u00b7 UID: <b>${esc(info.uid || "?")}</b>`;
+      hint.innerHTML = info.uid
+        ? `已保存登录凭据 · UID: <b>${esc(info.uid)}</b>`
+        : "已保存登录凭据；Cookie 中未包含 UID。";
       hint.className = "hint ok";
     } else {
-      hint.textContent = "尚未登录；公开弹幕可匿名采集，需要登录态的画质请先登录。";
+      hint.textContent = info.hint || "尚未登录；公开弹幕可匿名采集，需要登录态的画质请先登录。";
       hint.className = "hint warn";
     }
     hint.style.display = "";
@@ -172,11 +174,221 @@ async function loadCookieStatus() {
 }
 
 let _loginPolling = null;
+let _qrTaskId = null;
+let _loginGeneration = 0;
+let _qrDeadline = 0;
+let _qrFailures = 0;
+let _qrPaused = false;
+let _qrQuerying = false;
+let _qrCancelling = false;
+let _qrController = null;
+let _qrResumeRequested = false;
+
+function setLoginBusy(busy) {
+  $("#btn-login").disabled = busy;
+  $("#btn-browser-login").disabled = busy;
+  $("#btn-cancel-login").style.display = busy && _qrTaskId ? "" : "none";
+  $("#btn-cancel-login").disabled = _qrCancelling;
+  $("#btn-resume-login").style.display = _qrPaused ? "" : "none";
+  $("#btn-resume-login").disabled = _qrQuerying || _qrCancelling;
+}
+
+function hideLoginQR() {
+  const image = $("#login-qrcode");
+  image.style.display = "none";
+  image.removeAttribute("src");
+}
+
+function stopLoginPoll() {
+  if (_loginPolling !== null) clearTimeout(_loginPolling);
+  _loginPolling = null;
+}
+
+async function qrRequest(method, path) {
+  const controller = new AbortController();
+  _qrController = controller;
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try { return await api(method, path, undefined, { signal: controller.signal }); }
+  finally {
+    clearTimeout(timeout);
+    if (_qrController === controller) _qrController = null;
+  }
+}
+
+function finishQR(message) {
+  ++_loginGeneration;
+  stopLoginPoll();
+  _qrTaskId = null;
+  _qrDeadline = 0;
+  _qrPaused = false;
+  hideLoginQR();
+  setLoginBusy(false);
+  $("#login-status").textContent = message;
+}
+
+async function renderQR(result, generation) {
+  if (generation !== _loginGeneration) return;
+  const messages = {
+    starting: "正在申请二维码…",
+    scan: "请用手机 Bilibili 扫描二维码。",
+    confirm: "已扫码，请在手机上确认登录。",
+    validating: "正在验证 Bilibili 账号，请稍候…",
+    committing: "正在保存登录结果，请稍候…",
+    timeout: "二维码已过期，请重新点击扫码登录。",
+    done: "登录成功！Cookie 已自动保存。",
+    cancelled: "扫码登录已取消。",
+    error: result.error || "扫码登录失败，请重试。",
+  };
+  if (!Object.hasOwn(messages, result.status)) throw new Error("服务返回了未知登录状态，请恢复查询。");
+  _qrFailures = 0;
+  _qrPaused = false;
+  $("#login-status").textContent = messages[result.status];
+  hideLoginQR();
+  if (["scan", "confirm"].includes(result.status) && result.qrcode) {
+    if (!/^data:image\/svg\+xml;base64,[A-Za-z0-9+/=]+$/.test(result.qrcode)) throw new Error("二维码格式无效。");
+    $("#login-qrcode").src = result.qrcode;
+    $("#login-qrcode").style.display = "";
+  }
+  if (["done", "timeout", "cancelled", "error"].includes(result.status)) {
+    finishQR(messages[result.status]);
+    if (result.status === "done") {
+      toast("Bilibili 登录成功");
+      await loadCookieStatus();
+      await loadConfiguration(true);
+    }
+    return;
+  }
+  if (Number.isFinite(result.expires_in)) {
+    _qrDeadline = Date.now() + Math.max(0, Math.min(600, result.expires_in)) * 1000;
+  }
+  setLoginBusy(true);
+  _loginPolling = setTimeout(() => pollQR(generation), 1500);
+}
+
+function qrFailure(error, generation) {
+  if (generation !== _loginGeneration) return;
+  hideLoginQR();
+  stopLoginPoll();
+  if (error.status === 404) {
+    finishQR("任务已过期或属于旧登录，请重新申请二维码。");
+    return;
+  }
+  _qrPaused = true;
+  if (error.status === 401 || error.status === 403) {
+    $("#login-status").textContent = "后台登录需要重新验证。登录后点击恢复状态；不会自动申请或取消二维码。";
+  } else if (_qrTaskId && ++_qrFailures <= 5 && (!_qrDeadline || Date.now() < _qrDeadline)) {
+    $("#login-status").textContent = `连接中断，正在恢复状态（${_qrFailures}/5）…`;
+    _loginPolling = setTimeout(() => pollQR(generation), Math.min(1500 * 2 ** (_qrFailures - 1), 15000) + Math.random() * 200);
+  } else {
+    $("#login-status").textContent = "连接中断，操作结果尚未确认。请点击恢复状态；不会自动重试写入操作。";
+  }
+  setLoginBusy(true);
+}
+
+async function pollQR(generation) {
+  if (generation !== _loginGeneration || !_qrTaskId || _qrQuerying || _qrCancelling) return;
+  stopLoginPoll();
+  _qrQuerying = true;
+  try {
+    await renderQR(await qrRequest("GET", `/api/login/qrcode/${encodeURIComponent(_qrTaskId)}`), generation);
+  } catch (error) { qrFailure(error, generation); }
+  finally {
+    _qrQuerying = false;
+    setLoginBusy(Boolean(_qrTaskId) || _qrPaused);
+    drainLoginResume();
+  }
+}
+
+async function resumeLogin(initial = false) {
+  if (_qrQuerying || _qrCancelling) return;
+  stopLoginPoll();
+  const generation = ++_loginGeneration;
+  _qrQuerying = true;
+  _qrFailures = 0;
+  try {
+    const current = await qrRequest("GET", "/api/login/qrcode");
+    if (generation !== _loginGeneration) return;
+    if (!current.task_id) {
+      finishQR(initial ? "" : "当前浏览器没有可恢复的扫码任务，请点击扫码登录。");
+      return;
+    }
+    _qrTaskId = current.task_id;
+    await renderQR(current, generation);
+  } catch (error) { qrFailure(error, generation); }
+  finally {
+    _qrQuerying = false;
+    setLoginBusy(Boolean(_qrTaskId) || _qrPaused);
+    drainLoginResume();
+  }
+}
+
 async function doLogin() {
+  if ($("#btn-login").disabled || _qrQuerying) return;
+  const generation = ++_loginGeneration;
+  _qrQuerying = true;
+  hideLoginQR();
+  $("#login-status").textContent = "正在申请二维码…";
+  setLoginBusy(true);
+  try {
+    // 先建立浏览器归属并查询旧任务，刷新或丢失 POST 响应后不会盲目重建。
+    const current = await qrRequest("GET", "/api/login/qrcode");
+    if (generation !== _loginGeneration) return;
+    const task = current.task_id && !["done", "timeout", "cancelled", "error"].includes(current.status)
+      ? current : await qrRequest("POST", "/api/login/qrcode");
+    if (generation !== _loginGeneration) return;
+    _qrTaskId = task.task_id;
+    _qrDeadline = Date.now() + 600000;
+    await renderQR(task, generation);
+  } catch (error) {
+    if (generation !== _loginGeneration) return;
+    if (error.status === 409) finishQR(error.message);
+    else qrFailure(error, generation);
+  } finally {
+    _qrQuerying = false;
+    setLoginBusy(Boolean(_qrTaskId) || _qrPaused);
+    drainLoginResume();
+  }
+}
+
+async function cancelLogin() {
+  if (!_qrTaskId || _qrCancelling) return;
+  const token = _qrTaskId;
+  const generation = ++_loginGeneration;
+  stopLoginPoll();
+  _qrController?.abort();
+  _qrCancelling = true;
+  setLoginBusy(true);
+  $("#login-status").textContent = "正在确认取消结果；若已开始保存，将等待保存完成…";
+  try {
+    const result = await qrRequest("POST", `/api/login/qrcode/${encodeURIComponent(token)}/cancel`);
+    if (generation !== _loginGeneration) return;
+    await renderQR(result, generation);
+  } catch (error) { qrFailure(error, generation); }
+  finally {
+    _qrCancelling = false;
+    setLoginBusy(Boolean(_qrTaskId) || _qrPaused);
+    drainLoginResume();
+  }
+}
+
+function requestLoginResume() {
+  if (_qrQuerying || _qrCancelling) { _qrResumeRequested = true; return; }
+  _qrResumeRequested = false;
+  return resumeLogin();
+}
+
+function drainLoginResume() {
+  if (_qrResumeRequested && !_qrQuerying && !_qrCancelling) requestLoginResume();
+}
+
+window.addEventListener("online", () => { if (_qrPaused) return requestLoginResume(); });
+window.addEventListener("blc:reauthenticated", () => { if (_qrTaskId || _qrPaused || _qrQuerying) return requestLoginResume(); });
+
+async function doBrowserLogin() {
   if ($("#btn-login").disabled) return;
   const btn = $("#btn-login");
   const status = $("#login-status");
-  btn.disabled = true;
+  setLoginBusy(true);
   status.textContent = "\u6b63\u5728\u542f\u52a8\u6d4f\u89c8\u5668\u2026";
   try {
     const resp = await api("POST", "/api/login");
@@ -194,7 +406,7 @@ async function doLogin() {
           clearTimeout(_loginPolling);
           _loginPolling = null;
           status.textContent = "\u767b\u5f55\u6210\u529f\uff01Cookie \u5df2\u81ea\u52a8\u4fdd\u5b58\u3002";
-          btn.disabled = false;
+          setLoginBusy(false);
           toast("Bilibili \u767b\u5f55\u6210\u529f");
           await loadCookieStatus();
           await loadConfiguration(true);
@@ -202,20 +414,20 @@ async function doLogin() {
           clearTimeout(_loginPolling);
           _loginPolling = null;
           status.textContent = "\u767b\u5f55\u5931\u8d25: " + esc(s.error);
-          btn.disabled = false;
+          setLoginBusy(false);
         }
       } catch (e) {
         clearTimeout(_loginPolling);
         _loginPolling = null;
         status.textContent = "\u72b6\u6001\u67e5\u8be2\u5f02\u5e38: " + esc(e.message);
-        btn.disabled = false;
+        setLoginBusy(false);
       }
       if (btn.disabled) _loginPolling = setTimeout(poll, 2000);
     };
     _loginPolling = setTimeout(poll, 2000);
   } catch (e) {
     status.textContent = "\u542f\u52a8\u5931\u8d25: " + esc(e.message);
-    btn.disabled = false;
+    setLoginBusy(false);
   }
 }
 
@@ -364,6 +576,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnClear = $("#btn-clear-cookie");
   if (btnLogin) btnLogin.addEventListener("click", doLogin);
   if (btnClear) btnClear.addEventListener("click", clearCookie);
+  $("#btn-browser-login")?.addEventListener("click", doBrowserLogin);
+  $("#btn-cancel-login")?.addEventListener("click", cancelLogin);
+  $("#btn-resume-login")?.addEventListener("click", () => resumeLogin());
+  resumeLogin(true);
 });
 
-export { loadLLM, collectLLM, llmRow, loadLogs, loadTasks, retryTask, cancelTask, loadCookieStatus, doLogin, clearCookie, loadTemplates, exportTemplate, detTempl, loadIntroTemplates, detIntro, hasLLMDraft };
+export { loadLLM, collectLLM, llmRow, loadLogs, loadTasks, retryTask, cancelTask, loadCookieStatus, doLogin, doBrowserLogin, cancelLogin, resumeLogin, clearCookie, loadTemplates, exportTemplate, detTempl, loadIntroTemplates, detIntro, hasLLMDraft };

@@ -1,5 +1,5 @@
-# BiliLiveCut Release 工作流 (V0.1.18.9 Alpha)
-# 触发: 推送 v* 标签 (如 v0.1.18.9-Alpha)
+# BiliLiveCut Release 工作流 (V0.1.19.0 Alpha)
+# 触发: 推送 v* 标签 (如 v0.1.19.0-Alpha)
 #   1) 全量测试 + release_audit
 #   2) 构建源码包 (sdist + wheel)
 #   3) 构建 Payload + 契约验证
@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "发布 tag 名称 (如 v0.1.18.9-Alpha, 必须 v* 格式且指向当前 SHA)"
+        description: "发布 tag 名称 (如 v0.1.19.0-Alpha, 必须 v* 格式且指向当前 SHA)"
         required: true
         type: string
 
@@ -52,7 +52,7 @@ jobs:
           TAG_VERSION="${TAG_INPUT#v}"
           if [[ ! "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(-(Alpha|Beta|RC)(\.[0-9]+)?)?$ ]]; then
             echo "FAIL: tag '$TAG_INPUT' does not match the complete release version pattern"
-            echo "Example: v0.1.18.9-Alpha"
+            echo "Example: v0.1.19.0-Alpha"
             exit 1
           fi
 
@@ -260,7 +260,9 @@ jobs:
           required_native = {
               f"app/accelerators/_c_speedups.{abi}-win_amd64.pyd",
               f"app/accelerators/_cython_speedups.{abi}-win_amd64.pyd",
+              f"app/accelerators/_repeat_speedups.{abi}-win_amd64.pyd",
               "app/accelerators/_rust_speedups.pyd",
+              "app/accelerators/licenses/libsais-LICENSE.txt",
           }
           missing_native = sorted(required_native - entries)
           assert not missing_native, f"Missing Windows native modules: {missing_native}"
@@ -608,7 +610,7 @@ jobs:
             try {
               & $venvPython -c "from pathlib import Path; from app.cli import app; import app.cli; source = Path(r'$runtimeSource').resolve(); actual = Path(app.cli.__file__).resolve(); assert actual.is_relative_to(source), f'app.cli loaded from {actual}'; print('app.cli import OK:', actual)"
               if ($LASTEXITCODE -ne 0) { throw "Full Bundle app.cli import failed" }
-              & $venvPython -c "from app.accelerators import dispatcher as d; assert d.get_backend() == 'C', d.get_backend(); assert d.get_cython_backend() == 'Cython', d.get_cython_backend(); assert d.get_rust_backend() == 'Rust+rayon', d.get_rust_backend(); assert d.get_cluster_backend() == 'Rust+rayon', d.get_cluster_backend(); print('Full Bundle native acceleration OK')"
+              & $venvPython -c "from app.accelerators import dispatcher as d; assert d.get_backend() == 'C', d.get_backend(); assert d.get_cython_backend() == 'Cython', d.get_cython_backend(); assert d.get_repeat_backend() == 'C++', d.get_repeat_backend(); assert d.consecutive_repeat_details('abc' * 100) == (0, 3, 100); assert d.get_rust_backend() == 'Rust+rayon', d.get_rust_backend(); assert d.get_cluster_backend() == 'Rust+rayon', d.get_cluster_backend(); print('Full Bundle native acceleration OK')"
             }
             finally {
               Pop-Location

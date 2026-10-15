@@ -11,7 +11,7 @@ import stat
 import sys
 import time
 import unicodedata
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -238,9 +238,35 @@ class AuthStore:
             if role:
                 db.execute("DELETE FROM failures WHERE ip=?", (ip,))
                 token = self._issue_session(db, username, role) if create_session else ""
+                # 在验证密码的同一事务内捕获版本；不保留明文或可用于验密的摘要。
+                credential_version = token_hash(row["verifier"]) if role == "admin" else ""
             else:
                 self._failure(db, ip)
-        return {"role": role, "token": token} if role else None
+        return {"role": role, "token": token, "credential_version": credential_version} if role else None
+
+    def _admin_authorized(self, db: sqlite3.Connection, session: str, credential_version: str) -> bool:
+        if session:
+            self._prune(db, time.time())
+            row = db.execute("SELECT role FROM sessions WHERE token=?", (token_hash(session),)).fetchone()
+            return row is not None and row["role"] == "admin"
+        identity = self._row(db)
+        return bool(
+            credential_version
+            and identity["mode"] != "setup"
+            and secrets.compare_digest(token_hash(identity["verifier"]), credential_version)
+        )
+
+    def admin_authorized(self, *, session: str = "", credential_version: str = "") -> bool:
+        """检查已认证任务的会话或密码版本，不延长会话或保存原始凭据。"""
+        with self.connect() as db:
+            return self._admin_authorized(db, session, credential_version)
+
+    def run_admin_action(self, action: Callable[[], None], *, session: str = "", credential_version: str = "") -> None:
+        """在撤销事务锁内核验并执行短写入，避免改密完成后仍提交旧任务。"""
+        with self.connect() as db:
+            if not self._admin_authorized(db, session, credential_version):
+                raise AuthError("管理员登录已失效，请重新登录并申请二维码。", 401)
+            action()
 
     def _issue_session(self, db: sqlite3.Connection, username: str, role: str) -> str:
         token = secrets.token_urlsafe(32)

@@ -1,6 +1,6 @@
 """BiliLiveCut Cython 数值与字幕热点加速模块。
 
-覆盖十个 CPU 热点:
+覆盖九个 CPU 热点:
 1. cluster_similarity_matrix — O(N²) 聚类矩阵构建
 2. danmaku_baseline_rate — 弹幕基线分桶 + 中位数
 3. group_srt_blocks — 词条聚合为 SRT 字幕
@@ -9,8 +9,7 @@
 6. robust_relative_uplift — 滚动历史稳健增幅
 7. pcm16_statistics — PCM16 精确整数能量与峰值
 8. text_novelty — 词项/实体扫描与新颖度统计
-9. consecutive_repeat_details — 精确连续重复检测
-10. review_text_statistics — ASR 复核字符与热词统计
+9. review_text_statistics — ASR 复核字符与热词统计
 
 编译:
     python setup_c.py build_ext --inplace
@@ -601,30 +600,6 @@ def text_novelty(str current not None, str baseline not None, *, bint include_en
         entity_change = (len(left) - common) / <double>len(left) if left else 0.0
     return novelty, change, entity_change
 
-
-
-def consecutive_repeat_details(str text not None) -> tuple[int, int, int]:
-    """逐周期反向累计相等后缀，O(32N) 时间/O(1) 额外空间，保留最早平局。"""
-    cdef Py_ssize_t size = len(text)
-    cdef Py_ssize_t unit, start, run, repeats, coverage
-    cdef Py_ssize_t best_start = 0, best_unit = 0, best_repeats = 0, best_coverage = 0
-    for unit in range(1, min(32, size // 3) + 1):
-        run = 0
-        for start in range(size - unit - 1, -1, -1):
-            if PyUnicode_READ_CHAR(text, start) == PyUnicode_READ_CHAR(text, start + unit):
-                run += 1
-            else:
-                run = 0
-            repeats = 1 + run // unit
-            if repeats < 3:
-                continue
-            coverage = repeats * unit
-            if coverage > best_coverage or (coverage == best_coverage and unit == best_unit and start < best_start):
-                best_start = start
-                best_unit = unit
-                best_repeats = repeats
-                best_coverage = coverage
-    return best_start, best_unit, best_repeats
 
 
 def review_text_statistics(str text not None, hotwords: list[str] | None = None) -> tuple[int, int, str | None]:
