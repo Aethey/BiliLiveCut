@@ -725,7 +725,8 @@ class Recorder:
             "-rw_timeout",
             "15000000",
             "-protocol_whitelist",
-            "http,https,tcp,tls,crypto",
+            # HTTPS through an inherited HTTP proxy uses a nested CONNECT protocol.
+            "http,https,tcp,tls,crypto,httpproxy",
             *(["-headers", headers] if headers else []),
             "-i",
             stream.url,
