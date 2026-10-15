@@ -1,7 +1,5 @@
 name: Documentation
 
-# StarGazerQQD/BiliLiveCut publishes to https://StarGazerQQD.github.io/BiliLiveCut/.
-# Repository setup: docs/development/github-pages.md. Forks use their own Pages site.
 on:
   push:
     branches: [main]

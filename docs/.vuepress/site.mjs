@@ -153,11 +153,6 @@ export const sections = [
             '文档站维护',
             '/development/documentation.html',
           ],
-          [
-            'docs/development/github-pages.md',
-            'GitHub Pages 仓库配置',
-            '/development/github-pages.html',
-          ],
         ],
       },
       {

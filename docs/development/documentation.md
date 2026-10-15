@@ -49,7 +49,7 @@ npm --prefix docs run build
 2. 默认分支 `main` 更新时构建，成功后使用 Pages Artifact 部署，不创建 `gh-pages` 分支或额外提交。
 3. 手动触发可验证其他分支；只有仓库默认分支允许进入部署任务。
 
-正式部署以 `StarGazerQQD/BiliLiveCut` 为准，默认访问地址为 `https://StarGazerQQD.github.io/BiliLiveCut/`。首次启用所需的仓库设置、手动部署与故障处理见 [GitHub Pages 仓库配置说明](github-pages.md)，可以直接转交给仓库维护者。
+正式部署以 `StarGazerQQD/BiliLiveCut` 为准，默认访问地址为 `https://StarGazerQQD.github.io/BiliLiveCut/`。
 
 本地预览默认使用上游仓库链接；Actions 根据 `GITHUB_REPOSITORY` 自动选择当前仓库链接和站点子路径，因此 fork 在自身仓库启用 Pages 后会发布到自己的站点。源码编辑链接本地默认使用 `main`；Actions 构建使用对应分支。`GITHUB_REPOSITORY`、`GITHUB_REF_NAME` 和 `GITHUB_HEAD_REF` 也可在本地显式设置以验证 fork 或分支链接。
 

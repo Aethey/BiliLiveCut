@@ -7,7 +7,6 @@
 1. [开发环境与验证](environment.md)：uv、venv + pip、原生扩展、测试与发行约束。
 2. [Web 页面开发与验证](frontend.md)：HTML 模板、CSS、JavaScript 模块与交互检查。
 3. [文档站维护](documentation.md)：分类、路由、链接检查和 Pages 部署。
-4. [GitHub Pages 仓库配置](github-pages.md)：供 `StarGazerQQD/BiliLiveCut` 维护者首次启用部署。
 
 ## 扩展能力
 
