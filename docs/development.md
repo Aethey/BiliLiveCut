@@ -58,6 +58,8 @@ Windows 的 `FFMPEG_PATH`、`FFPROBE_PATH` 应指向真实二进制文件，避�
 
 ### 原生扩展构建与安装排错
 
+重复检测扩展按语言分别编译：libsais 保持 C 源码，Cython 包装与内核使用 C++17，再链接为同一扩展。C++ 标准参数不会传入 C 编译器。macOS CI 使用 Clang 构建并强制验证三个原生扩展可加载，然后运行完整测试；Python 回退安装继续由独立矩阵验证。
+
 Python 镜像配置见[使用指南](usage.md#python-依赖源)。普通源码运行缺少原生扩展时可按函数回退到 Python 参考实现；完整验证和 Portable 发行需要对应 ABI 的 C、Cython、Rust 三个扩展。Windows C/Cython 构建需要可用的 MSVC 工具链，Rust 需要 Rust 工具链。
 
 默认安装编译 C/Cython；uv 与 pip 使用相同构建后端。Ubuntu 使用系统 Python 3.12 时，`Python.h: No such file or directory` 表示缺少开发头文件，可执行 `sudo apt-get install build-essential python3.12-dev`（其他 Python 版本安装对应的开发包）。uv 也可管理 Python：`uv python install 3.12` 后使用 `uv sync --locked --managed-python`，仍需 C 编译器；若已有使用系统 Python 的 `.venv`，应先退出并将该环境移走，再创建新环境。

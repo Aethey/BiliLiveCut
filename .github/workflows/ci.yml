@@ -237,7 +237,9 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 120
     env:
-      BLC_SKIP_C_EXTENSIONS: "1"
+      BLC_SKIP_C_EXTENSIONS: "0"
+      CC: clang
+      CXX: clang++
 
     steps:
       - uses: actions/checkout@v4
@@ -278,6 +280,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev,web]"
+
+      - name: Require Clang native extensions
+        shell: bash
+        run: |
+          python -c "from app.accelerators import _c_speedups, _cython_speedups, _repeat_speedups; from app.accelerators.dispatcher import get_repeat_backend; assert get_repeat_backend() == 'C++'; assert _repeat_speedups.consecutive_repeat_details('abc' * 100) == (0, 3, 100)"
 
       - name: Verify process cleanup and service shutdown
         shell: bash
