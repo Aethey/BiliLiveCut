@@ -160,3 +160,5 @@ ASR 文本重复检测的 Cython 和 Python 回退均采用 O(N log N) 时间、
 滚动中位数/MAD 复制到经过长度溢出检查的独立数值缓冲区，排序不修改调用方历史；有限值过滤保留，不使用 `-ffast-math` 或 `/fp:fast`。列表/元组直接进入内核，其他数值序列转换为连续 float64。Rust 矩阵预计算关键词集合、直接累计加权余弦，按行计算上三角后镜像填充；释放 GIL 时仅访问 Rust 拥有的数据。小矩阵串行，大矩阵按行并行；没有修改 Torch/CTranslate2 或设备选择。
 
 原生构建参数测试通过 `distutils.ccompiler.new_compiler` 创建真实编译器，并在 `subprocess.check_call` 边界记录编译与链接命令，避免私有类的重复导入或内部进程方法变化影响 setuptools 版本间的验收；C/C++ 参数、对象链接与扩展元数据恢复均保留断言。
+
+Windows 可取消媒体命令和受控 ASR 标准化使用 `CREATE_SUSPENDED` 创建子进程，先加入 kill-on-close Job，再通过现有 psutil 恢复执行；恢复失败须回收整个 Job 并保留原错误。该顺序避免短命 FFmpeg 先退出造成接管失败，也阻止接管前创建不受监管的后代。POSIX 独立进程组和 ASR 模型进程的 IPC 启动握手保持原有机制。

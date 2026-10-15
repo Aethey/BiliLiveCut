@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -163,3 +164,50 @@ def test_cleanup_failure_keeps_ownership_and_cleans_other_commands() -> None:
         lifecycle.cleanup_subprocesses()
         first.wait(timeout=5)
         second.wait(timeout=5)
+
+
+@pytest.mark.parametrize("normalization", [False, True])
+def test_short_command_cannot_execute_before_windows_job_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, normalization: bool
+) -> None:
+    from app.analysis.transcription import audio_normalization
+    from app.core import process_control
+
+    marker = tmp_path / "started.txt"
+    command = [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).write_text('started')"]
+    owned_tree = process_control.ProcessTree
+
+    def delayed_attachment(pid: int) -> process_control.ProcessTree:
+        # 确定性放大原先短命 FFmpeg 先退出、后 AssignProcessToJobObject 的窗口。
+        time.sleep(0.25)
+        if os.name == "nt":
+            assert not marker.exists(), "child executed before job ownership"
+        return owned_tree(pid)
+
+    target = audio_normalization if normalization else process_control
+    monkeypatch.setattr(target, "ProcessTree", delayed_attachment)
+    if normalization:
+        result = audio_normalization._run_normalization(command, lambda: None)
+    else:
+        result = process_control.run_cancellable(command, capture_output=True, timeout=10)
+    assert result.returncode == 0
+    assert marker.read_text() == "started"
+
+
+def test_resume_error_keeps_process_registered_until_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core import process_control
+    from app.pipeline import lifecycle
+
+    started: list[subprocess.Popen[str] | subprocess.Popen[bytes]] = []
+
+    def denied(tree: process_control.ProcessTree) -> None:
+        owned = [process for process, owner in lifecycle._subprocesses.items() if owner is tree]
+        assert len(owned) == 1
+        started.extend(owned)
+        raise PermissionError("resume denied")
+
+    monkeypatch.setattr(process_control.ProcessTree, "resume_suspended", denied)
+    with pytest.raises(PermissionError, match="resume denied"):
+        run_cancellable([sys.executable, "-c", "import time; time.sleep(60)"], capture_output=True, timeout=5)
+    assert started[0].poll() is not None
+    assert started[0] not in lifecycle._subprocesses

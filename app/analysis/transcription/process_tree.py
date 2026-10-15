@@ -9,6 +9,10 @@ import time
 from ctypes import wintypes
 from threading import Lock
 
+import psutil
+
+from app.core.sanitize import safe_exception_summary
+
 
 class ProcessTree:
     """Windows 用 kill-on-close Job，POSIX 用子进程创建的独立进程组。"""
@@ -99,6 +103,21 @@ class ProcessTree:
             kernel.CloseHandle(handle)
             raise
         self._handle = handle
+
+    def resume_suspended(self) -> None:
+        """Windows 在 Job 接管完成后恢复新建的挂起进程；失败时回收独占进程树。"""
+        if os.name != "nt":
+            return
+        try:
+            psutil.Process(self.pid).resume()
+        except BaseException as error:
+            # 包括启动被中断的情况，均不能遗留挂起进程或开放的 Job 句柄。
+            try:
+                self.terminate()
+            except (OSError, RuntimeError, psutil.Error) as cleanup_error:
+                detail = safe_exception_summary(cleanup_error)
+                error.add_note(f"恢复进程失败后的进程树清理失败 pid={self.pid}: {detail}")
+            raise
 
     def terminate(self) -> None:
         """终止本监管器独占的进程树；调用方再用 join/wait 确认启动者退出。"""

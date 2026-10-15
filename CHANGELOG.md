@@ -2,6 +2,8 @@
 
 ## V0.1.19.0 Alpha (2026-10-15)
 
+- 修复 Windows 短命媒体进程在加入监管 Job 前退出导致的 WinError 5：可取消命令和 ASR 标准化先挂起创建，完成进程树接管后再恢复；保留权限错误、失败清理和后代进程监管。
+
 - 修复 setuptools 84 下原生构建测试使用私有编译器类和内部进程入口导致的跨平台失败，保留真实编译流程和参数、链接断言；Docker 官方 FFmpeg 源码下载增加有限重试与超时，继续固定 SHA-256 并验证 HTTPS。
 
 - 发布版本统一升级为 `0.1.19.0-alpha`，同步 Python/Rust 包元数据、依赖锁、CLI、Portable 启动器及构建清单、Docker 与使用文档；0.1.18 系列记录移至[历史归档](docs/changelog/CHANGELOG_PRE_0.1.18.md)。
