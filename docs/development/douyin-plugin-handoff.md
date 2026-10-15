@@ -4,7 +4,7 @@
 `app.plugins.live_source.LIVE_SOURCE_API_VERSION == "1"`；最低正式宿主版本为 `0.1.18.4-alpha`。
 加载时仍检查契约版本，旧宿主会拒绝新能力清单。
 完整契约见 [live-source-plugins.md](live-source-plugins.md)，可加载示例见
-[live-source-example](../plugin/live-source-example/README.md)。
+[live-source-example](../../plugin/live-source-example/README.md)。
 
 只使用以下公共导入：
 

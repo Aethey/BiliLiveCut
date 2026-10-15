@@ -100,3 +100,9 @@ logs_*.zip
 
 # Cython C++ binding generated during builds.
 tools/native/cython/_repeat_speedups.cpp
+
+# VuePress documentation build and caches.
+node_modules/
+/docs/.vuepress/.cache/
+/docs/.vuepress/.temp/
+/docs/.vuepress/dist/

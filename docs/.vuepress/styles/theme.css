@@ -1,0 +1,56 @@
+/* Bilibili blue accents with neutral surfaces across the documentation site. */
+:root:root {
+  --blc-hero-tint: #edf9fd;
+  --vp-c-brand-1: #00aeec;
+  --vp-c-brand-2: #0087b8;
+  --vp-c-brand-3: #007aa6;
+  --vp-c-brand-soft: rgb(0 174 236 / 8%);
+  --vp-c-bg: #fff;
+  --vp-c-bg-alt: #f8fafc;
+  --vp-c-bg-elv: #fff;
+  --vp-c-bg-soft: #f4f7fa;
+  --vp-c-bg-safe: #f8fafc;
+  --vp-c-divider: #e6ebef;
+  --vp-c-border: #dce4ea;
+  --vp-c-gutter: #edf2f6;
+  --vp-c-text-1: #30343b;
+  --vp-c-text-2: #59616c;
+  --vp-c-text-3: #707985;
+  --vp-button-brand-bg: #00aeec;
+  --vp-button-brand-hover-bg: #22b9ed;
+  --vp-button-brand-active-bg: #00a2dc;
+  --vp-button-brand-text: #073246;
+  --vp-button-brand-hover-text: #073246;
+  --vp-button-brand-active-text: #073246;
+  --vp-bg-home-hero-name: linear-gradient(120deg, #00aeec 15%, #0087b8 85%);
+  --vp-c-home-hero-tagline: var(--vp-c-text-1);
+  --vp-c-home-hero-text: var(--vp-c-text-2);
+}
+
+:root[data-theme='dark'] {
+  --blc-hero-tint: #172832;
+  --vp-c-brand-1: #6ad6fa;
+  --vp-c-brand-2: #00aeec;
+  --vp-c-brand-3: #009bd2;
+  --vp-c-brand-soft: rgb(0 174 236 / 12%);
+  --vp-c-bg: #1b1b1f;
+  --vp-c-bg-alt: #161618;
+  --vp-c-bg-elv: #23252b;
+  --vp-c-bg-soft: #23252b;
+  --vp-c-bg-safe: #202228;
+  --vp-c-divider: #343941;
+  --vp-c-border: #454d58;
+  --vp-c-gutter: #292d34;
+  --vp-c-text-1: #e6e8ec;
+  --vp-c-text-2: #b8bec8;
+  --vp-c-text-3: #929ba8;
+  --vp-bg-home-hero-name: linear-gradient(120deg, #6ad6fa 15%, #00aeec 85%);
+}
+
+.vp-doc a {
+  color: var(--vp-c-brand-2);
+}
+
+::selection {
+  background: var(--vp-c-brand-soft);
+}

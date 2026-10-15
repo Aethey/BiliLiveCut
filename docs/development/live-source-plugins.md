@@ -220,7 +220,7 @@ python -m pytest tests/integration/test_source_runtime.py tests/integration/test
 
 ## 独立示例与安装
 
-可直接复制的正式示例位于 [plugin/live-source-example](../plugin/live-source-example/README.md)。
+可直接复制的正式示例位于 [plugin/live-source-example](../../plugin/live-source-example/README.md)。
 目录内含完整清单、入口和设置声明；只连接本地测试服务，不含真实抖音逻辑。
 它通过本插件设置提供专用访问头，只向同 origin 的初始播放候选附加测试头，未提供弹幕仍可完整分析。
 此检查不覆盖 FFmpeg 跟随的媒体重定向或 HLS 内嵌地址；示例媒体服务及播放列表必须可信。

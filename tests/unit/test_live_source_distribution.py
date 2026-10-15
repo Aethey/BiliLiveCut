@@ -10,8 +10,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 RESOURCES = {
-    "docs/live-source-plugins.md",
-    "docs/douyin-plugin-handoff.md",
+    "docs/development/live-source-plugins.md",
+    "docs/development/douyin-plugin-handoff.md",
     "plugin/README.md",
     "plugin/manifest.schema.json",
     "plugin/live-source-example/main.py",

@@ -1,0 +1,73 @@
+.vp-home .bg-filter {
+  background: var(--blc-hero-tint);
+}
+
+.vp-home .bg-filter canvas {
+  opacity: 0.35;
+}
+
+.vp-home .bg-filter::after {
+  background: linear-gradient(
+    to bottom,
+    var(--vp-c-bg),
+    transparent 28%,
+    transparent 62%,
+    var(--vp-c-bg)
+  );
+}
+
+.vp-home .vp-home-hero:not(.full) .hero-container {
+  min-height: 560px;
+  align-items: center;
+  padding: 112px 24px 80px;
+}
+
+.vp-home .hero-name {
+  font-size: clamp(40px, 7vw, 72px);
+  line-height: 1.15;
+}
+
+.vp-home .hero-tagline {
+  margin-top: 18px;
+  font-size: clamp(28px, 5vw, 56px);
+  text-wrap: balance;
+}
+
+.vp-home .hero-text {
+  max-width: 820px;
+  margin: 20px auto 30px;
+  text-wrap: balance;
+}
+
+.vp-home .actions .action {
+  gap: 12px;
+}
+
+.vp-home .vp-home-custom .vp-doc {
+  text-align: start;
+}
+
+@media (max-width: 639px) {
+  .vp-home .vp-home-hero:not(.full) .hero-container {
+    min-height: 480px;
+    padding: 112px 16px 64px;
+  }
+
+  .vp-home .hero-text {
+    font-size: 17px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vp-home .bg-filter canvas {
+    visibility: hidden;
+  }
+
+  .vp-home .bg-filter {
+    background: radial-gradient(
+      ellipse at 50% 55%,
+      var(--vp-c-brand-soft),
+      var(--vp-c-bg) 75%
+    );
+  }
+}

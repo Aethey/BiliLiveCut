@@ -1,12 +1,12 @@
 # 开发与维护
 
-项目入口见[README](../README.md)，业务链路见[使用指南](usage.md)和[热点检测器](hotspot-detector.md)。具体 Portable 构建步骤见[构建说明](../packaging/portable/README.md)。
+项目入口见[README](../../README.md)，业务链路见[使用指南](../features/README.md)和[热点检测器](../reference/hotspot-detector.md)。具体 Portable 构建步骤见[构建说明](../../packaging/portable/README.md)。
 
 ## 开发环境
 
-Windows CUDA 运行时额外使用 `packaging/portable/locks/requirements-torch-{cu126|cu130}-{py311|py312}-win-x64.lock`，只替换 Torch/TorchAudio。更新基础锁中的这两个版本时，必须从 PyTorch 官方索引同步 CUDA URL、SHA-256 和 ABI，核对 wheel 元数据依赖，并运行 `packaging/portable/tests/test_torch_runtime.py`；不放宽哈希检查或自动接受未登记的 CUDA 版本。源码环境应用 CUDA 锁后，以现有虚拟环境的 Python 运行，安装说明见[使用指南](usage.md#cuda-安装与实际设备确认)。
+Windows CUDA 运行时额外使用 `packaging/portable/locks/requirements-torch-{cu126|cu130}-{py311|py312}-win-x64.lock`，只替换 Torch/TorchAudio。更新基础锁中的这两个版本时，必须从 PyTorch 官方索引同步 CUDA URL、SHA-256 和 ABI，核对 wheel 元数据依赖，并运行 `packaging/portable/tests/test_torch_runtime.py`；不放宽哈希检查或自动接受未登记的 CUDA 版本。源码环境应用 CUDA 锁后，以现有虚拟环境的 Python 运行，安装说明见[使用指南](../features/asr.md#cuda-安装与实际设备确认)。
 
-使用 Python 3.11/3.12，准备 FFmpeg 和 Node.js 22 或更新版本。uv 和传统 venv + pip 均受支持，共用 `pyproject.toml` 中的依赖与 extras。
+使用 Python 3.11/3.12，准备 FFmpeg 和原生扩展所需的编译工具。uv 和传统 venv + pip 均受支持，共用 `pyproject.toml` 中的依赖与 extras。Web 控制台使用 HTML 模板、CSS 和 JavaScript，运行时无需 Node.js；执行 JavaScript 检查需另装 Node.js 22 或更高版本，目录和验证方式见 [Web 页面说明](frontend.md)。
 
 ### uv
 
@@ -60,7 +60,7 @@ Windows 的 `FFMPEG_PATH`、`FFPROBE_PATH` 应指向真实二进制文件，避�
 
 重复检测扩展按语言分别编译：libsais 保持 C 源码，Cython 包装与内核使用 C++17，再链接为同一扩展。C++ 标准参数不会传入 C 编译器。macOS CI 使用 Clang 构建并强制验证三个原生扩展可加载，然后运行完整测试；Python 回退安装继续由独立矩阵验证。
 
-Python 镜像配置见[使用指南](usage.md#python-依赖源)。普通源码运行缺少原生扩展时可按函数回退到 Python 参考实现；完整验证和 Portable 发行需要对应 ABI 的 C、Cython、Rust 三个扩展。Windows C/Cython 构建需要可用的 MSVC 工具链，Rust 需要 Rust 工具链。
+Python 镜像配置见[使用指南](../guide/getting-started.md#python-依赖源)。普通源码运行缺少原生扩展时可按函数回退到 Python 参考实现；完整验证和 Portable 发行需要对应 ABI 的 C、Cython、C++、Rust 四个扩展。Windows C/Cython 构建需要可用的 MSVC 工具链，Rust 需要 Rust 工具链。
 
 默认安装编译 C/Cython；uv 与 pip 使用相同构建后端。Ubuntu 使用系统 Python 3.12 时，`Python.h: No such file or directory` 表示缺少开发头文件，可执行 `sudo apt-get install build-essential python3.12-dev`（其他 Python 版本安装对应的开发包）。uv 也可管理 Python：`uv python install 3.12` 后使用 `uv sync --locked --managed-python`，仍需 C 编译器；若已有使用系统 Python 的 `.venv`，应先退出并将该环境移走，再创建新环境。
 
@@ -82,7 +82,9 @@ python setup.py build_ext --inplace
 python tools/native/build_rust.py
 ```
 
-模块职责、函数清单和诊断命令见[原生加速模块](native-acceleration.md)。开发与验收使用独立的数据库、存储和配置，不复用正在运行实例的 `.env`、Cookie、数据库或媒体。
+原生构建参数测试通过 `distutils.ccompiler.new_compiler` 创建真实编译器，并在 `subprocess.check_call` 边界记录编译与链接命令，避免私有类的重复导入或内部进程方法变化影响 setuptools 版本间的验收；C/C++ 参数、对象链接与扩展元数据恢复均保留断言。
+
+模块职责、函数清单和诊断命令见[原生加速模块](../reference/native-acceleration.md)。开发与验收使用独立的数据库、存储和配置，不复用正在运行实例的 `.env`、Cookie、数据库或媒体。
 
 ## 验证
 
@@ -118,22 +120,24 @@ python scripts/release_gate.py
 
 `dev` extra 包含门禁使用的 `pytest-timeout`。本地 CI 门禁和发布门禁均拒绝测试跳过；本地 CI 门禁先构建 Windows Payload，再执行 Portable 测试，构建失败时拒绝复用旧产物。完整 Portable 检查需要 Windows 和相应原生构建工具；其他平台可运行 `python scripts/ci_gate.py --skip-portable`。所有 `--skip-*` 模式都会明确标记为部分检查通过，不代表完整 CI 门禁通过。
 
-真实高光插件联调需要单独提供插件仓库，命令见[使用指南](usage.md#可插拔高光评分)，不属于宿主默认测试集。
+真实高光插件联调需要单独提供插件仓库，命令见[使用指南](../features/highlight-plugins.md)，不属于宿主默认测试集。
 
 受监管进程树的终止操作在锁内保持幂等：成功发送终止信号后，重复清理不会再次使用可能已回收的 PID/PGID；首次权限错误继续上报并保留重试能力。调用方仍须等待直接子进程退出并排空管道，不能将发出信号等同于服务已退出。
+
+Windows 可取消媒体命令和受控 ASR 标准化使用 `CREATE_SUSPENDED` 创建子进程，先加入 kill-on-close Job，再通过现有 psutil 恢复执行；恢复失败须回收整个 Job 并保留原错误。该顺序避免短命 FFmpeg 先退出造成接管失败，也阻止接管前创建不受监管的后代。POSIX 独立进程组和 ASR 模型进程的 IPC 启动握手保持原有机制。
 
 Web 启动时的空密码安全提示直接枚举本机 IPv4/IPv6 网卡地址，在线程中执行，不依赖主机名 DNS/mDNS 解析。接口读取失败会记录带异常上下文的警告；API 的本机访问守卫始终独立生效。macOS 的真实 Uvicorn 退出回归同时验证默认空密码启动，不延长原有启动或退出期限。
 
 ## 版本与源码冻结
 
-- 应用版本以 [`app/__init__.py`](../app/__init__.py) 为事实来源。升级时同步包元数据、原生模块、Portable 配置、文档与产物命名，再执行版本一致性检查。模型 revision 和 schema 根据真实契约变化维护，不随补丁版本机械递增。
+- 应用版本以 [`app/__init__.py`](../../app/__init__.py) 为事实来源。升级时同步包元数据、原生模块、Portable 配置、文档与产物命名，再执行版本一致性检查。模型 revision 和 schema 根据真实契约变化维护，不随补丁版本机械递增。
 - **Source Commit** 标识内嵌业务源码快照，**Builder Commit** 标识本次运行构建工具的提交。先提交需要进入 Payload 的业务源码与版本，再更新 Portable 的源码冻结配置；构建工具和文档可以在后续提交维护。
-- Payload 构建检查其包含范围内的已跟踪差异和新增未跟踪文件，拒绝工作区业务源码与冻结提交不一致。范围由[源码快照模块](../packaging/portable/src/blc_portable/payload/source_snapshot.py)定义，不通过忽略检查或手工复制工作区文件绕过。
+- Payload 构建检查其包含范围内的已跟踪差异和新增未跟踪文件，拒绝工作区业务源码与冻结提交不一致。范围由[源码快照模块](../../packaging/portable/src/blc_portable/payload/source_snapshot.py)定义，不通过忽略检查或手工复制工作区文件绕过。
 - 快照通过 Git 提取，构建只校验其自身声明的版本，不在构建期改写旧源码版本。默认重新提取、构建两轮并比较 ZIP SHA-256；原生模块在构建 checkout 中编译，随后复制匹配 ABI 的产物到打包目录。
 
 ## 发行契约
 
-- Payload 保存文件清单与 SHA-256，Runtime 在安全解压和验证后通过 staging、锁和原子切换激活；用户配置、数据库、模型和媒体不随业务源码覆盖。具体目录布局见[Portable 构建说明](../packaging/portable/README.md)。
+- Payload 保存文件清单与 SHA-256，Runtime 在安全解压和验证后通过 staging、锁和原子切换激活；用户配置、数据库、模型和媒体不随业务源码覆盖。具体目录布局见[Portable 构建说明](../../packaging/portable/README.md)。
 - 数据库、Runtime、Payload 和模型清单遵循当前明确支持的格式；不能从历史重构记录推断迁移能力。模型安装清单按当前 schema、模型身份与文件内容检查，允许发行来源不同但内容相同的模型复用；在线下载续传记录及构建器仍校验其发行身份。旧 schema 不迁移。
 - 真实 Engine Pack 与 fixture 必须明确区分。Fixture 的摘要来自实际构建文件；它只用于验证，不能作为正式模型包分发。主模型、子模型和随附组件使用统一模型目录，保留所需许可证和来源证据。
 - 发布清单记录最终文件名、版本、大小、SHA-256 和 CRC32；跨制品检查源码、构建器、Payload 与版本身份。重新构建后的摘要必须重新计算，并检查源码路径、敏感配置、缓存和临时文件未进入产物。
@@ -154,11 +158,3 @@ python scripts/check_local_asr.py --models-dir "D:/测试安装/models" --audio 
 - 用户可见变更记入当前系列的 `CHANGELOG.md`；旧系列使用既有 `docs/changelog/` 归档，不重复维护多份版本历史。
 - 长期有效的配置说明、架构决策和发行约束留在正式文档，随实现同步维护。一次性任务清单、排查过程和运行日志可留在 PR、Issue 或本地 `.local/` 中，不作为当前使用指南。
 - `.local/` 从 Git 跟踪、源码分发包和 Docker 构建上下文中排除。整理历史记录时先提炼仍有效的内容，核对引用，再保留本地原件；不要通过重写 Git 历史删除已经提交的记录。
-
-ASR 文本重复检测的 Cython 和 Python 回退均采用 O(N log N) 时间、O(N) 空间的分治算法，以线性公共前缀匹配表计算跨中点的最大周期区间，不枚举全部重复子串，也不再限制重复单元为 32 个字符。至少重复三次才计入候选，优先最大覆盖长度，平局时优先较短单元、再优先较早起点。空字符串作为匹配表中的独立哨兵符号，不与 Unicode 单字符冲突。复核内核仅返回字符计数和首个热词冲突，风险权重、复核阈值及模型/CUDA 调度仍在原业务层。`casefold()` 展开字符的原文映射按展开长度维护，局部修复保留两次重复。`tests/unit/test_cpu_asr_statistics.py` 使用独立小输入穷举参考，对照两种生产实现，并覆盖长周期、Unicode、平局及十万字符输入；性能命令 `python scripts/benchmark_cpu_kernels.py --output benchmark.json` 包含完整分派调用开销。
-
-滚动中位数/MAD 复制到经过长度溢出检查的独立数值缓冲区，排序不修改调用方历史；有限值过滤保留，不使用 `-ffast-math` 或 `/fp:fast`。列表/元组直接进入内核，其他数值序列转换为连续 float64。Rust 矩阵预计算关键词集合、直接累计加权余弦，按行计算上三角后镜像填充；释放 GIL 时仅访问 Rust 拥有的数据。小矩阵串行，大矩阵按行并行；没有修改 Torch/CTranslate2 或设备选择。
-
-原生构建参数测试通过 `distutils.ccompiler.new_compiler` 创建真实编译器，并在 `subprocess.check_call` 边界记录编译与链接命令，避免私有类的重复导入或内部进程方法变化影响 setuptools 版本间的验收；C/C++ 参数、对象链接与扩展元数据恢复均保留断言。
-
-Windows 可取消媒体命令和受控 ASR 标准化使用 `CREATE_SUSPENDED` 创建子进程，先加入 kill-on-close Job，再通过现有 psutil 恢复执行；恢复失败须回收整个 Job 并保留原错误。该顺序避免短命 FFmpeg 先退出造成接管失败，也阻止接管前创建不受监管的后代。POSIX 独立进程组和 ASR 模型进程的 IPC 启动握手保持原有机制。

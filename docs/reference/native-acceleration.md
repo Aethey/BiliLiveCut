@@ -6,7 +6,7 @@ Rust 构建通过 `CARGO_ENCODED_RUSTFLAGS` 传递路径映射，保留显式编
 
 自定义编译选项请通过 `RUSTFLAGS` 或 `CARGO_ENCODED_RUSTFLAGS` 显式提供。若仅在 Cargo 的 `build` / `target` 配置（包括对应环境变量）设置 `rustflags`，或配置使用 `include`，构建会明确报错并要求将完整选项传入上述变量，以免路径映射覆盖原有链接或目标平台参数。相对 `CARGO_HOME` 按 Rust 源码目录解析。
 
-当前业务架构与安装入口见[项目 README](../README.md)和 [Portable 说明](../packaging/portable/README.md)；版本变更见 [Changelog 归档索引](changelog/CHANGELOG_INDEX.md)。
+当前业务架构与安装入口见[项目 README](../../README.md)和 [Portable 说明](../../packaging/portable/README.md)；版本变更见 [Changelog 归档索引](../changelog/CHANGELOG_INDEX.md)。
 
 BiliLiveCut 只保留当前 `app.accelerators` 原生接口。业务代码统一调用
 `app.accelerators.dispatcher`，不直接依赖编译扩展；旧的 `app.analysis` 原生
@@ -33,7 +33,8 @@ Cython 弹幕基线、SRT 组装继续保留在同一命名空间。
 ## 当前模块边界
 
 - `app.accelerators._c_speedups`：文本匹配与向量小核。
-- `app.accelerators._cython_speedups`：PCM16 统计、文本新颖度、ASR 重复/复核统计、音频包络后处理、稳健滚动基线、弹幕基线、SRT、聚类后备。
+- `app.accelerators._cython_speedups`：PCM16 统计、文本新颖度、ASR 复核统计、音频包络后处理、稳健滚动基线、弹幕基线、SRT、聚类后备。
+- `app.accelerators._repeat_speedups`：任意周期连续重复检测的 C++17 内核。
 - `app.accelerators._rust_speedups`：rayon 聚类矩阵、并查集/簇内统计与弹幕文本特征。
 - `app.accelerators.python_fallback`：与每个原生函数逐项等价的可测试参考实现。
 
@@ -58,7 +59,7 @@ print(dispatcher.get_rust_backend())
 print(dispatcher.get_cluster_backend())
 ```
 
-Windows Payload 和 Full Bundle 将当前 Python ABI 的三个 `.pyd` 视为强制发行
+Windows Payload 和 Full Bundle 将当前 Python ABI 的四个 `.pyd` 视为强制发行
 契约；普通源码运行仍可按函数粒度使用 Python 参考实现。
 
 Docker 同样构建 Rust 弹幕与矩阵内核，并在真实容器验收中确认加载成功。PCM 内核只读取主机内存中的小端 PCM16 字节，返回 Python 整数统计；不接收 CUDA 张量，不修改样本、设备配置或模型加载路径。没有编译扩展时使用等价 Python 参考实现。
@@ -70,6 +71,10 @@ Rust Python 绑定固定为 PyO3 0.29.3，替换存在已公布内存/线程安�
 C 字符 bigram 按 Python Unicode 码点处理；单汉字、空白和孤立代理码点与参考实现一致，bytes 输入必须是合法 UTF-8。
 
 并查集内核仅接收有限数值的方阵与阈值，返回根编号、成员索引和簇内均值；主题、关联及事务仍由 Python 业务层维护。文本内核只接收字符串，保留空文本、新颖度/主题变化/实体变化评分公式；证据无需实体统计时显式返回 `None`，不会假造统计值。
+
+## 数值语义与性能边界
+
+滚动中位数/MAD复制到经过长度溢出检查的独立数值缓冲区，排序不修改调用方历史；有限值过滤保留，不使用 `-ffast-math` 或 `/fp:fast`。列表/元组直接进入内核，其他数值序列转换为连续 float64。Rust 矩阵预计算关键词集合、直接累计加权余弦，按行计算上三角后镜像填充；释放 GIL 时仅访问 Rust 拥有的数据。小矩阵串行，大矩阵按行并行；没有修改 Torch/CTranslate2 或设备选择。
 
 完整调用边界基准：`python scripts/benchmark_cpu_kernels.py --output benchmark.json`。测量包括参数转换和结果返回，先逐项校验等价，再记录七轮中位数。合成 CPU 基准不代表 ASR/CUDA 或数据库端到端吞吐，也不保证未测平台及所有输入均加速。
 

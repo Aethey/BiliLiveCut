@@ -2,7 +2,7 @@
 
 适用主程序：`V0.1.19.0 Alpha`；当前且唯一的插件 API 版本为 `1`。Event-first 热点召回、跨分段事件生命周期、事件补全与成片评分由宿主管理；评分插件只作用于宿主生成的候选，不负责创建或持久化 `HotspotEvent`，也没有其他版本接口可供回退。
 
-主程序当前架构见[项目 README](../README.md)和 [Event-first 热点检测器](../docs/hotspot-detector.md)；版本变化见 [Changelog 归档索引](../docs/changelog/CHANGELOG_INDEX.md)。本文只描述当前宿主，不提供 V0.1.17.x 插件数据或私有接口迁移方案。
+主程序当前架构见[项目 README](../README.md)和 [Event-first 热点检测器](../docs/reference/hotspot-detector.md)；版本变化见 [Changelog 归档索引](../docs/changelog/CHANGELOG_INDEX.md)。本文只描述当前宿主，不提供 V0.1.17.x 插件数据或私有接口迁移方案。
 
 主程序从 `PLUGIN_DIR`（默认 `./storage/plugins`）的直属子目录读取插件。每个插件目录必须包含 `plugin.json`；扫描阶段只解析清单，不导入 Python。只有管理员在控制台“插件”页显式开启后，宿主才会导入入口并调用生命周期钩子。
 
@@ -38,11 +38,11 @@ storage/plugins/
 - `api_version`：必须与 `app.plugins.PLUGIN_API_VERSION` 一致；当前为 `1`。
 - `entrypoint`：插件目录内的相对 Python 文件与零参数工厂/类，格式为 `file.py:Symbol`。绝对路径、`..`、符号链接入口会被拒绝。
 - `settings_page`：是否显示“进入设置”按钮。设置页面由宿主根据插件声明的 Schema 安全渲染。
-- `capabilities`：插件提供的可选业务能力。支持 `highlight_scorer` 和 `live_source`；同一时间只允许启用一个高光评分提供者。直播源另需声明 `live_source_api_version: "1"`，契约见[直播源插件文档](../docs/live-source-plugins.md)。
+- `capabilities`：插件提供的可选业务能力。支持 `highlight_scorer` 和 `live_source`；同一时间只允许启用一个高光评分提供者。直播源另需声明 `live_source_api_version: "1"`，契约见[直播源插件文档](../docs/development/live-source-plugins.md)。
 
-完整 JSON Schema 见 [`manifest.schema.json`](manifest.schema.json)，可运行示例见 [`example/`](example/)。
-直播源独立示例见 [`live-source-example/`](live-source-example/)，完整安装和 Portable 依赖说明见
-[直播源插件文档](../docs/live-source-plugins.md)。
+完整 JSON Schema 见 [`manifest.schema.json`](manifest.schema.json)，可运行示例见 [`example/`](example)。
+直播源独立示例见 [`live-source-example/`](live-source-example)，完整安装和 Portable 依赖说明见
+[直播源插件文档](../docs/development/live-source-plugins.md)。
 
 ## Python 契约
 

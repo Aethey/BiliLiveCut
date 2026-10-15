@@ -59,7 +59,7 @@ RUN uv pip install --python /app/.venv/bin/python --require-hashes --no-deps \
 COPY README.md LICENSE MANIFEST.in setup.py setup_c.py .env.example ./
 COPY app ./app
 COPY config ./config
-COPY docs/live-source-plugins.md docs/douyin-plugin-handoff.md ./docs/
+COPY docs/development/live-source-plugins.md docs/development/douyin-plugin-handoff.md ./docs/development/
 COPY plugin ./plugin
 COPY tools/native/c ./tools/native/c
 COPY tools/native/cython ./tools/native/cython

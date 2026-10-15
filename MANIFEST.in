@@ -32,3 +32,12 @@ prune packaging/portable/.model_cache
 prune packaging/portable/build
 prune packaging/portable/dist
 prune tools/native/rust/target
+
+# Documentation dependencies and compiled site do not belong in Python packages.
+prune docs/node_modules
+include docs/package.json
+include docs/package-lock.json
+recursive-include docs/.vuepress *.mjs *.css
+prune docs/.vuepress/.cache
+prune docs/.vuepress/.temp
+prune docs/.vuepress/dist

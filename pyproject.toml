@@ -119,7 +119,7 @@ include = ["app", "app.*", "config"]
 "config" = ["*.yaml", "*.txt"]
 
 [tool.setuptools.data-files]
-"share/bili-live-cut/docs" = ["docs/live-source-plugins.md", "docs/douyin-plugin-handoff.md"]
+"share/bili-live-cut/docs" = ["docs/development/live-source-plugins.md", "docs/development/douyin-plugin-handoff.md"]
 "share/bili-live-cut/plugin" = ["plugin/README.md", "plugin/manifest.schema.json"]
 "share/bili-live-cut/plugin/live-source-example" = [
     "plugin/live-source-example/plugin.json",
