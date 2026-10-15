@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import runpy
+import subprocess
+from distutils.ccompiler import new_compiler
 from pathlib import Path
 
 import pytest
 import setuptools
 import yaml
 from setuptools import Distribution, Extension
-from setuptools._distutils.compilers.C.unix import Compiler
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -29,16 +30,17 @@ def test_mixed_extension_uses_language_specific_compiler_arguments(
     command.ensure_finalized()
     command.build_temp = str(tmp_path / "objects")
     command.build_lib = str(tmp_path / "output")
-    command.compiler = Compiler(force=True)
+    command.compiler = new_compiler(compiler="unix", force=True)
     command.compiler.set_executables(
         compiler_so="clang", compiler_cxx="clang++", linker_so_cxx="clang++ -shared", linker_exe_cxx="clang++"
     )
     invocations: list[list[str]] = []
 
-    def spawn(arguments: list[str], **kwargs: object) -> None:
+    def check_call(arguments: list[str], **kwargs: object) -> int:
         invocations.append(arguments)
+        return 0
 
-    monkeypatch.setattr(command.compiler, "spawn", spawn)
+    monkeypatch.setattr(subprocess, "check_call", check_call)
     command.build_extension(extension)
     c_call = next(call for call in invocations if "-c" in call and str(c_source) in call)
     cpp_call = next(call for call in invocations if "-c" in call and str(cpp_source) in call)

@@ -158,3 +158,5 @@ python scripts/check_local_asr.py --models-dir "D:/测试安装/models" --audio 
 ASR 文本重复检测的 Cython 和 Python 回退均采用 O(N log N) 时间、O(N) 空间的分治算法，以线性公共前缀匹配表计算跨中点的最大周期区间，不枚举全部重复子串，也不再限制重复单元为 32 个字符。至少重复三次才计入候选，优先最大覆盖长度，平局时优先较短单元、再优先较早起点。空字符串作为匹配表中的独立哨兵符号，不与 Unicode 单字符冲突。复核内核仅返回字符计数和首个热词冲突，风险权重、复核阈值及模型/CUDA 调度仍在原业务层。`casefold()` 展开字符的原文映射按展开长度维护，局部修复保留两次重复。`tests/unit/test_cpu_asr_statistics.py` 使用独立小输入穷举参考，对照两种生产实现，并覆盖长周期、Unicode、平局及十万字符输入；性能命令 `python scripts/benchmark_cpu_kernels.py --output benchmark.json` 包含完整分派调用开销。
 
 滚动中位数/MAD 复制到经过长度溢出检查的独立数值缓冲区，排序不修改调用方历史；有限值过滤保留，不使用 `-ffast-math` 或 `/fp:fast`。列表/元组直接进入内核，其他数值序列转换为连续 float64。Rust 矩阵预计算关键词集合、直接累计加权余弦，按行计算上三角后镜像填充；释放 GIL 时仅访问 Rust 拥有的数据。小矩阵串行，大矩阵按行并行；没有修改 Torch/CTranslate2 或设备选择。
+
+原生构建参数测试通过 `distutils.ccompiler.new_compiler` 创建真实编译器，并在 `subprocess.check_call` 边界记录编译与链接命令，避免私有类的重复导入或内部进程方法变化影响 setuptools 版本间的验收；C/C++ 参数、对象链接与扩展元数据恢复均保留断言。

@@ -155,3 +155,7 @@ uv run --no-project --python 3.12 --with playwright==1.61.0 python scripts/smoke
 基础 Python 和 uv 镜像按已验收的 SHA-256 digest 固定，新增 Action 使用完整提交。更新镜像时应核对官方来源并重新运行构建、依赖审计和容器验收，不能只移动标签。
 
 Docker CI 分别从最终镜像的 `/app/.venv/bin/python` 和 `/usr/local/bin/python` 提取实际安装包清单，包含 Linux 专属依赖和 CPU Torch，并核对系统安装工具已移除；只在查询公共漏洞记录时将官方 Torch/TorchAudio 的 `+cpu` 映射到相同公共版本。原始清单与完整报告分别保留在 `.local/docker-audit/application/` 和 `.local/docker-audit/system/`；系统无第三方包时只记录清单检查及未执行漏洞查询，不生成 pip-audit 报告。未知本地版本、包被跳过、版本不符、报告不完整、查询失败或任一已知漏洞均阻断验收，不采用漏洞忽略名单。应用自身通过源码审计和测试验收；此检查不等同于 Debian 系统包扫描，也不证明任意外部模型或插件可信。
+
+### 构建时的源码下载
+
+FFmpeg 9.0.2 仅从官方 HTTPS 地址下载，最多重试 3 次；连接、单次传输及总重试均设有超时上限。下载成功后须通过固定 SHA-256 校验才会解压和编译，连接失败或内容不符都会中止构建。curl 仅安装在构建阶段，不进入运行镜像。

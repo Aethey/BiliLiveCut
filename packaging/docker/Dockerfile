@@ -11,12 +11,16 @@ RUN --mount=from=uv,source=/uv,target=/bin/uv \
 # 字幕渲染使用 Debian 官方 libass-dev/libass9，不维护外加补丁。
 FROM python-base AS ffmpeg-builder
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential pkg-config nasm xz-utils \
+    && apt-get install -y --no-install-recommends build-essential pkg-config nasm xz-utils curl \
        libass-dev libfontconfig-dev libfreetype-dev libharfbuzz-dev libfribidi-dev \
        libx264-dev libx265-dev libvpx-dev libopus-dev libmp3lame-dev libvorbis-dev libssl-dev \
     && rm -rf /var/lib/apt/lists/*
-ADD --checksum=sha256:8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e \
-    https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz /tmp/ffmpeg.tar.xz
+# 官方源暂时不可达时有限重试；只有固定摘要校验通过的源码才能进入解压与编译。
+RUN curl --fail --show-error --silent --location --proto '=https' --proto-redir '=https' \
+       --connect-timeout 20 --max-time 180 --retry 3 --retry-delay 5 --retry-max-time 600 --retry-all-errors \
+       --output /tmp/ffmpeg.tar.xz https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz \
+    && echo '8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e  /tmp/ffmpeg.tar.xz' \
+       | sha256sum --check --strict
 WORKDIR /tmp/ffmpeg
 RUN tar -xf /tmp/ffmpeg.tar.xz --strip-components=1 \
     && ./configure --prefix=/opt/ffmpeg --enable-shared --disable-static \
