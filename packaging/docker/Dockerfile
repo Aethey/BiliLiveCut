@@ -74,8 +74,11 @@ FROM python-base AS runtime
 RUN --mount=from=uv,source=/uv,target=/bin/uv \
     /bin/uv --no-cache pip uninstall --python /usr/local/bin/python pip \
     && python -I -c "import ensurepip; from pathlib import Path; [p.unlink() for p in (Path(ensurepip.__file__).parent / '_bundled').glob('*.whl')]"
+# 保留 libass 的官方变更日志，使 dpkg --verify 能核验完整包，其他 slim 裁剪规则不变。
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends fonts-noto-cjk fontconfig libgomp1 liblzma5 \
+    && apt-get install -y --no-install-recommends \
+       -o 'Dpkg::Options::=--path-include=/usr/share/doc/libass9/changelog*' \
+       fonts-noto-cjk fontconfig libgomp1 liblzma5 \
        libass9 libfontconfig1 libfreetype6 libharfbuzz0b libfribidi0 \
        libx264-164 libx265-215 libvpx9 libopus0 libmp3lame0 libvorbis0a libvorbisenc2 libssl3t64 \
     && rm -rf /var/lib/apt/lists/* \
