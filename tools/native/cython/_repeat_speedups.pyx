@@ -16,12 +16,19 @@ cdef extern from "repeat.hpp" namespace "blc_repeat":
 def consecutive_repeat_details(str text not None) -> tuple[int, int, int]:
     """返回覆盖最长、周期最短、起点最早的三次以上连续重复。"""
     cdef Py_ssize_t size = len(text), index
+    cdef uint32_t small[96]
     cdef vector[uint32_t] symbols
     cdef Result result
     if size < 3:
         return 0, 0, 0
     if size > 2147483646:
         raise OverflowError("repeat input exceeds signed 32-bit index limit")
+    if size <= 96:
+        # Bounded tiny calls avoid heap allocation and GIL handoff overhead.
+        for index in range(size):
+            small[index] = PyUnicode_READ_CHAR(text, index)
+        result = find_repeat(small, <size_t>size)
+        return result.start, result.unit, result.repeats
     symbols.resize(size)
     for index in range(size):
         symbols[index] = PyUnicode_READ_CHAR(text, index)

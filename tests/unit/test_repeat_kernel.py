@@ -43,7 +43,7 @@ def test_kernel_matches_exhaustive_unicode(length: int) -> None:
         assert kernel.consecutive_repeat_details(text) == brute(text)
 
 
-@pytest.mark.parametrize("length", [255, 256, 257, 258, 319, 511, 512, 513])
+@pytest.mark.parametrize("length", [95, 96, 97, 255, 256, 257, 258, 319, 511, 512, 513])
 def test_kernel_base_case_and_rmq_boundaries(length: int) -> None:
     rng = random.Random(length)
     alphabet = "a中😀\ud800ßİ\0 \U0010ffff"
@@ -140,3 +140,32 @@ def test_release_audit_rejects_changed_native_dependency(
     result = release_audit.AuditResult()
     release_audit.check_native_repeat_sources(result)
     assert result.exit_code == release_audit.EXIT_FAIL
+
+
+@pytest.mark.parametrize("period", [31, 32, 33, 63, 64, 65])
+def test_lcp_upper_bound_preserves_period_boundary(period: int) -> None:
+    unit = "".join(chr(2000 + index) for index in range(period))
+    # 每个字符至少出现三次；打乱前缀保证执行后缀查询路径而不是分段。
+    prefix = "".join(random.Random(period).choices(unit, k=512)) + unit[0]
+    text = prefix + unit * 3 + unit[-1]
+    assert kernel.consecutive_repeat_details(text) == (513, period, 3)
+
+
+@pytest.mark.parametrize("alphabet", [255, 256, 257])
+def test_byte_and_integer_suffix_alphabet_boundary(alphabet: int) -> None:
+    unit = "".join(chr(0x10000 + index) for index in range(alphabet))
+    prefix = "".join(random.Random(alphabet).choices(unit, k=512)) + unit[0]
+    text = prefix + unit * 3 + unit[-1]
+    assert kernel.consecutive_repeat_details(text) == (513, alphabet, 3)
+
+
+@pytest.mark.parametrize("size", [97, 128, 255, 256, 257, 511, 512])
+def test_bounded_lyndon_path_matches_independent_oracle(size: int) -> None:
+    rng = random.Random(size)
+    for _ in range(16):
+        text = "".join(rng.choices("a中😀\0", k=size))
+        period = rng.randrange(1, size // 4)
+        start = rng.randrange(size - 3 * period + 1)
+        unit = text[start : start + period]
+        text = text[:start] + unit * 3 + text[start + 3 * period :]
+        assert kernel.consecutive_repeat_details(text) == brute(text)

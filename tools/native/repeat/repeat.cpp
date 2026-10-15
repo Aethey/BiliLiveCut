@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <limits>
-#include <numeric>
+#include <memory>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -39,8 +39,9 @@ unsigned lowest(Mask value) {
 }
 
 void consider(Result& best, Index start, Index period, Index length) {
+    // Reject short spans before the variable integer division.
+    if (length / 3 < period) return;
     const Index repeats = length / period;
-    if (repeats < 3) return;
     const Index coverage = repeats * period; // <= length <= n
     const Index previous = best.repeats * best.unit;
     if (coverage > previous || (coverage == previous &&
@@ -49,29 +50,61 @@ void consider(Result& best, Index start, Index period, Index length) {
     }
 }
 
-// Bounded base case: at most 85 scans of <=256 code points. Its work is <=85n,
-// avoids suffix-array allocation on short ASR strings, and checks EVERY period.
-Result small_repeat(const std::uint32_t* text, Index n) {
+// Bounded scans: <=32 periods, either from n<=96 or the proven LCP bound.
+// This checks every feasible period, without a semantic period limit.
+Result small_repeat(const std::uint32_t* text, Index n, Index limit) {
     Result best;
-    for (Index period = 1; period <= n / 3; ++period) {
+    for (Index period = 1; period <= limit; ++period) {
         Index start = 0;
-        for (Index end = period; end <= n; ++end) {
-            if (end == n || text[end] != text[end - period]) {
-                consider(best, start, period, end - start);
+        const Index minimum = 3 * period; // period <= n/3
+        for (Index end = period; end < n; ++end) {
+            if (text[end] != text[end - period]) {
+                if (end - start >= minimum) consider(best, start, period, end - start);
                 start = end - period + 1;
             }
         }
+        if (n - start >= minimum) consider(best, start, period, n - start);
         if (best.unit * best.repeats == n) break;
     }
     return best;
 }
 
-// Four stable byte-radix passes, so alphabet compression does not hide an
+// For 97..512 points, compare suffixes and extend Lyndon roots directly.
+// The bounded stack avoids allocating suffix/RMQ structures. At most O(n^2)
+// comparisons on this fixed-size path; n<=512 makes its work <=constant*n.
+bool suffix_less(const std::uint32_t* text, Index n, Index left, Index right) {
+    while (left < n && right < n && text[left] == text[right]) { ++left; ++right; }
+    return right < n && (left == n || text[left] < text[right]);
+}
+
+Result short_lyndon(const std::uint32_t* text, Index n) {
+    Result best;
+    std::array<Index, 512> stack{};
+    for (int inverse = 0; inverse < 2; ++inverse) {
+        Index count = 0;
+        for (Index i = n - 1; i >= 0; --i) {
+            while (count && (inverse ? suffix_less(text, n, stack[count - 1], i)
+                                     : suffix_less(text, n, i, stack[count - 1]))) --count;
+            const Index next = count ? stack[count - 1] : n;
+            const Index period = next - i;
+            stack[count++] = i;
+            if (period > n / 3) continue;
+            Index left = 0, right = 0;
+            while (left < i && text[i - left - 1] == text[next - left - 1]) ++left;
+            while (right < n - next && text[i + right] == text[next + right]) ++right;
+            consider(best, i - left, period, left + period + right);
+        }
+    }
+    return best;
+}
+
+// At most four stable byte-radix passes, so compression does not hide an
 // O(n log n) comparison sort. All uint32 values (including U+0000) are valid.
 std::vector<Index> compress(const std::uint32_t* text, Index n, Index& alphabet) {
     std::vector<Index> order(n), buffer(n), symbols(n);
-    std::iota(order.begin(), order.end(), 0);
-    for (unsigned shift = 0; shift < 32; shift += 8) {
+    std::uint32_t used_bits = 0;
+    for (Index i = 0; i < n; ++i) { order[i] = i; used_bits |= text[i]; }
+    for (unsigned shift = 0; shift < 32 && (used_bits >> shift); shift += 8) {
         std::array<std::size_t, 256> counts{};
         for (Index index : order) ++counts[(text[index] >> shift) & 255U];
         std::size_t total = 0;
@@ -152,14 +185,24 @@ public:
 
 class Lce {
     Index size_;
+    Index maximum_ = 0;
     std::vector<Index> ranks_;
-    Minima minima_;
+    std::vector<Index> lcp_;
+    std::unique_ptr<Minima> minima_;
 
     std::vector<Index> build(std::vector<Index>& text, Index alphabet) {
         std::vector<Index> suffixes(size_), lcp(size_);
         // libsais may mutate its INTEGER input temporarily: text is a private
         // vector, never Python storage. OpenMP is deliberately not compiled in.
-        const Index status = libsais_int(text.data(), suffixes.data(), size_, alphabet, 0);
+        Index status;
+        if (alphabet <= 256) {
+            // Compression preserves ordering; byte SA-IS reduces traffic for
+            // small alphabets without truncating any original Unicode value.
+            std::vector<std::uint8_t> bytes(text.begin(), text.end());
+            status = libsais(bytes.data(), suffixes.data(), size_, 0, nullptr);
+        } else {
+            status = libsais_int(text.data(), suffixes.data(), size_, alphabet, 0);
+        }
         if (status == -2) throw std::bad_alloc();
         if (status != 0) throw std::runtime_error("suffix array construction failed");
         for (Index i = 0; i < size_; ++i) ranks_[suffixes[i]] = i;
@@ -170,32 +213,29 @@ class Lce {
             const Index j = suffixes[rank - 1];
             while (common < size_ - i && common < size_ - j && text[i + common] == text[j + common]) ++common;
             lcp[rank] = common;
+            maximum_ = std::max(maximum_, common);
             if (common) --common;
         }
         return lcp;
     }
 public:
     Lce(std::vector<Index>& text, Index alphabet)
-        : size_(static_cast<Index>(text.size())), ranks_(text.size()), minima_(build(text, alphabet)) {}
+        : size_(static_cast<Index>(text.size())), ranks_(text.size()), lcp_(build(text, alphabet)) {}
+    Index maximum() const { return maximum_; }
+    void prepare_queries() { minima_ = std::make_unique<Minima>(std::move(lcp_)); }
     const std::vector<Index>& ranks() const { return ranks_; }
     Index common(Index left, Index right) const {
         if (left == size_ || right == size_) return 0;
         if (left == right) return size_ - left;
         Index a = ranks_[left], b = ranks_[right];
         if (a > b) std::swap(a, b);
-        return minima_.query(a + 1, b);
+        return minima_->query(a + 1, b);
     }
 };
-}
 
-Result find_repeat(const std::uint32_t* text, std::size_t size) {
-    if (size > static_cast<std::size_t>(std::numeric_limits<Index>::max() - 1)) {
-        throw std::overflow_error("repeat input exceeds signed 32-bit index limit");
-    }
-    if (!text && size) throw std::invalid_argument("null repeat input");
-    const Index n = static_cast<Index>(size);
+Result find_repeat_impl(const std::uint32_t* text, Index n, bool partition) {
     if (n < 3) return {};
-    if (n <= 256) return small_repeat(text, n);
+    if (n <= 96) return small_repeat(text, n, n / 3);
     {
         // O(n) KMP fast path for exact whole-string repeats; it returns only
         // when coverage is n with the minimum possible period.
@@ -209,11 +249,42 @@ Result find_repeat(const std::uint32_t* text, std::size_t size) {
         const Index period = n - prefix.back();
         if (n % period == 0 && n / period >= 3) return {0, period, n / period};
     }
+    if (n <= 512) return short_lyndon(text, n);
     Index alphabet;
     auto symbols = compress(text, n, alphabet);
-    const Lce forward(symbols, alphabet);
+    if (partition) {
+        // A cube cannot contain a symbol occurring fewer than three times in
+        // the entire input. Such symbols are exact separators, not heuristics.
+        std::vector<Index> counts(alphabet);
+        for (Index symbol : symbols) ++counts[symbol];
+        if (std::any_of(counts.begin(), counts.end(), [](Index count) { return count < 3; })) {
+            Result best;
+            Index start = 0;
+            for (Index end = 0; end <= n; ++end) {
+                if (end == n || counts[symbols[end]] < 3) {
+                    const Index length = end - start;
+                    if (length >= 3 && length >= best.unit * best.repeats) {
+                        // Split only once: disjoint pieces have total size <=n,
+                        // so both preprocessing and search remain O(n).
+                        const Result part = find_repeat_impl(text + start, length, false);
+                        if (part.unit) consider(best, start + part.start, part.unit, part.unit * part.repeats);
+                    }
+                    start = end + 1;
+                }
+            }
+            return best;
+        }
+    }
+    Lce forward(symbols, alphabet);
+    // A cube of period p implies LCP(start, start+p) >= 2p. The largest
+    // adjacent suffix LCP bounds every pair, so this scans ALL possible
+    // periods when the proven bound is <=32; it is not a period cap.
+    const Index limit = std::min(n / 3, forward.maximum() / 2);
+    if (limit <= 32) return small_repeat(text, n, limit);
+    forward.prepare_queries();
     std::reverse(symbols.begin(), symbols.end());
-    const Lce backward(symbols, alphabet);
+    Lce backward(symbols, alphabet);
+    backward.prepare_queries();
     const auto& rank = forward.ranks();
     Result best;
     std::vector<Index> stack;
@@ -231,12 +302,23 @@ Result find_repeat(const std::uint32_t* text, std::size_t size) {
             const Index next = stack.empty() ? n : stack.back();
             const Index period = next - i;
             stack.push_back(i);
-            if (period > n / 3) continue;
-            const Index left = backward.common(n - i, n - next);
-            const Index right = forward.common(i, next);
+            if (period > limit) continue;
+            const Index left = i > 0 && text[i - 1] == text[next - 1]
+                ? backward.common(n - i, n - next) : 0;
+            const Index right = next < n && text[i] == text[next]
+                ? forward.common(i, next) : 0;
             consider(best, i - left, period, left + period + right);
         }
     }
     return best;
+}
+}
+
+Result find_repeat(const std::uint32_t* text, std::size_t size) {
+    if (size > static_cast<std::size_t>(std::numeric_limits<Index>::max() - 1)) {
+        throw std::overflow_error("repeat input exceeds signed 32-bit index limit");
+    }
+    if (!text && size) throw std::invalid_argument("null repeat input");
+    return find_repeat_impl(text, static_cast<Index>(size), true);
 }
 }

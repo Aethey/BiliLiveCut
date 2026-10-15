@@ -62,7 +62,7 @@ int main() {
             check(text); ++tested;
         }
     }
-    // Unique padding forces the linear path for the exhaustive binary corpus.
+    // Unique padding exercises bounded Lyndon candidates for the binary corpus.
     for (int size = 0; size <= 13; ++size) {
         for (std::uint32_t bits = 0; bits < (std::uint32_t{1} << size); ++bits) {
             std::vector<std::uint32_t> sample(size), text(257);
