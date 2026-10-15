@@ -123,6 +123,8 @@ Web、录制及 Bilibili 扫码登录不需要桌面。在“账号登录”页�
 
 命令行 FFmpeg 与 PyAV 使用同一套从官方 9.0.2 源码编译的共享库，避免 PyAV wheel 另行携带旧版 FFmpeg。源码已核验官方发行签名并固定 SHA-256；完整源码与 GPLv3 许可证随镜像置于 `/opt/ffmpeg/share/source/`。构建保留 CPU 编解码、网络录制、字幕及中文文本滤镜；此无头 CPU 镜像不提供 ffplay 桌面播放器。
 
+字幕渲染恢复使用 Debian 官方 `libass-dev`（构建）和 `libass9`（运行），不再下载 libass 源包或应用外加补丁。FFmpeg 和 PyAV 加载同一套 Debian 共享库，实际包版本由最终镜像的 `dpkg-query -W libass9` 查询。验收核对包文件完整性、共享库实际加载路径，并执行中文 SRT 烧录；官方包中的未修复漏洞仍须如实保留在系统包扫描结果中，不能视为已修复。
+
 CPU 运行锁采用官方 Torch 2.13.0 与 TorchAudio 2.11.0 的 CPU wheel；具体兼容范围由官方 wheel 元数据、依赖一致性检查和真实 PCM 解码共同验证。旧 Torch 2.10.0 命中已知漏洞记录，不能继续作为构建基线。
 
 项目 extras 暂未声明 PyTorch，CPU 镜像另外使用 `requirements-cpu.lock` 的官方 CPU wheel、完整配套依赖和 SHA-256 哈希。共享依赖版本来自 uv.lock；最终安装使用 `--inexact` 保留 CPU 运行时，再执行依赖一致性和真实导入校验。

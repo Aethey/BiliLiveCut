@@ -212,6 +212,38 @@ def main() -> int:
             "assert lzma.decompress(lzma.compress(b'pcm')) == b'pcm'; "
             "assert bz2.decompress(bz2.compress(b'pcm')) == b'pcm'",
         )
+        # 实际烧录字幕并核对 PyAV/FFmpeg 所加载的 libass 属于原始 Debian 包。
+        media_check = docker(
+            "exec",
+            first,
+            "python",
+            "-c",
+            "\n".join(
+                [
+                    "import json, subprocess; from pathlib import Path; import av",
+                    "version = subprocess.check_output(['dpkg-query', '-W', '-f=${Version}', 'libass9'], text=True)",
+                    "assert not subprocess.check_output(['dpkg', '--verify', 'libass9'], text=True).strip()",
+                    "files = subprocess.check_output(['dpkg-query', '-L', 'libass9'], text=True).splitlines()",
+                    "owned = {Path(p).resolve() for p in files if '/libass.so.' in p}",
+                    "loaded = {Path(line.split()[-1]).resolve() for line in "
+                    "Path('/proc/self/maps').read_text().splitlines() if '/libass.so.' in line}",
+                    "assert owned and loaded and loaded <= owned, (owned, loaded)",
+                    "assert not list(Path('/opt/ffmpeg').rglob('*libass*'))",
+                    "linked = subprocess.check_output(['ldd', '/opt/ffmpeg/bin/ffmpeg'], text=True)",
+                    "assert any('/libass.so.' in line and Path(line.split('=>')[1].split()[0]).resolve() "
+                    "in owned for line in linked.splitlines())",
+                    "Path('/data/smoke.srt').write_text('1\\n00:00:00,000 --> 00:00:01,000\\n中文回归\\n', "
+                    "encoding='utf-8')",
+                    "frame = subprocess.check_output(['ffmpeg', '-hide_banner', '-loglevel', 'error', "
+                    "'-f', 'lavfi', '-i', 'color=c=black:s=320x180:d=1', '-vf', 'subtitles=/data/smoke.srt', "
+                    "'-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'])",
+                    "assert len(frame) == 320 * 180 * 3 and any(frame)",
+                    "print(json.dumps({'libass9': version, 'loaded': sorted(map(str, loaded)), "
+                    "'subtitle_pixels': sum(value != 0 for value in frame)}))",
+                ]
+            ),
+        )
+        print(media_check.stdout.strip())
         filters = docker("exec", first, "ffmpeg", "-hide_banner", "-filters").stdout
         assert "subtitles" in filters and "drawtext" in filters
         fonts = docker("exec", first, "fc-list", ":lang=zh", "family").stdout

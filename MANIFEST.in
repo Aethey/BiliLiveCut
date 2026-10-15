@@ -11,7 +11,6 @@ include setup.py
 include setup_c.py
 include tools/native/rust/THIRD_PARTY_NOTICES.md
 include packaging/docker/Dockerfile
-recursive-include packaging/docker/patches *.patch *.json
 
 recursive-include app *.py *.html *.css *.js *.txt
 recursive-include config *.yaml *.txt
