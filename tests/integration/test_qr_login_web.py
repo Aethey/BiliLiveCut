@@ -139,7 +139,6 @@ def test_qr_routes_and_shutdown_without_browser(temp_db: None, monkeypatch: pyte
 def test_qr_task_is_bound_to_validated_browser_session(
     temp_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import httpx
 
     from app.core.docker_auth import AuthStore
     from app.web import main
@@ -169,7 +168,7 @@ def test_qr_task_is_bound_to_validated_browser_session(
         response = client.post("/api/login/qrcode", headers={"X-BLC-CSRF": csrf})
         assert response.status_code == 200
         token = response.json()["task_id"]
-        first_cookie = httpx.Cookies(client.cookies)
+        first_cookie = type(client.cookies)(client.cookies)
         assert client.get(f"/api/login/qrcode/{token}").status_code == 200
         client.cookies.clear()
         client.post(
@@ -208,7 +207,7 @@ def test_same_username_different_browsers_cannot_share_qr(
         header = start.headers["set-cookie"]
         assert "HttpOnly" in header and "Secure" in header and "SameSite=strict" in header
         assert first.get(f"/api/login/qrcode/{token}").status_code == 200
-        original = httpx.Cookies(first.cookies)
+        original = type(first.cookies)(first.cookies)
         first.cookies.clear()
         assert first.get(f"/api/login/qrcode/{token}").status_code == 404
         assert first.post(f"/api/login/qrcode/{token}/cancel").status_code == 404
