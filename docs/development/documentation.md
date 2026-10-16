@@ -7,7 +7,7 @@
 在项目根目录运行，使用 `docs/package.json` 支持的 Node.js：
 
 ```bash
-npm --prefix docs ci
+npm --prefix docs ci --ignore-scripts
 npm --prefix docs run dev
 ```
 
@@ -20,11 +20,22 @@ DOCS_BASE=/ npm --prefix docs run dev
 生产构建和配置检查（Windows、Linux 均受支持，CI 按顺序验证两个平台）：
 
 ```bash
+npm --prefix docs audit --include=dev --audit-level=low
 npm --prefix docs run check
 npm --prefix docs run build
 ```
 
 构建前清空旧站点产物，再生成 `docs/.vuepress/dist/`，确保被删除的页面不会残留。构建后检查所有已登记页面、站内链接与静态资源。预览生产产物时应保留对应子目录，例如默认构建需要将产物挂载到 `/BiliLiveCut/`，不能直接双击 HTML 文件。
+
+## 依赖安全
+
+CI 安装严格使用锁文件并禁用依赖安装脚本，随后审计全部依赖（包括仅用于构建的 `devDependencies`）；任何级别的已知漏洞或审计服务错误都会阻止构建和部署，不使用漏洞豁免或忽略名单。升级依赖后需重新执行上述审计、配置测试和完整构建。
+
+KaTeX 统一锁定为已修复 [GHSA-238p-pmpm-9mq7](https://github.com/advisories/GHSA-238p-pmpm-9mq7) 的官方 `0.18.10`；`overrides.katex` 引用根依赖版本，确保主题和插件不会再安装较旧副本。现有主题及 Markdown 版本保持固定，公式和站点构建回归验证其兼容性。
+
+`gray-matter` 通过 npm 别名统一使用 [Eleventy 维护的 `@11ty/gray-matter`](https://github.com/11ty/gray-matter) `3.0.0`（MIT）。该发行版保留文档所需的 YAML/JSON frontmatter 接口，使用新的 `js-yaml`，从依赖图移除受 [GHSA-hp3w-g68c-fv3c](https://github.com/advisories/GHSA-hp3w-g68c-fv3c) 影响的 `sprintf-js`，不需要本地补丁。文档元数据使用 YAML/JSON；可执行 JavaScript frontmatter 会被明确拒绝。
+
+回归检查覆盖 frontmatter 往返、YAML 命令行帮助、版本和解析、所有 KaTeX 副本的正常公式与继承信任属性防护，以及 JavaScript frontmatter 拒绝行为。后续升级或移除依赖覆盖仍须通过这些检查。
 
 ## 内容与目录
 

@@ -8,17 +8,21 @@
   "scripts": {
     "dev": "vuepress dev .. --config .vuepress/config.mjs --host 127.0.0.1 --port 8080",
     "build": "vuepress build .. --config .vuepress/config.mjs --clean-cache",
-    "check": "node --test .vuepress/site.test.mjs",
+    "check": "node --test .vuepress/*.test.mjs",
     "postbuild": "node .vuepress/check-built.mjs",
     "prebuild": "node .vuepress/clean.mjs"
   },
   "devDependencies": {
     "@vuepress/bundler-vite": "2.0.0-rc.30",
-    "katex": "0.16.47",
+    "katex": "0.18.10",
     "markdown-it": "14.3.2",
     "typescript": "6.0.3",
     "vue": "3.5.44",
     "vuepress": "2.0.0-rc.30",
     "vuepress-theme-plume": "1.0.0-rc.203"
+  },
+  "overrides": {
+    "katex": "$katex",
+    "gray-matter": "npm:@11ty/gray-matter@3.0.0"
   }
 }
