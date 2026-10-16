@@ -49,4 +49,4 @@ repos:
         entry: python scripts/check_frontend.py
         language: python
         pass_filenames: false
-        files: ^(app/web/|scripts/check_(frontend|configuration_interactions|recording_import_interactions)|\.pre-commit-config\.yaml$)
+        files: ^(app/web/|scripts/check_(frontend|configuration_interactions|recording_import_interactions|waveform_interactions)|\.pre-commit-config\.yaml$)

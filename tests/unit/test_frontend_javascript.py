@@ -21,36 +21,75 @@ INTERACTION_CHECK = PROJECT_ROOT / "scripts" / "check_frontend_interactions.mjs"
 def test_waveform_ui_displays_failure_and_clears_on_recovery() -> None:
     node = shutil.which("node")
     assert node is not None
-    template = (PROJECT_ROOT / "app/web/templates/review.html").read_text(encoding="utf-8")
-    function = template[template.index("async function loadWaveform()") : template.index("function drawWaveform(")]
-    script = (
-        """
-import assert from 'node:assert/strict';
-const errorNode = {textContent: ''};
-const $ = () => errorNode;
-let waveformPeaks = [], waveformDuration = 0;
-let payload = {error: '<bad media>', peaks: []};
-let failure = false;
-const api = async () => { if(failure) throw new Error('HTTP 500'); return payload; };
-const drawWaveform = () => {};
-const CAND_ID = 1;
-"""
-        + function
-        + """
-await loadWaveform();
-assert.match(errorNode.textContent, /<bad media>/);
-failure = true; await loadWaveform();
-assert.match(errorNode.textContent, /HTTP 500/);
-failure = false; payload = {peaks: [0.1], duration_s: 2};
-await loadWaveform();
-assert.equal(errorNode.textContent, '');
-assert.deepEqual(waveformPeaks, [0.1]);
-"""
-    )
-    result = subprocess.run(
-        [node, "--input-type=module"], input=script, text=True, encoding="utf-8", capture_output=True, timeout=30
-    )
+    try:
+        result = subprocess.run(
+            [node, str(PROJECT_ROOT / "scripts/check_waveform_interactions.mjs")],
+            stdin=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else exc.stdout or ""
+        stderr = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else exc.stderr or ""
+        pytest.fail(f"波形交互检查超过 {exc.timeout} 秒。阶段输出：\n{stdout}\n{stderr}", pytrace=False)
     assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS: waveform failure and recovery" in result.stdout
+
+
+def test_waveform_check_exits_without_waiting_for_stdin_eof() -> None:
+    node = shutil.which("node")
+    assert node is not None
+    with subprocess.Popen(
+        [node, str(PROJECT_ROOT / "scripts/check_waveform_interactions.mjs")],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    ) as process:
+        try:
+            # Leave the parent pipe open: the file entrypoint must finish independently of EOF.
+            process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+            pytest.fail(f"波形检查错误等待标准输入结束：\n{stdout}\n{stderr}", pytrace=False)
+        stdout, stderr = process.communicate()
+    assert process.returncode == 0, stdout + stderr
+    assert "PASS: waveform failure and recovery" in stdout
+
+
+@pytest.mark.parametrize(
+    ("original", "broken"),
+    [
+        ('wf.error ? `波形不可用：${wf.error}` : ""', '""'),
+        ("`波形加载失败：${e.message}`", '""'),
+        ('wf.error ? `波形不可用：${wf.error}` : ""', '"<bad media>"'),
+        ("waveformPeaks = wf.peaks || [];", "waveformPeaks = [];"),
+    ],
+    ids=["media-error-hidden", "request-error-hidden", "recovery-error-stale", "recovery-peaks-missing"],
+)
+def test_waveform_check_rejects_broken_page_behavior(tmp_path: Path, original: str, broken: str) -> None:
+    node = shutil.which("node")
+    assert node is not None
+    template = (PROJECT_ROOT / "app/web/templates/review.html").read_text(encoding="utf-8")
+    assert original in template
+    fixture = tmp_path / "review.html"
+    fixture.write_text(template.replace(original, broken), encoding="utf-8")
+    result = subprocess.run(
+        [node, str(PROJECT_ROOT / "scripts/check_waveform_interactions.mjs"), str(fixture)],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "AssertionError" in result.stderr
 
 
 def test_recording_import_page_upload_and_recovery() -> None:
