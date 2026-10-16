@@ -17,6 +17,8 @@ npm --prefix docs run dev
 DOCS_BASE=/ npm --prefix docs run dev
 ```
 
+`DOCS_BASE` 也支持 `/文档/` 等中文子路径，配置会统一转换为 URL 编码，保证导航、资源和构建后链接检查使用相同路径。包含 `.`、`..` 路径段（包括 URL 编码形式）或无效 URL 编码的值会在配置阶段被拒绝，避免浏览器规范化后偏离部署目录。
+
 生产构建和配置检查（Windows、Linux 均受支持，CI 按顺序验证两个平台）：
 
 ```bash
@@ -66,6 +68,6 @@ KaTeX 统一锁定为已修复 [GHSA-238p-pmpm-9mq7](https://github.com/advisori
 
 正式部署以 `StarGazerQQD/BiliLiveCut` 为准，默认访问地址为 `https://StarGazerQQD.github.io/BiliLiveCut/`。
 
-本地预览默认使用上游仓库链接；Actions 根据 `GITHUB_REPOSITORY` 自动选择当前仓库链接和站点子路径，因此 fork 在自身仓库启用 Pages 后会发布到自己的站点。源码编辑链接本地默认使用 `main`；Actions 构建使用对应分支。`GITHUB_REPOSITORY`、`GITHUB_REF_NAME` 和 `GITHUB_HEAD_REF` 也可在本地显式设置以验证 fork 或分支链接。
+本地预览默认使用上游仓库链接；Actions 根据 `GITHUB_REPOSITORY` 自动选择当前仓库链接和站点子路径，因此 fork 在自身仓库启用 Pages 后会发布到自己的站点。源码编辑链接本地默认使用 `main`；Actions 构建使用对应分支。PR 预览由工作流传入 `GITHUB_HEAD_REPOSITORY`，源码和编辑链接使用 PR 来源仓库与 `GITHUB_HEAD_REF` 分支，站点子路径仍以目标仓库为准。`GITHUB_REPOSITORY`、`GITHUB_REF_NAME`、`GITHUB_HEAD_REF` 和 `GITHUB_HEAD_REPOSITORY` 也可在本地显式设置以验证 fork 或分支链接。
 
 参考 [Plume 部署说明](https://theme-plume.vuejs.press/guide/deployment/)和 [GitHub Pages 自定义工作流](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages)。

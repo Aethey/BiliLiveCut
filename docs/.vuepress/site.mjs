@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url'
 export const root = fileURLToPath(new URL('../../', import.meta.url))
 export const repository =
   process.env.GITHUB_REPOSITORY || 'StarGazerQQD/BiliLiveCut'
+export const sourceRepository =
+  process.env.GITHUB_HEAD_REPOSITORY || repository
 export const branch =
   process.env.GITHUB_HEAD_REF || process.env.GITHUB_REF_NAME || 'main'
 
@@ -273,7 +275,16 @@ export function siteBase(value = process.env.DOCS_BASE || undefined) {
       'DOCS_BASE 必须是以 / 开头和结尾的路径，例如 /BiliLiveCut/ 或 /',
     )
   }
-  return base
+  let decoded
+  try {
+    decoded = decodeURI(base)
+  } catch (error) {
+    throw new Error('DOCS_BASE 包含无效的 URL 编码。', { cause: error })
+  }
+  if (decoded.split('/').some((part) => part === '.' || part === '..')) {
+    throw new Error('DOCS_BASE 不得包含 . 或 .. 路径段。')
+  }
+  return new URL(base, 'https://docs.local').pathname
 }
 
 export function resolveRepoLink(href, source) {
@@ -293,7 +304,7 @@ export function resolveRepoLink(href, source) {
     throw new Error(`文档链接不存在: ${source} → ${href}`)
   }
   if (pageRoutes.has(target)) return `${pageRoute(target)}${match[2]}`
-  return `https://github.com/${repository}/blob/${branch}/${target}${match[2]}`
+  return `https://github.com/${sourceRepository}/blob/${branch}/${target}${match[2]}`
 }
 
 export function repoLinksPlugin() {

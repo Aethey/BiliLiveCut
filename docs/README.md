@@ -66,6 +66,16 @@ uv run --no-sync blc serve
 上面的命令先安装 Web 管理和录制所需依赖。需要本地转写与 LLM 分析时，按[完整安装说明](guide/source.md#按需安装转写与分析依赖)补充可选依赖、模型和服务配置。管理员登录与 Bilibili 扫码登录是两个独立步骤。
 :::
 
+## 插件扩展
+
+按需安装独立插件，扩展高光评分、直播来源和音频分析能力：
+
+- **个性化高光评分**：[Highlight](https://github.com/StarGazerQQD/BiliLiveCut_Highlight) 结合转写、弹幕与音频特征评估候选片段，支持使用人工审核反馈训练模型，让评分更贴近自己的选片偏好。
+- **抖音直播接入**：[DouyinCompatibility](https://github.com/StarGazerQQD/BiliLiveCut_DouyinCompatibility) 提供直播间解析、开播检测与取流，沿用主程序的录制、转写、分析和切片流程。目前不采集抖音弹幕。
+- **语音与音乐检测**：[inaSpeech](https://github.com/StarGazerQQD/BiliLiveCut_inaSpeech) 识别语音、音乐、噪声和静音的时间区间及占比，为录播分析补充音频分类信息。目前仅记录分析结果，不改变高光评分；推理服务需单独部署在 Linux、Docker 或 WSL2 环境中。
+
+安装步骤、依赖与兼容要求见各插件仓库。Highlight 与 inaSpeech 使用同一高光评分插件入口，需择一启用。
+
 ## 从哪里开始
 
 - 第一次使用：阅读[安装方式导览](guide/getting-started.md)和[使用指南](features/README.md)。

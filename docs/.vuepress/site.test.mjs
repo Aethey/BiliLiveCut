@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
@@ -8,7 +9,7 @@ import {
   sections,
   pageRoute,
   pages,
-  repository,
+  sourceRepository,
   resolveRepoLink,
   root,
   siteBase,
@@ -23,12 +24,19 @@ test('all published pages exist and local-only reviews are excluded', () => {
 test('repository and user Pages paths are validated', () => {
   assert.equal(siteBase('/BiliLiveCut/'), '/BiliLiveCut/')
   assert.equal(siteBase('/'), '/')
+  assert.equal(siteBase('/文档/'), '/%E6%96%87%E6%A1%A3/')
+  assert.equal(siteBase('/%E6%96%87%E6%A1%A3/'), '/%E6%96%87%E6%A1%A3/')
   for (const invalid of [
     '',
     'BiliLiveCut',
     '//example.org/',
     '/a/../',
     '/a?b/',
+    '/a/./',
+    '/%2e/',
+    '/a/.%2e/',
+    '/a/%/',
+    '/a/%FF/',
   ]) {
     assert.throws(() => siteBase(invalid))
   }
@@ -37,7 +45,7 @@ test('repository and user Pages paths are validated', () => {
 test('published documents stay local and source references use GitHub', () => {
   assert.equal(
     resolveRepoLink('../../README.md', 'docs/features/README.md'),
-    `https://github.com/${repository}/blob/${branch}/README.md`,
+    `https://github.com/${sourceRepository}/blob/${branch}/README.md`,
   )
   assert.equal(
     resolveRepoLink('../guide/configuration.md#配置', 'docs/features/README.md'),
@@ -45,11 +53,11 @@ test('published documents stay local and source references use GitHub', () => {
   )
   assert.equal(
     resolveRepoLink('../../.env.example', 'docs/features/README.md'),
-    `https://github.com/${repository}/blob/${branch}/.env.example`,
+    `https://github.com/${sourceRepository}/blob/${branch}/.env.example`,
   )
   assert.equal(
     resolveRepoLink('example/', 'plugin/README.md'),
-    `https://github.com/${repository}/blob/${branch}/plugin/example/`,
+    `https://github.com/${sourceRepository}/blob/${branch}/plugin/example/`,
   )
   assert.equal(resolveRepoLink('#标题', 'docs/features/README.md'), '#标题')
   assert.equal(
@@ -70,6 +78,65 @@ test('archived root-relative links work without modifying changelogs', () => {
   )
   assert.equal(pageRoute('docs/README.md'), '/')
   assert.equal(pageRoute('packaging/docker/README.md'), '/guide/docker.html')
+})
+
+test('source links follow the PR repository while Pages keeps its deployment base', () => {
+  for (const scenario of [
+    {
+      repository: 'owner/documentation',
+      headRepository: '',
+      headRef: '',
+      refName: 'release/docs',
+      expectedBase: '/documentation/',
+      expectedSource: 'owner/documentation',
+      expectedBranch: 'release/docs',
+    },
+    {
+      repository: 'owner/documentation',
+      headRepository: 'contributor/forked-docs',
+      headRef: 'docs/fix-links',
+      refName: '42/merge',
+      expectedBase: '/documentation/',
+      expectedSource: 'contributor/forked-docs',
+      expectedBranch: 'docs/fix-links',
+    },
+    {
+      repository: 'contributor/forked-docs',
+      headRepository: '',
+      headRef: '',
+      refName: 'main',
+      expectedBase: '/forked-docs/',
+      expectedSource: 'contributor/forked-docs',
+      expectedBranch: 'main',
+    },
+  ]) {
+    const output = execFileSync(process.execPath, ['--input-type=module', '-e', `
+      const site = await import('./docs/.vuepress/site.mjs')
+      console.log(JSON.stringify({
+        base: site.siteBase(),
+        source: site.sourceRepository,
+        branch: site.branch,
+        link: site.resolveRepoLink('../../.env.example', 'docs/guide/README.md'),
+      }))
+    `], {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        DOCS_BASE: '',
+        GITHUB_REPOSITORY: scenario.repository,
+        GITHUB_HEAD_REPOSITORY: scenario.headRepository,
+        GITHUB_HEAD_REF: scenario.headRef,
+        GITHUB_REF_NAME: scenario.refName,
+      },
+    })
+    assert.deepEqual(JSON.parse(output), {
+      base: scenario.expectedBase,
+      source: scenario.expectedSource,
+      branch: scenario.expectedBranch,
+      link: `https://github.com/${scenario.expectedSource}/blob/${scenario.expectedBranch}/.env.example`,
+    })
+  }
 })
 
 test('categories own unique routes and contain only their own sidebar documents', () => {

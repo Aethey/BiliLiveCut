@@ -11,6 +11,7 @@ import {
   pages,
   repoLinksPlugin,
   repository,
+  sourceRepository,
   sections,
   siteBase,
 } from './site.mjs'
@@ -61,7 +62,7 @@ export default defineUserConfig({
   theme: plumeTheme({
     autoFrontmatter: false,
     codeHighlighter: { langAlias: { env: 'dotenv' } },
-    docsRepo: `https://github.com/${repository}`,
+    docsRepo: `https://github.com/${sourceRepository}`,
     docsBranch: branch,
     docsDir: '',
     editLink: true,
