@@ -54,9 +54,13 @@ KaTeX 统一锁定为已修复 [GHSA-238p-pmpm-9mq7](https://github.com/advisori
 
 ## GitHub Pages
 
+首次部署前，仓库管理员必须在 **Settings → Pages → Build and deployment → Source** 选择 **GitHub Actions**。上游仓库入口为 [Pages 设置](https://github.com/StarGazerQQD/BiliLiveCut/settings/pages)。只存在 `docs.yml` 或 PR 预览构建通过，并不表示仓库已经启用 Pages；使用分支发布的旧配置也需要切换来源。工作流不会自行启用站点或修改仓库设置，也不需要添加个人访问令牌。
+
+默认分支的 Linux 构建会先以 `pages: read` 查询站点设置，只有 `build_type=workflow` 才继续。未启用、仍使用分支发布、读取权限不足或 API 错误都会给出具体原因并阻止部署。修正设置后可在默认分支手动运行 Documentation；首次真实部署成功前，不应把站点标记为已上线。
+
 `.github/workflows/docs.yml` 是独立的文档流水线：
 
-1. 文档或站点配置变更的 PR 执行锁文件安装、配置检查和生产构建，上传站点预览产物。
+1. 文档或站点配置变更的 PR 执行锁文件安装、依赖安全审计、配置检查和生产构建，上传站点预览产物。
 2. 默认分支 `main` 更新时构建，成功后使用 Pages Artifact 部署，不创建 `gh-pages` 分支或额外提交。
 3. 手动触发可验证其他分支；只有仓库默认分支允许进入部署任务。
 
