@@ -5,21 +5,23 @@
 </div>
 <div class="imports-layout">
   <section class="card" aria-labelledby="import-heading">
-    <h2 id="import-heading">导入一场录播</h2>
+    <h2 id="import-heading">导入录播文件</h2>
     <form id="import-form">
       <fieldset id="import-fields">
-        <label for="import-title">录播标题</label>
-        <input id="import-title" maxlength="200" required placeholder="例如：周末游戏实况" />
+        <label for="import-title">录播标题 / 批次标题（可选）</label>
+        <input id="import-title" maxlength="200" placeholder="留空使用文件名；多文件时作为标题前缀" />
         <label for="import-video">视频文件 <span class="muted">必选</span></label>
-        <input id="import-video" type="file" accept=".mp4,.mkv,.flv,.ts,.mov,.webm,.m4v" aria-describedby="import-video-hint" required />
-        <p id="import-video-hint" class="hint">支持 MP4、MKV、FLV、TS、MOV、WebM、M4V，最大 50 GiB，需要有音轨。</p>
+        <input id="import-video" type="file" multiple accept=".mp4,.mkv,.flv,.ts,.mov,.webm,.m4v" aria-describedby="import-video-hint" required />
+        <p id="import-video-hint" class="hint">可多选按小时分段的录播，按文件名自然排序逐个上传。支持 MP4、MKV、FLV、TS、MOV、WebM、M4V，每个最大 50 GiB，需要有音轨。</p>
         <label for="import-comments">弹幕或字幕文件 <span class="muted">可选</span></label>
-        <input id="import-comments" type="file" accept=".xml,.json,.srt,.ass" aria-describedby="import-comments-hint" />
-        <p id="import-comments-hint" class="hint">XML、JSON、SRT、ASS，最大 32 MiB。先清理格式并对齐时间，再参与分析。</p>
+        <input id="import-comments" type="file" multiple accept=".xml,.json,.srt,.ass" aria-describedby="import-comments-hint" />
+        <p id="import-comments-hint" class="hint">可多选 XML、JSON、SRT、ASS，每个最大 32 MiB。批量按主文件名配对，例如 01.mp4 对应 01.xml 或 01.mp4.xml；单视频仍可手动选择不同名弹幕。缺少弹幕可直接分析，重名或多余弹幕会提示修正。</p>
         <label for="import-offset">弹幕时间偏移（秒）</label>
         <input id="import-offset" type="number" min="-604800" max="604800" step="0.01" value="0" aria-describedby="import-offset-hint" />
-        <p id="import-offset-hint" class="hint">通常填 0；正数把弹幕向视频后方移动。SRT、ASS 按每条开始时间读取文本。</p>
+        <p id="import-offset-hint" class="hint">每段弹幕使用对应视频内的相对时间；此偏移应用到本批每段视频。通常填 0；正数把弹幕向视频后方移动。SRT、ASS 按每条开始时间读取文本。</p>
       </fieldset>
+      <div id="import-preview" class="import-preview" aria-label="文件配对与上传队列" hidden></div>
+      <p id="import-pairing-error" class="warn" role="alert"></p>
       <p id="import-resume" class="hint" hidden></p>
       <progress id="import-progress" max="100" value="0" aria-label="文件上传进度" hidden></progress>
       <p id="import-status" role="status" aria-live="polite"></p>
@@ -36,7 +38,7 @@
     <ol><li><strong>准备素材</strong><p>文件复制到运行 BiliLiveCut 的机器，保留你的原文件。</p></li>
       <li><strong>预处理</strong><p>检查媒体、按关键帧分段，统一弹幕时间轴。长视频可能需要数分钟。</p></li>
       <li><strong>转写与分析</strong><p>所选 ASR 引擎完成语音转写，再按现有 LLM 配置整理文本、分析热点和总结整场，结果进入场次时间线。</p></li></ol>
-    <p class="hint">导入后可关闭页面，后台会继续处理。不会自动投稿；候选片段由你审核。</p>
+    <p class="hint">所有文件上传并提交后可关闭页面，后台会继续处理。上传期间关闭页面会丢失尚未创建的队列；已创建记录可在下方继续。不会自动投稿；候选片段由你审核。</p>
     <details><summary>格式与存储说明</summary>
       <p>JSON 示例：</p><pre>{"comments":[{"offset_s":1.25,"text":"高能！"}]}</pre>
       <p class="hint">XML 使用 B 站 d 节点的 p 属性秒数。字幕只作为文本事件，语音仍由所选 ASR 引擎转写。</p>
