@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/StarGazerQQD/BiliLiveCut?include_prereleases&sort=semver)](https://github.com/StarGazerQQD/BiliLiveCut/releases)
 [![License](https://img.shields.io/github/license/StarGazerQQD/BiliLiveCut)](LICENSE)
 
-**当前版本：V0.1.19.0 Alpha** (`0.1.19.0-alpha`) · [更新记录](CHANGELOG.md)
+**当前版本：V0.1.19.1 Alpha** (`0.1.19.1-alpha`) · [更新记录](CHANGELOG.md)
 
 面向 Bilibili 直播的自动切片工具：**录制 → 转写 → 识别高光 → 人工审核 → 生成切片与文案 → 可选上传**。通过 Web 控制台管理直播间、录制场次、转写、候选和成品。
 
@@ -12,7 +12,7 @@
 
 - **开播自动录制与分析**：按直播间开启自动化或预约录制，运行期间同步直播间标题。
 - **本地多引擎语音处理**：Fun-ASR-Nano、Paraformer、Whisper 负责转写与回退，SenseVoice 提供辅助特征；也可显式选择 OpenAI 兼容远程转写；可选大模型整理正文和生成文案。
-- **已有录播分析**：独立页面导入视频与可选 XML、JSON、SRT、ASS 弹幕，预处理后由所选 ASR 引擎转写，再按配置提交 LLM 分析，支持继续上传和失败重试。
+- **已有录播分析**：独立页面批量选择视频与可选 XML、JSON、SRT、ASS 弹幕，按文件名配对并顺序上传，预处理后由所选 ASR 引擎转写，再按配置提交 LLM 分析，支持继续上传和失败重试。
 - **弹幕烧录**：独立于 ASR 字幕，支持滚动、顶部与下方样式及字号、颜色、不透明度和密度设置，按场次时间轴用于主片和派生版本。
 - **场次高光时间线**：融合弹幕、音频、语音与趋势信号识别事件，支持跨连续分段的动态剪辑边界。
 - **审核与出片**：支持人工修订、多人审核、字幕、封面和后台渲染，并保存任务状态。

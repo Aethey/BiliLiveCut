@@ -11,6 +11,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INTERACTION_SUITES = (
     "scripts/check_frontend_interactions.mjs",
+    "scripts/check_waveform_interactions.mjs",
     "scripts/check_configuration_interactions.mjs",
     "scripts/check_recording_import_interactions.mjs",
 )

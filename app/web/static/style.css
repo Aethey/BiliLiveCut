@@ -533,3 +533,7 @@ button.ok:hover { background: var(--green-soft); border-color: rgba(85, 214, 160
   .timeline-point:not(:last-child) .timeline-node::after { left: 6px; }
   .timeline-point-card { padding: 12px; }
 }
+
+.import-preview { max-height: 20rem; overflow: auto; margin: 12px 0; overflow-wrap: anywhere; }
+.import-preview ol { padding-left: 24px; }
+.import-preview li { margin: 8px 0; }

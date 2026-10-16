@@ -35,11 +35,14 @@ uv run --locked blc serve --host 127.0.0.1 --port 8000 --reload
 uv run --locked python scripts/check_frontend.py
 ```
 
-也可在传统虚拟环境运行 `python scripts/check_frontend.py`。检查入口会验证 Git 已跟踪的 JavaScript 文件与 HTML 模板中的可执行内联脚本，并执行三组真实模块交互检查：
+也可在传统虚拟环境运行 `python scripts/check_frontend.py`。检查入口会验证 Git 已跟踪的 JavaScript 文件与 HTML 模板中的可执行内联脚本，并执行四组真实模块交互检查：
 
 - `scripts/check_frontend_interactions.mjs`：工作台交互。
+- `scripts/check_waveform_interactions.mjs`：波形错误提示、请求失败与恢复。
 - `scripts/check_configuration_interactions.mjs`：配置草稿、校验与保存。
 - `scripts/check_recording_import_interactions.mjs`：录播导入、轮询与恢复。
+
+CI 的 Python 测试矩阵统一使用 Node.js 22。波形检查使用独立 `.mjs` 文件入口，不依赖标准输入结束；pytest 保留 30 秒超时，并在超时时输出已完成的检查阶段。
 
 新增脚本后应先纳入 Git 跟踪，再执行完整入口，避免漏检。涉及 Web 页面与相关检查脚本的提交也会触发 pre-commit 中的这一检查。
 

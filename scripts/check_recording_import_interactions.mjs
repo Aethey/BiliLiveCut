@@ -40,6 +40,10 @@ const requests = [];
 const uploads = [];
 let loseDeclaration = false;
 let loseUpload = false;
+let loseUploadFor = null;
+let loseDeclarationFor = null;
+let loseStartFor = null;
+let startedJobs = 0;
 let failAction = false;
 let holdUpload = false;
 let uploadRequest = null;
@@ -59,12 +63,16 @@ globalThis.fetch = async (url, options) => {
     const body = JSON.parse(options.body);
     let record = records.find(row => row.id === body.request_id);
     if (!record) { record = { ...body, id: body.request_id, created_at: "2026-09-21T00:00:00Z", video_uploaded: false, comments_uploaded: false }; records.push(record); }
-    if (loseDeclaration) { loseDeclaration = false; throw new Error("创建响应丢失"); }
+    if (loseDeclaration || loseDeclarationFor === record.video_name) { loseDeclaration = false; loseDeclarationFor = null; throw new Error("创建响应丢失"); }
     return response(record);
   }
   const id = url.split("/")[3];
   const record = records.find(row => row.id === id);
-  if (url.endsWith("/start")) { record.sealed = true; record.job = { id: "job", status: "queued", progress: 0 }; return response(record); }
+  if (url.endsWith("/start")) {
+    if (!record.job) { record.sealed = true; record.job = { id: `job-${record.id}`, status: "queued", progress: 0 }; startedJobs += 1; }
+    if (loseStartFor === record.video_name) { loseStartFor = null; throw new Error("启动响应丢失"); }
+    return response(record);
+  }
   if (options.method === "DELETE") { records.splice(records.indexOf(record), 1); return response({}); }
   return response({});
 };
@@ -82,12 +90,17 @@ globalThis.XMLHttpRequest = class {
     assert.equal(record[`${kind}_uploaded`], false, "must not reupload a completed file");
     record[`${kind}_uploaded`] = true;
     this.upload.onprogress({ lengthComputable: true, loaded: 1, total: 1 });
-    if (loseUpload) { loseUpload = false; this.onerror(); return; }
+    if (loseUpload || loseUploadFor === record.video_name) { loseUpload = false; loseUploadFor = null; this.onerror(); return; }
     this.status = 200; this.responseText = JSON.stringify(record); this.onload();
   }
   abort() { this.onabort(); }
 };
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const formTemplate = await readFile(join(root, "app/web/templates/recording_import_content.html"), "utf8");
+for (const id of ["import-video", "import-comments"]) {
+  const input = formTemplate.match(new RegExp(`<input[^>]*id="${id}"[^>]*>`))?.[0];
+  assert.ok(input && /\bmultiple(?:\s|>)/.test(input), `${id} must allow browser multi-selection`);
+}
 const moduleUrl = source => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 const common = moduleUrl(await readFile(join(root, "app/web/static/js/common.js"), "utf8"));
 const source = (await readFile(join(root, "app/web/static/js/recording-imports.js"), "utf8")).replace('"./common.js"', JSON.stringify(common));
@@ -188,5 +201,131 @@ releaseRead(); await staleRefresh; releaseRead = null;
 assert.equal(element("import-new").hidden, false);
 assert.equal(element("import-video").files[0], delayedVideo);
 assert.match(element("import-resume").textContent, /旧响应保护/);
+
+// Batch matching is deterministic and rejects ambiguity before any request is created.
+const file = (name, size = 100) => ({ name, size });
+const plan = module.planRecordingImports;
+assert.deepEqual(plan([file("小时10.MP4"), file("小时2.ts"), file("小时1.mkv")], [file("小时2.XML"), file("小时10.mp4.ass")])
+  .map(row => [row.video.name, row.comments?.name ?? null]), [["小时1.mkv", null], ["小时2.ts", "小时2.XML"], ["小时10.MP4", "小时10.mp4.ass"]]);
+assert.equal(plan([file("Café.mp4"), file("另一段.mp4")], [file("Cafe\u0301.xml")]).find(row => row.video.name === "Café.mp4").comments.name, "Cafe\u0301.xml");
+assert.equal(plan([file("source.mp4")], [file("manual.ass")])[0].comments.name, "manual.ass");
+for (const [videos, comments, expected] of [
+  [[file("a.mp4"), file("a.mkv")], [], /重复/],
+  [[file("A.mp4"), file("a.mp4")], [], /重复/],
+  [[file("a.mp4"), file("b.mp4")], [file("a.xml"), file("a.ass")], /同名弹幕/],
+  [[file("a.mp4"), file("b.mp4")], [file("a.xml"), file("a.mp4.xml")], /配对不唯一/],
+  [[file("a.mp4"), file("a.mp4.mkv")], [file("a.mp4.xml")], /配对不唯一/],
+  [[file("a.mp4"), file("b.mp4")], [file("orphan.xml")], /没有对应视频/],
+  [[file("a.mp4", 0)], [], /为空/],
+  [[file("a.mp4", 50 * 1024 ** 3 + 1)], [], /超过/],
+  [[file("a.mp4")], [file("a.xml", 32 * 1024 ** 2 + 1)], /超过/],
+  [[file("a.exe")], [], /视频格式/],
+  [[file("a.mp4")], [file("a.exe")], /弹幕格式/],
+  [[file("../a.mp4")], [], /文件名不支持/],
+  [[file(".mp4")], [], /不能为空/],
+]) assert.throws(() => plan(videos, comments), expected);
+const chooseBatch = async (videos, comments = [], title = "") => {
+  await element("import-new").emit("click");
+  element("import-title").value = title;
+  element("import-video").files = videos;
+  element("import-comments").files = comments;
+  await element("import-video").emit("change");
+  await element("import-comments").emit("change");
+};
+await chooseBatch([file("a.mp4"), file("b.mp4")], [file("orphan.xml")]);
+assert.match(element("import-pairing-error").textContent, /没有对应视频/);
+const invalidRequestCount = requests.length;
+await submit();
+assert.equal(requests.slice(invalidRequestCount).filter(row => row.method === "POST").length, 0);
+assert.match(element("import-error").textContent, /没有对应视频/);
+assert.match(element("import-status").textContent, /请修正/);
+element("import-comments").files = [file("a.xml")];
+await element("import-comments").emit("change");
+assert.equal(element("import-error").textContent, "");
+assert.equal(element("import-status").textContent, "");
+assert.equal(element("import-pairing-error").textContent, "");
+assert.match(element("import-preview").innerHTML, /a.xml/);
+
+// The queue uploads original files serially in natural order, independently of selection order.
+const batchVideos = [file("小时10.mp4"), file("小时2.ts"), file("小时1.mkv")];
+const batchComments = [file("小时2.xml"), file("小时10.mp4.ass")];
+await chooseBatch(batchVideos, batchComments, "周末实况");
+element("import-offset").value = "2.5";
+assert.match(element("import-preview").innerHTML, /共 3 段视频/);
+assert.match(element("import-preview").innerHTML, /无弹幕/);
+const batchRecordStart = records.length;
+const batchUploadStart = uploads.length;
+holdUpload = true;
+const uploadingBatch = submit(); await settle();
+await submit();
+assert.equal(records.length, batchRecordStart + 1);
+assert.equal(uploads.length, batchUploadStart + 1, "only the current file can upload");
+assert.equal(uploads.at(-1).file, batchVideos[2]);
+holdUpload = false; uploadRequest.complete(); await uploadingBatch;
+assert.deepEqual(records.slice(batchRecordStart).map(row => [row.video_name, row.comments_name, row.title, row.offset_s]), [
+  ["小时1.mkv", null, "周末实况 - 小时1", 2.5],
+  ["小时2.ts", "小时2.xml", "周末实况 - 小时2", 2.5],
+  ["小时10.mp4", "小时10.mp4.ass", "周末实况 - 小时10", 2.5],
+]);
+assert.equal(uploads.length, batchUploadStart + 5);
+assert.equal(new Set(records.slice(batchRecordStart).map(row => row.request_id)).size, 3);
+assert.ok(records.slice(batchRecordStart).every(row => row.sealed));
+assert.match(element("import-status").textContent, /已提交 3 段录播/);
+
+// A lost second-file upload response keeps the remaining queue and skips completed bytes on retry.
+await chooseBatch([file("恢复1.mp4"), file("恢复2.mp4"), file("恢复3.mp4")], [file("恢复2.xml")]);
+const recoveryStart = records.length;
+loseUploadFor = "恢复2.mp4";
+await submit();
+assert.equal(records.length, recoveryStart + 2);
+assert.match(element("import-error").textContent, /中断/);
+assert.match(element("import-preview").innerHTML, /已提交 1 段/);
+assert.match(element("import-preview").innerHTML, /恢复3.mp4/);
+const recoveryUploads = uploads.length;
+await submit();
+assert.equal(records.length, recoveryStart + 3);
+assert.equal(uploads.length, recoveryUploads + 2, "retry sends only second comments and third video");
+assert.ok(records.slice(recoveryStart).every(row => row.sealed));
+assert.equal(records.at(-1).title, "恢复3", "empty batch title uses each filename");
+
+// A lost declaration or start response reuses the same request ID and cannot discard later entries.
+for (const failure of ["declaration", "start"]) {
+  await chooseBatch([file(`${failure}1.mp4`), file(`${failure}2.mp4`), file(`${failure}3.mp4`)]);
+  const beforeRecords = records.length;
+  const beforeJobs = startedJobs;
+  if (failure === "declaration") loseDeclarationFor = `${failure}2.mp4`;
+  else loseStartFor = `${failure}2.mp4`;
+  await submit();
+  assert.equal(records.length, beforeRecords + 2);
+  assert.match(element("import-error").textContent, /响应丢失/);
+  await refresh();
+  assert.match(element("import-preview").innerHTML, /3.mp4/);
+  await submit();
+  assert.equal(records.length, beforeRecords + 3);
+  assert.equal(startedJobs, beforeJobs + 3);
+  assert.ok(records.slice(beforeRecords).every(row => row.sealed));
+}
+
+// Stop during the second file: the first stays submitted and the third is not started until resume.
+await chooseBatch([file("取消1.mp4"), file("取消2.mp4"), file("取消3.mp4")]);
+const cancelStart = records.length;
+holdUpload = true;
+const stoppedBatch = submit(); await settle();
+uploadRequest.complete(); await settle();
+assert.equal(records.length, cancelStart + 2);
+await element("import-cancel").emit("click"); await stoppedBatch;
+assert.equal(records[cancelStart].sealed, true);
+assert.equal(Boolean(records[cancelStart + 1].sealed), false);
+assert.match(element("import-preview").innerHTML, /已停止/);
+holdUpload = false; await submit();
+assert.equal(records.length, cancelStart + 3);
+assert.ok(records.slice(cancelStart).every(row => row.sealed));
+
+// Filenames in pairing previews are always escaped, including names from persisted records.
+await chooseBatch([file("<img onerror=1>.mp4"), file("safe.mp4")]);
+assert.ok(element("import-preview").innerHTML.includes("&lt;img"));
+assert.ok(!element("import-preview").innerHTML.includes("<img"));
+await element("import-new").emit("click");
+assert.equal(module.hasRecordingImportDraft(), false);
 listeners.get("pagehide")();
-console.log("PASS: recording imports, raw upload, idempotent recovery, cancellation, progress and focus");
+console.log("PASS: recording imports, batch matching, serial raw uploads, idempotent recovery, cancellation, progress and focus");
