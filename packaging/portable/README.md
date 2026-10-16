@@ -1,6 +1,6 @@
 # BiliLiveCut · 即插即用版（`packaging/portable/`）
 
-**版本：V0.1.19.0 Alpha** (`0.1.19.0-alpha`)
+**版本：V0.1.19.1 Alpha** (`0.1.19.1-alpha`)
 
 本版将 PCM、聚类、新颖度、ASR 文本检测与复核统计收敛到独立 CPU 内核，优化滚动基线和原生模块分配；修复模型下载进度初始化死锁。保留模型/CUDA 调用与已有安装契约。详细排错见[使用指南](../../docs/features/README.md#排错)。升级仍使用全新目录与新数据库。
 
@@ -15,6 +15,11 @@ BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直�
 Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装阶段不依赖 GitHub 业务源码。
 
 ---
+
+## V0.1.19.1 Alpha：本地录播批量导入
+
+- 一次选择多个视频和弹幕，按文件名配对预览、自然排序并逐段上传；缺少弹幕可导入，重名或多余弹幕须先修正。
+- 中断后继续保留本页剩余队列，跳过已完成文件；每段独立分析，不自动拼接。详细规则见[本地录播分析](../../docs/features/recording-import.md)。
 
 ## V0.1.19.0 Alpha：Event-first 热点与原生加速
 
@@ -36,7 +41,7 @@ Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装�
 - V0.1.17.2～V0.1.17.4 统一保护所有自动刷新页面的草稿、选择、展开状态和滚动位置；实时转写可按完整历史场次筛选、显示源 TS 并无损导出无黑首帧 MP4，每次录制前重新查询标题和主播名。
 - 整场结束后会把同场全部最终 ASR 作为一个完整上下文交给 LLM 分析，不直接拼接分段或节点摘要；人工纠错和重分析会使旧总结失效。
 
-逐项版本记录见 [0.1.17 系列 Changelog](../../docs/changelog/CHANGELOG_PRE_0.1.17.md)。当前 V0.1.19.0 不迁移 0.1.17.x 的数据库、Runtime、Payload 或已安装清单；请解压到全新目录并使用当前版本创建的新数据库。原始录像、成片和人工导出资料可作为普通文件独立保留。
+逐项版本记录见 [0.1.17 系列 Changelog](../../docs/changelog/CHANGELOG_PRE_0.1.17.md)。当前 V0.1.19.1 不迁移 0.1.17.x 的数据库、Runtime、Payload 或已安装清单；请解压到全新目录并使用当前版本创建的新数据库。原始录像、成片和人工导出资料可作为普通文件独立保留。
 
 ## V0.1.16.5 Alpha：严重正确性修复
 
@@ -243,7 +248,7 @@ python build_engine_pack.py --from-cache  # 从已验证缓存构建
 
 输出:
 
-- dist/engine-pack/BiliLiveCut-EnginePack-0.1.19.0-alpha.zip
+- dist/engine-pack/BiliLiveCut-EnginePack-0.1.19.1-alpha.zip
 - dist/engine-pack/engine-pack-manifest.json
 - dist/engine-pack/CRC32SUMS.txt
 - dist/engine-pack/SHA256SUMS.txt
@@ -352,7 +357,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── runtime/                  # ★ Runtime 版本管理
 │   ├── current.json          #   当前激活的 Release 信息
 │   └── releases/
-│       └── 0.1.19.0-alpha+<source-sha>+<payload-hash>/  # 内容寻址的固定版本源码
+│       └── 0.1.19.1-alpha+<source-sha>+<payload-hash>/  # 内容寻址的固定版本源码
 │
 ├── .venv/                    # Python 虚拟环境（launcher.exe 自动创建）
 ├── models/                   # 四引擎 ASR 模型 (由 Engine Pack 或在线下载安装)
