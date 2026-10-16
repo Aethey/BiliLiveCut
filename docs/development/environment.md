@@ -86,6 +86,8 @@ python tools/native/build_rust.py
 
 模块职责、函数清单和诊断命令见[原生加速模块](../reference/native-acceleration.md)。开发与验收使用独立的数据库、存储和配置，不复用正在运行实例的 `.env`、Cookie、数据库或媒体。
 
+wheel 安装后，直播源接口文档位于 `share/bili-live-cut/docs/development/`，插件示例说明位于相邻的 `share/bili-live-cut/plugin/`；分发测试使用真实安装命令核对两者之间的相对链接与源文档内容。
+
 ## 验证
 
 先执行改动对应的目标测试，再运行完整测试和质量检查。项目的 `pytest` 默认收集 `tests/` 与 `packaging/portable/tests/`：

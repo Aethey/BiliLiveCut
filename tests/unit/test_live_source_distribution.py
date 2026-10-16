@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import ast
+import re
 import tomllib
 from pathlib import Path
 
 import pytest
+from setuptools import Distribution
 
 ROOT = Path(__file__).resolve().parents[2]
 RESOURCES = {
@@ -50,3 +52,34 @@ def test_live_source_resources_are_declared_in_wheel_and_portable(monkeypatch: p
     for private in (".env", "storage/live.db", "docs/audit/private.md", "plugin/other-plugin/main.py"):
         assert not _should_include(private), private
     assert _should_include("app/plugins/live_source.py")
+
+
+def test_installed_plugin_contract_links_resolve_to_original_documents(tmp_path: Path) -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    data_files = project["tool"]["setuptools"]["data-files"]
+    distribution = Distribution(
+        {
+            "data_files": [
+                (destination, [str(ROOT / name) for name in names]) for destination, names in data_files.items()
+            ]
+        }
+    )
+    installer = distribution.get_command_obj("install_data")
+    installer.install_dir = str(tmp_path)
+    installer.ensure_finalized()
+    installer.run()
+
+    originals = {Path(name).name: ROOT / name for name in RESOURCES if name.startswith("docs/")}
+    contract_links = 0
+    for readme in (tmp_path / "share/bili-live-cut/plugin").rglob("README.md"):
+        for href in re.findall(r"\]\(([^)]+)\)", readme.read_text(encoding="utf-8")):
+            relative = href.split("#", maxsplit=1)[0]
+            original = originals.get(Path(relative).name)
+            if original is None:
+                continue
+            installed = (readme.parent / relative).resolve()
+            assert installed.is_relative_to(tmp_path.resolve())
+            assert installed.is_file(), f"{readme.name}: {href}"
+            assert installed.read_bytes() == original.read_bytes()
+            contract_links += 1
+    assert contract_links >= 3
