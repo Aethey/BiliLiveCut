@@ -238,6 +238,13 @@ const invalidRequestCount = requests.length;
 await submit();
 assert.equal(requests.slice(invalidRequestCount).filter(row => row.method === "POST").length, 0);
 assert.match(element("import-error").textContent, /没有对应视频/);
+assert.match(element("import-status").textContent, /请修正/);
+element("import-comments").files = [file("a.xml")];
+await element("import-comments").emit("change");
+assert.equal(element("import-error").textContent, "");
+assert.equal(element("import-status").textContent, "");
+assert.equal(element("import-pairing-error").textContent, "");
+assert.match(element("import-preview").innerHTML, /a.xml/);
 
 // The queue uploads original files serially in natural order, independently of selection order.
 const batchVideos = [file("小时10.mp4"), file("小时2.ts"), file("小时1.mkv")];

@@ -225,7 +225,9 @@ async function submitImport(event) {
     const entry = batch?.items[batch.index];
     if (entry) { entry.status = cancelled ? "已停止，可继续" : "失败，可继续"; entry.record = draft; }
     $("#import-error").textContent = error.message;
-    $("#import-status").textContent = "未完成队列会保留。点击继续可跳过已完成文件；关闭页面后可从下方记录恢复已创建的导入。";
+    $("#import-status").textContent = batch
+      ? "未完成队列会保留。点击继续可跳过已完成文件；关闭页面后可从下方记录恢复已创建的导入。"
+      : "请修正文件配对或输入内容后重试。";
   } finally {
     busy = false;
     activeUpload = null;
@@ -312,6 +314,14 @@ export async function refreshImports() {
   finally { listLoading = false; }
 }
 
+function selectionChanged() {
+  if (!batch && !draft && !pendingDeclaration) {
+    $("#import-error").textContent = "";
+    $("#import-status").textContent = "";
+  }
+  renderPlan();
+}
+
 $("#import-form").addEventListener("submit", submitImport);
 $("#import-video").addEventListener("change", () => {
   if (!draft && !pendingDeclaration && !batch) {
@@ -322,9 +332,9 @@ $("#import-video").addEventListener("change", () => {
       title.value = automaticTitle;
     }
   }
-  renderPlan();
+  selectionChanged();
 });
-$("#import-comments").addEventListener("change", renderPlan);
+$("#import-comments").addEventListener("change", selectionChanged);
 $("#import-cancel").addEventListener("click", () => { cancelled = true; activeUpload?.abort(); });
 $("#import-new").addEventListener("click", () => {
   if (busy || actionPending) return;
