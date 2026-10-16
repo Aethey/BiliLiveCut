@@ -12,10 +12,8 @@
 
 - [插件接口](../../plugin/README.md)：清单、设置、生命周期和能力注册。
 - [直播源契约](live-source-plugins.md)：房间身份、取流、可选弹幕、停用与安装。
-- [抖音平台接入要求](douyin-plugin-handoff.md)：供独立插件实现使用的公共接口与验证边界。宿主契约可用不代表真实抖音插件或实播已经验证。
+- [抖音直播源接入](douyin-plugin-handoff.md)：现有插件的安装入口、公共接口和开发测试。
 
 ## 发行
 
 [Portable 构建](../../packaging/portable/README.md)描述 Lite/Full、运行时、Payload 与模型包交付。Docker 的实际运行与构建命令在[部署说明](../../packaging/docker/README.md)维护。
-
-一次性排查日志和验证记录保留在 PR、Issue 或本地工作目录；正式文档记录当前行为、接口和维护约束。

@@ -42,7 +42,7 @@ uv run --locked python scripts/check_frontend.py
 - `scripts/check_configuration_interactions.mjs`：配置草稿、校验与保存。
 - `scripts/check_recording_import_interactions.mjs`：录播导入、轮询与恢复。
 
-CI 的 Python 测试矩阵统一使用 Node.js 22。波形检查使用独立 `.mjs` 文件入口，不依赖标准输入结束；pytest 保留 30 秒超时，并在超时时输出已完成的检查阶段。
+CI 的 Python 测试矩阵使用 Node.js 22。波形检查入口为独立 `.mjs` 文件；pytest 的超时为 30 秒，失败报告包含已完成的检查阶段。
 
 新增脚本后应先纳入 Git 跟踪，再执行完整入口，避免漏检。涉及 Web 页面与相关检查脚本的提交也会触发 pre-commit 中的这一检查。
 

@@ -51,7 +51,7 @@ KaTeX 统一锁定为已修复 [GHSA-238p-pmpm-9mq7](https://github.com/advisori
 - 页面白名单只包含首页和已登记的文件。本地工程审查、一次性 PR 修复记录、运行数据和临时文档不会自动发布。
 - `docs/.vuepress/config.mjs` 配置导航、侧边栏、本地全文搜索、主题和构建目录。
 - 内部文档链接沿用相对 `.md` 路径，GitHub 仓库浏览与站点均可使用。指向源代码、配置和示例目录的相对链接在站点中转为 GitHub 链接。
-- 历史 Changelog 原样展示，仅“版本记录”栏目的归档目录自动收录 `docs/changelog/CHANGELOG_PRE_*.md`。历史行为不代表当前版本行为；本次站点建设不修改 Changelog 内容。
+- 历史 Changelog 原样展示，仅“版本记录”栏目的归档目录自动收录 `docs/changelog/CHANGELOG_PRE_*.md`。历史行为不代表当前版本行为。
 - 主题自动写入 frontmatter 已关闭，预览和构建不会改写源文档。
 
 ## GitHub Pages
