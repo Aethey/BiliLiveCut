@@ -1,56 +1,18 @@
-# BiliLiveCut · 即插即用版（`packaging/portable/`）
+# Portable 安装与构建
 
 **版本：V0.1.19.1 Alpha** (`0.1.19.1-alpha`)
 
-本版将 PCM、聚类、新颖度、ASR 文本检测与复核统计收敛到独立 CPU 内核，优化滚动基线和原生模块分配；修复模型下载进度初始化死锁。保留模型/CUDA 调用与已有安装契约。详细排错见[使用指南](../../docs/features/README.md#排错)。升级仍使用全新目录与新数据库。
+本文介绍 Windows Portable 的发行结构、模型准备、运行依赖和构建方法。第一次使用请按下方用户指南完成安装；升级时保留旧运行目录，使用新目录和当前版本数据库。常见问题见[故障排查](../../docs/features/troubleshooting.md)。
 
 > **普通用户请先阅读：[Portable 小白使用说明](USER_GUIDE_ZH.md)**。该说明按 Windows 用户从下载、校验、解压、首次启动到第一次录制的顺序编写。
 
 项目入口见[README](../../README.md)，业务链路见[使用指南](../../docs/features/README.md)与[热点检测器](../../docs/reference/hotspot-detector.md)，源码冻结和验证约定见[开发与维护](../../docs/development/environment.md)。完整更新记录见[主 Changelog](../../CHANGELOG.md)与[历史归档索引](../../docs/changelog/CHANGELOG_INDEX.md)。
 
-BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直播间 → 实时录制 + 转写 → 生成场次高光时间线 → 审核动态切片 → 生成剪辑成品 + 文案。
+Portable 包提供与源码运行相同的录制、转写、高光分析、审核与剪辑功能；已有视频可通过[录播导入](../../docs/features/recording-import.md)分析。转写引擎、设备和模型准备见[语音转写指南](../../docs/features/asr.md)。
 
-这个 `packaging/portable/` 目录是**即插即用分发版**。Launcher 内嵌了当前发布基线的完整业务源码 (Commit `069b68a`)，**双击即用，首次启动不需要从 GitHub 下载业务源码**。Full 版自带 Python 3.12、离线依赖和 FFmpeg；Lite 版需要目标电脑已有 Python 3.11/3.12，并自行满足 FFmpeg 等运行组件。
+Launcher 内嵌发布时冻结的完整业务源码，首次启动不需要从 GitHub 下载业务源码。实际源码身份以发行物的 `version.json` 和 Payload 清单为准。Full 版自带 Python 3.12、离线依赖和 FFmpeg；Lite 版需要目标电脑已有 Python 3.11/3.12，并自行满足 FFmpeg 等运行组件。
 
 Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装阶段不依赖 GitHub 业务源码。
-
----
-
-## V0.1.19.1 Alpha：本地录播批量导入
-
-- 一次选择多个视频和弹幕，按文件名配对预览、自然排序并逐段上传；缺少弹幕可导入，重名或多余弹幕须先修正。
-- 中断后继续保留本页剩余队列，跳过已完成文件；每段独立分析，不自动拼接。详细规则见[本地录播分析](../../docs/features/recording-import.md)。
-
-## V0.1.19.0 Alpha：Event-first 热点与原生加速
-
-- 弹幕、音频、SenseVoice、ASR 与趋势先形成带稳定 ID 的热点事件；ASR 缺失或质量不足不再阻断自动切片，缺失证据会重归一化而不是记零分。
-- 热点可以跨连续原始分段更新和合并，一个分段也可以保留多个无关事件；真实录制缺口是不可跨越的媒体边界。
-- EventEnricher 只依据带 ID 的证据束生成标题、摘要和语义置信度；ClipScorer 再按完整事件判断是否生成候选，并从事件前后文确定动态边界。
-- GMT+8 场次时间线展示所有活动热点。低于成片阈值的事件仍显示来源评分与代表弹幕，但明确标记为“仅时间线，不生成视频”；有候选的事件才进入既有精审、渲染和发布流程。
-- 首次在线模型准备由 `.venv` Python 子进程执行并一次性预检下载依赖；程序管理的损坏 venv 会自动重建，真实不支持的 Python 会明确拒绝，准备中断可续跑。
-- Engine Pack 内容清单仅支持 schema 5，已安装模型清单仅支持 schema 7，不迁移旧 schema。模型仓库、不可变 revision、格式、子模型/随附组件及逐文件完整性必须符合当前定义；发行版本或源码提交差异仅记录来源警告，内容相同的旧包及完整安装目录可以复用。Runtime、Payload 和数据库继续遵循各自严格身份与格式规则。
-- 候选聚类和弹幕文本特征使用 Rust/rayon；音频峰值、静音区间和滚动稳健增幅使用 Cython。Payload 强制携带当前 Python ABI 的 C、Cython、Rust 三个 `app.accelerators` 原生模块，不提供旧模块路径。
-- 设置页可保存下次启动 Web 端口；当前服务保持原端口，重启后 Launcher 从根目录 `config/launcher.json` 读取并仍只监听 `127.0.0.1`。
-- 数据库只接受当前版本创建的 Schema v6；历史数据库会被明确拒绝，不执行备份、迁移或字段补写。
-
-## V0.1.17 系列：场次工作台、历史记录与动态切片
-
-- V0.1.17 将逐候选平铺改为按主播和录制场次归组的 GMT+8 时间线；每个节点显示摘要、代表弹幕、来源信号和动态边界。五分钟分段可以产生多个独立高光，前后文可以跨连续 TS，弹幕默认向前校正 `7.5` 秒，真实断流缺口不可跨越。
-- 房间词典支持手工热词和 `错误词=正确词`，人工纠错可回写词典并重分析当前场次；阈值反馈、去重和 ASR 复读降级都有持久化记录。
-- V0.1.17.1 修复审核状态与后台出片：非终结决策不再滞留 `awaiting_review`，人工批准可独立进入正式渲染，拒绝候选不会出现在成品队列；断流恢复收口为 20 次或 180 秒，并支持 1～8 个 CUDA ASR 任务并发。
-- V0.1.17.2～V0.1.17.4 统一保护所有自动刷新页面的草稿、选择、展开状态和滚动位置；实时转写可按完整历史场次筛选、显示源 TS 并无损导出无黑首帧 MP4，每次录制前重新查询标题和主播名。
-- 整场结束后会把同场全部最终 ASR 作为一个完整上下文交给 LLM 分析，不直接拼接分段或节点摘要；人工纠错和重分析会使旧总结失效。
-
-逐项版本记录见 [0.1.17 系列 Changelog](../../docs/changelog/CHANGELOG_PRE_0.1.17.md)。当前 V0.1.19.1 不迁移 0.1.17.x 的数据库、Runtime、Payload 或已安装清单；请解压到全新目录并使用当前版本创建的新数据库。原始录像、成片和人工导出资料可作为普通文件独立保留。
-
-## V0.1.16.5 Alpha：严重正确性修复
-
-- 高光规则评分与 LLM 复核统一消费音频峰值附近的同一候选窗口，候选理由、时间偏移和成片不再混入五分钟分片后续发生的内容。
-- `start_offset` 是视频开始点，`end_offset` 是理由所述事件完整结束后的出点；换算到原始分片后，最终成片必须覆盖完整分析窗口，LLM 与静音吸附只能向外扩展。
-- 拒绝候选会原子同步审核事件、仍可取消的任务和全部未发布关联成片；拒绝记录不会继续以 `reviewing` 出现在成品队列，已经发布的外部结果不会被事后改写。
-- 主播下播或持续断流时，连续重试默认最多 20 次或 300 秒，任一先到即自动收尾；成功产出新片段后重试预算归零。
-- 转写整理与高光复核默认各允许最多 `65536` 个输出 token。长转写的局部解码复读会触发 Paraformer、Whisper 回退，LLM 只保守清理残余的 ASR/VAD 边界重复。
-- Engine Pack 内容清单仅支持 schema 5，已安装模型清单仅支持 schema 7，不迁移旧 schema。模型仓库、不可变 revision、格式、子模型/随附组件及逐文件完整性必须符合当前定义；发行版本或源码提交差异仅记录来源警告，内容相同的旧包及完整安装目录可以复用。Runtime、Payload 和数据库继续遵循各自严格身份与格式规则。
 
 ---
 
@@ -66,121 +28,30 @@ Full 默认随附 CPU 版依赖。使用 NVIDIA GPU 转写前，可运行 `BiliL
 | 磁盘 | 15 GB 空闲（仅短时测试） | 30 GB 以上（含模型和录制存储） |
 | 网络（运行时） | **需要** — 录直播、采集弹幕、调大模型等均需联网 | — |
 | 网络（安装） | **Lite**: 首次安装需联网拉取依赖；**Full**: 预置完整，组件安装无需额外下载；**模型**: 通过独立 **Engine Pack** 或在线下载安装；**账号登录**: 无系统 Chrome 时会下载 Chromium | — |
-| C 编译器（可选） | — | Visual Studio Build Tools（用于编译加速模块，无编译器则自动回退纯 Python） |
+| 原生构建工具 | 运行发行包不需要 | 构建发行包时准备 Visual Studio Build Tools、Rust，详见[开发环境](../../docs/development/environment.md) |
 
 ---
 
-## V0.1.14.6 新特性：发行结构重构
-
-本次为**架构级改造**，建立从固定 Git Commit 提取源码、嵌入 Portable EXE 的完整发行链路。彻底解决国内从 GitHub 拉取源码不稳定的问题。
-
-### 当前发行结构
+## 发行结构
 
 - 首次运行从 **EXE 内置 Payload** 释放固定版本源码，完整 `payload_manifest.json` 记录逐文件 SHA-256。
 - Runtime 通过 `staging → rename` 原子切换，并以当前格式的 `current.json` 记录激活状态。
 - 发行提供 **Lite**（轻量单 EXE）与 **Full**（预置完整依赖）两种形式。
 
-### Lite vs Full
+### Lite 与 Full
 
-> 两种发行方式均面向**联网运行**场景（直播监-听、弹幕采集、大模型调用等均需网络）。区别仅在于**安装阶段是否需要额外从互联网下载组件**。
+> 两种发行方式均面向**联网运行**场景（直播监听、弹幕采集、大模型调用等均需网络）。区别仅在于**安装阶段是否需要额外从互联网下载组件**。
 
 | | Portable Lite | Portable Full |
 |---|---|---|
 | **定位** | 轻量化，方便下载分发 | 完整包，开箱即用 |
-| **当前发行大小** | 约 80 MB (EXE) | 约 1 GB (ZIP，解压后更大) |
+| **下载大小** | 以对应 Release 附件为准 | 以对应 Release 附件为准，解压后需要更多空间 |
 | **内含** | EXE + 业务源码 Payload | EXE + Portable Python + Wheels + FFmpeg |
 | **安装过程** | 首次安装时在线下载 Python 依赖；FFmpeg 需另行准备 | 预置 Python、依赖和 FFmpeg，组件安装无需额外下载 |
 | **模型** | 不含模型，通过独立 **Engine Pack** 或在线下载安装 | 不含模型，通过独立 **Engine Pack** 或在线下载安装 |
 | **适用场景** | 熟悉 Python/FFmpeg 的高级用户 | 普通用户、小规模分发测试 |
 
 Engine Pack 内容清单仅支持 schema 5，已安装模型清单仅支持 schema 7，不迁移旧 schema。模型仓库、不可变 revision、格式、子模型/随附组件及逐文件完整性必须符合当前定义；发行版本或源码提交差异仅记录来源警告，内容相同的旧包及完整安装目录可以复用。Runtime、Payload 和数据库继续遵循各自严格身份与格式规则。
-
----
-
-## V0.1.14 新特性：架构重构 + 稳定性收口
-
-### 模块化拆分 (Phase C1-C8)
-
-> 将巨型单体拆分为可维护的子模块，为后续功能迭代扫清技术债。
-
-- **task_worker.py** (1667行 → 5 个子模块): `lifecycle.py` / `stage_result.py` / `workers/` 下各阶段独立 compute/commit
-- **CLI**: 拆分为 `app/commands/` 下 record/serve/doctor/config/room 等子命令
-- **Web**: 拆分为 `web/services/` 12 个子服务 + `web/routers/` 子路由
-- **DB 模型**: 拆分为 `app/db/entities/` 9 个实体子文件
-- **加速模块**: C/Cython/Rust 统一归入 `app/accelerators/`
-
-### 全链路崩溃安全 (Stability Closure)
-
-> 本届聚焦"远端结果不丢失"和"进程崩溃后状态可恢复"。
-
-- **Durable Journal**: 数据库不可用时将远程上传成功写入 JSONL 持久化日志
-- **异常分类**: `classify_upload_error` 精确区分可重试/不确定/永久失败，不确定时不自动重试
-- **Stale Recovery**: `full_recovery()` 全量恢复统一入口，超时 Attempt → `RECONCILIATION_REQUIRED`
-- **308/308 全量测试通过**，Ruff 零错误
-
----
-
-## V0.1.13 新特性：运行时集成与 Golden Path
-
-> 稳定性组件从"代码中存在"提升到"真实接入主运行链路，并在故障下证明有效"。
-
-- **TaskLease + Compute/Commit 分离**: 4 阶段全部拆分为纯计算 + 原子提交，租约贯穿全链路
-- **ResourceBudget 资源预算**: CPU/GPU/内存/显存四维资源池，任务领取前 reserve
-- **两级磁盘保护**: LOW(20GB) 暂停新任务，CRITICAL(5GB) 安全停止录制
-- **FFmpeg 错误分类**: 瞬时网络 → 指数退避重试；磁盘满/权限 → 永久失败
-- **Bilibili 风控熔断**: `CircuitBreaker` 房间级熔断，403/412 触发后退避
-- **弹幕分级采样**: SC/互动 100% 采集，普通 30%，高密度 10%
-- **严格 Schema 系统**: `schema_meta` 元信息表 + SHA-256 指纹只接受当前结构；不一致的数据库拒绝启动
-- **`bililivecut doctor`**: 15 项自检命令 (PASS/WARN/FAIL)，存在 FAIL 时返回非零退出码
-- **CI 增强**: Portable Windows 运行时锁的阻断式 pip-audit + pytest-cov 覆盖率门禁 + macOS 矩阵
-- **290/290 测试通过**
-
----
-
-## V0.1.12 新特性：多引擎 ASR 流水线
-
-当前默认使用四层本地 ASR 流水线（全部模型首次运行时自动下载）：
-
-| 层级 | 引擎 | 功能 |
-|------|------|------|
-| 主引擎 | Fun-ASR-Nano | 中文语音识别与长音频转写 |
-| 辅助特征 | SenseVoice-Small | 情感、笑声、音乐、事件检测 |
-| 次级回退 | Paraformer-zh | FunASR 无有效输出时补充中文识别、标点与时间戳 |
-| 最终兜底 | Whisper large-v3 / turbo | 前两级失败时自动回退 |
-
-通过 `.env` 中 `ASR_PRIMARY=paraformer` 或 `ASR_PRIMARY=whisper` 可切换主路径。详见 `.env.example`。
-
----
-
-## V0.1.11 新特性：数据一致性与流水线稳定性
-
-- 五开关独立生效（`auto_record` / `auto_analyze` / `auto_render` / `auto_approve` / `auto_upload`），阶段转换时实时读取配置
-- TaskWorker 真正并发 + 原子任务领取（防多 Worker 抢同一任务）
-- 任务心跳 + stale 恢复 + `failed_stage` 精确重试
-
----
-
-## V0.1.9 / V0.1.10 新特性：C / Cython / Rust 加速模块
-
-自 V0.1.9 起，核心 CPU 热点使用多语言加速（自动检测 → 编译 → 回退纯 Python）：
-
-- **Aho-Corasick 多模式匹配** 20–50×（C）
-- **余弦相似度 / 字符 bigram** 3–8×（C）
-- **聚类矩阵 O(N²)** 5–15× 纯 Python / 30–80× Rust+rayon 并行
-- **弹幕复读率 / 情绪强度 / 高频代表消息**（Rust）
-- **弹幕基线分桶 + 中位数** 10–30×（Cython）
-- **SRT 字幕组装** 3–8×（Cython）
-- **音频局部峰值筛选 / 连续静音区间**（Cython）
-- **热点滚动历史稳健增幅**（Cython）
-
-- **C 扩展编译**: 安装 [Visual Studio Build Tools](https://visualstudio.microsoft.com/zh-hans/downloads/)（勾选「C++ 桌面开发」），然后:
-  ```powershell
-  python setup_c.py build_ext --inplace
-  ```
-- **Rust 编译 (可选)**: 安装 [Rust](https://rustup.rs) 后运行 `python tools/native/build_rust.py`
-- **启动确认**: 查看日志中的 `app.accelerators._c_speedups`、`_cython_speedups`、`_rust_speedups` 加载结果；Full Bundle 冒烟会强制确认三种当前原生后端均已启用。
-
----
 
 ---
 
@@ -268,7 +139,7 @@ resources/engine_pack_info.json (本地 Engine Pack 构建后可供 Lite/Full EX
 - 已安装模型有效时不会重复解压或下载
 - 应用升级不会自动删除模型目录
 
-## 快速开始（零门槛）
+## 下载与启动
 
 ### 方式一：下载 Lite 版（高级用户，体积小）
 
@@ -286,7 +157,7 @@ resources/engine_pack_info.json (本地 Engine Pack 构建后可供 Lite/Full EX
 | ⑥ | 生成 `.env` 配置 | — | 含合理默认值 |
 
 > **断点续跑**：模型下载 staging 以引擎内容指纹持久化；每个引擎完成后立即独立原子提交。后续引擎失败或进程中断不会回滚已经成功的引擎，再次双击只续传未完成部分。
-> **源码固定**：本次发布源码来源固定为 Commit `069b68a`，不随 GitHub 上游变动。
+> **源码固定**：发行包使用冻结的源码快照，不随上游更新而自动改变。源码提交可在 `version.json` 和 Payload 清单中核对。
 
 4. 部署完成后按 Launcher 输出的地址打开 **Web 管理控制台**（首次默认 `http://127.0.0.1:8000`；未自动弹出时请手动访问）
 
@@ -308,7 +179,9 @@ python scripts/build_portable_runtime_wheels.py --output-dir packaging/portable/
 python scripts/generate_portable_runtime_locks.py
 ```
 
-Release CI 会对两套锁执行 `pip download --require-hashes`，并分别进行 Python 3.11 和 3.12 的全新虚拟环境 `--no-index` 离线安装、`pip check` 与核心模块导入测试。它还会让冻结的 Lite Launcher 在空目录真实经过 Runtime 安装、`.venv` 依赖安装和在线模型 helper 边界；CI 专用 tiny provider 只替换数 GB 的远端模型字节，不绕开逐引擎 staging、内容指纹和原子提交。Smoke 会写入一个非默认持久化 Web 端口并核对 Launcher 命令、运行时设置 API 与重启状态，再在第 2 个引擎注入 Hub 故障，确认重启复用已完成引擎，并验证无 Engine Pack 的严格离线启动、联网重建损坏的 Lite `.venv` 且不改写持久化模型，以及实际 Python 3.14 被明确拒绝且不被删除。Lite 只内嵌 bootstrap wheels，完整 `.venv` 损坏后仍需联网按锁文件恢复依赖；Full 的完整 wheelhouse 才支持依赖离线重装。tiny provider 同时要求 `CI=true` 与专用开关，普通用户进程无法启用。Full Launcher 会自动发现安装目录下的 `vendor/wheels` 并强制使用 `--no-index --require-hashes`，无需设置 `PIP_NO_INDEX`；若 Full wheelhouse 缺失或为空则直接失败，不会回退到在线镜像。发布前还会交叉核对 Payload、Lite、Full 的版本、源码基线、构建提交与实际 SHA-256/CRC32。不要通过删除哈希、添加 `--no-deps` 或跳过离线安装来规避锁文件错误。
+Release CI 对两套锁执行带哈希校验的下载、全新虚拟环境离线安装、`pip check` 和核心模块导入测试，并验证 Launcher 安装、模型准备中断恢复、持久化端口和虚拟环境修复。发布前交叉核对 Payload、Lite、Full 的版本、源码与构建提交，以及实际 SHA-256 / CRC32。
+
+Lite 的 bootstrap wheels 仅用于引导安装，完整虚拟环境损坏后仍需联网恢复；Full 从 `vendor/wheels` 离线恢复依赖，目录缺失或为空时直接报错。维护依赖锁时，保留完整依赖和哈希校验，不通过跳过依赖或离线安装检查绕过兼容错误。
 
 ### 方式三：开发者手动构建当前发行物
 
@@ -334,7 +207,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 ├── launcher.py                      # launcher.exe 的 Python 源码（可选，便于审查）
 ├── build_exe.py                     # Lite 版构建 (PyInstaller one-file)
 ├── build_full_bundle.py             # Full 完整包构建脚本
-├── build_payload.py                 # Payload 构建器 (069b68a → source_payload.zip)
+├── build_payload.py                 # Payload 构建器 (冻结源码 → source_payload.zip)
 ├── portable_launcher.spec           # PyInstaller 规格文件
 ├── pip.ini                          # pip 镜像源配置（阿里云 + 清华备用）
 ├── .env.example                     # 配置模板（launcher.exe 自动生成 .env）
@@ -349,7 +222,7 @@ packaging/portable/                     # ★ 即插即用分发版根目录 (�
 └── README.md                        # 本文件
 ```
 
-> **源码去哪了？** `app/` `config/` `pyproject.toml` 等业务文件**不在分发目录中**，而是内嵌在 `launcher.exe` 内部作为 **source_payload.zip**（从当前发布基线 Commit `069b68a` 提取，SHA-256 可校验）。`launcher.exe` 首次运行时自动将 Payload 解压到 `runtime/releases/` 目录。PnP 目录始终保持最小体积，源码不受工作区未提交内容影响。
+> **源码去哪了？** `app/` `config/` `pyproject.toml` 等业务文件**不在分发目录中**，而是内嵌在 `launcher.exe` 内部作为 **source_payload.zip**（从配置中固定的发布提交提取，SHA-256 可校验）。`launcher.exe` 首次运行时自动将 Payload 解压到 `runtime/releases/` 目录。PnP 目录始终保持最小体积，源码不受工作区未提交内容影响。
 
 ### 运行时动态生成（首次启动后）
 

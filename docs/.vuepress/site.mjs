@@ -168,7 +168,7 @@ export const sections = [
           ],
           [
             'docs/development/douyin-plugin-handoff.md',
-            '抖音平台接入要求',
+            '抖音直播源接入',
             '/development/douyin.html',
           ],
         ],
