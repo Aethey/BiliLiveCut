@@ -17,7 +17,7 @@ npm --prefix docs run dev
 DOCS_BASE=/ npm --prefix docs run dev
 ```
 
-生产构建和配置检查：
+生产构建和配置检查（Windows、Linux 均受支持，CI 按顺序验证两个平台）：
 
 ```bash
 npm --prefix docs run check

@@ -34,7 +34,7 @@ export default defineUserConfig({
   description: '从直播录制、转写与高光识别，到审核出片的使用、部署与开发指南。',
   base: siteBase(),
   pagePatterns: pages,
-  clientConfigFile: path.join(here, 'client.mjs'),
+  clientConfigFile: path.join(here, 'client.mjs').split(path.sep).join('/'),
   dest: path.join(here, 'dist'),
   temp: path.join(here, '.temp'),
   cache: path.join(here, '.cache'),

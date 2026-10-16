@@ -34,8 +34,13 @@ concurrency:
 
 jobs:
   build:
-    name: Build and check documentation
-    runs-on: ubuntu-latest
+    name: Build and check documentation (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     env:
       DOCS_BASE: ${{ vars.DOCS_BASE }}
@@ -59,12 +64,12 @@ jobs:
         if: github.event_name == 'pull_request' || github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: documentation-preview
+          name: documentation-preview-${{ runner.os }}
           path: docs/.vuepress/dist/
           if-no-files-found: error
           retention-days: 7
       - name: Upload Pages artifact
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: runner.os == 'Linux' && github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           name: github-pages

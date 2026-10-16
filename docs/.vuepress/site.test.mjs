@@ -97,3 +97,10 @@ test('categories own unique routes and contain only their own sidebar documents'
     assert.ok(!pages.includes(`docs/${file}.md`), file)
   }
 })
+
+// VuePress embeds this path directly in an import string in generated JavaScript.
+test('client configuration uses a portable JavaScript import path', async () => {
+  const { default: config } = await import('./config.mjs')
+  assert.equal(config.clientConfigFile.includes('\\'), false)
+  assert.ok(existsSync(config.clientConfigFile))
+})
