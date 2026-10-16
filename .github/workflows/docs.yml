@@ -47,6 +47,7 @@ jobs:
       pages: read
     env:
       DOCS_BASE: ${{ vars.DOCS_BASE }}
+      GITHUB_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
