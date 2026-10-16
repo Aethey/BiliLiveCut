@@ -1,29 +1,80 @@
-# 文档索引
+---
+home: true
+title: BiliLiveCut
+permalink: /
+config:
+  - type: hero
+    effect: tint-plate
+    effectConfig:
+      light: '240,248,252'
+      dark: '22,30,38'
+    hero:
+      name: BiliLiveCut
+      tagline: 从录播到粗剪切片
+      text: 录制、转写、识别高光与人工审核，将直播内容和录播转换为高光切片。
+      actions:
+        - theme: brand
+          text: 快速开始
+          link: /guide/quick-start.html
+        - theme: alt
+          text: 安装部署
+          link: /guide/installation.html
+        - theme: alt
+          text: GitHub
+          link: https://github.com/StarGazerQQD/BiliLiveCut
+  - type: features
+    features:
+      - title: 直播录制与录播导入
+        icon: 🎬
+        details: 自动检测开播并录制，也可导入已有视频与弹幕，在同一工作台继续分析。
+        link: /features/imports.html
+      - title: 多引擎语音转写
+        icon: 🎙️
+        details: 使用 FunASR、Whisper 等本地引擎处理语音，支持 CPU 运行与远程转写。
+        link: /features/asr.html
+      - title: 高光识别与人工审核
+        icon: ✨
+        details: 结合弹幕、音频与语义信号生成候选，通过时间线和人工审核确定精彩片段。
+        link: /reference/hotspot-detector.html
+      - title: 剪辑出片与扩展
+        icon: ✂️
+        details: 生成字幕、封面和切片，按需上传；通过插件扩展直播源与分析能力。
+        link: /development/plugins.html
+  - type: custom
+---
 
-项目简介和安装入口见[项目 README](../README.md)。这里按使用和维护需求组织持续更新的文档。
+## 选择适合你的运行方式
 
-## 使用与部署
+- **Windows 桌面**：使用 [Portable](../packaging/portable/USER_GUIDE_ZH.md)，Full 自带 Python 与 FFmpeg。
+- **Linux 无头服务器**：按[服务器部署指南](guide/linux-server.md)安装，在自己的浏览器中完成扫码登录和日常管理。
+- **Docker**：按[容器部署说明](../packaging/docker/README.md)运行，持久化保存配置、模型与录制数据。
+- **Python 源码**：按[源码部署指南](guide/source.md)安装，在 Windows、macOS 或 Linux 上通过 Python 启动。
 
-| 文档 | 内容 |
-| --- | --- |
-| [Portable 小白使用说明](../packaging/portable/USER_GUIDE_ZH.md) | 下载、校验、首次启动、模型准备和第一次录制 |
-| [使用指南](usage.md) | 源码安装、CLI、录制分析、Web、审核、上传和排错 |
-| [录播导入](recording-import.md) | 已有视频和 XML、JSON、SRT、ASS 弹幕的预处理、本地转写、LLM 分析与恢复 |
-| [配置参考](configuration.md) | 配置字段、作用范围、持久化和生效时间 |
-| [Docker 部署](../packaging/docker/README.md) | 容器构建、运行与数据目录 |
+## 源码快速启动
 
-## 开发与维护
+在全新的项目目录中，准备 Python 3.12、FFmpeg 和编译工具。将 `.env.example` 复制为 `.env`，已存在时保留原文件，按需编辑后执行：
 
-| 文档 | 内容 |
-| --- | --- |
-| [开发与维护](development.md) | 验证命令、源码冻结、发行维护和文档约定 |
-| [热点检测器](hotspot-detector.md) | 事件生命周期、信号融合、成片评分与 ASR 降级 |
-| [原生加速模块](native-acceleration.md) | C、Cython、Rust 边界、构建与诊断 |
-| [Portable 构建说明](../packaging/portable/README.md) | Lite/Full、Engine Pack、Payload、Runtime 与发行检查 |
-| [插件开发](../plugin/README.md) | 插件 API、清单 Schema 和示例 |
-| [直播源插件](live-source-plugins.md) | 平台身份、录制/监控契约、可选弹幕、安装与真实 FFmpeg 验收 |
-| [抖音插件接入交接](douyin-plugin-handoff.md) | 可直接交给独立插件项目的公共接口与实施要求 |
+```bash
+uv sync --locked --no-dev --extra web
+uv run --no-sync blc init
+uv run --no-sync blc serve
+```
 
-## 版本历史
+打开 `http://127.0.0.1:8000`，添加直播间或导入已有视频。完整安装步骤及 venv + pip 方式见[源码部署](guide/source.md)。
 
-当前版本系列的更新集中在 [CHANGELOG](../CHANGELOG.md)，历史系列见[归档索引](changelog/CHANGELOG_INDEX.md)。历史记录描述当时行为，当前使用方式以以上指南为准。
+::: tip 准备转写与分析
+上面的命令先安装 Web 管理和录制所需依赖。需要本地转写与 LLM 分析时，按[完整安装说明](guide/source.md#按需安装转写与分析依赖)补充可选依赖、模型和服务配置。管理员登录与 Bilibili 扫码登录是两个独立步骤。
+:::
+
+## 从哪里开始
+
+- 第一次使用：阅读[安装方式导览](guide/getting-started.md)和[使用指南](features/README.md)。
+- 分析已有视频：查看[录播导入与恢复](features/recording-import.md)。
+- 调整常用项与高级参数：查看[配置参考](guide/configuration.md)。
+- 修改 Web 页面：查看 [Web 页面开发与验证](development/frontend.md)。
+- 开发新平台或分析能力：查看[插件开发](../plugin/README.md)与[直播源契约](development/live-source-plugins.md)。
+- 了解版本变化：查看[更新记录](../CHANGELOG.md)，完整目录见[文档导览](guide/README.md)。
+
+::: warning Alpha 版本升级
+升级时保留旧运行目录，在独立目录初始化当前版本。数据库的应用版本必须与程序一致，即使 Schema 编号相同，也不能直接复用旧数据库。详见[升级说明](guide/getting-started.md#升级前保留旧环境)。
+:::

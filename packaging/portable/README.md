@@ -2,11 +2,11 @@
 
 **版本：V0.1.19.0 Alpha** (`0.1.19.0-alpha`)
 
-本版将 PCM、聚类、新颖度、ASR 文本检测与复核统计收敛到独立 CPU 内核，优化滚动基线和原生模块分配；修复模型下载进度初始化死锁。保留模型/CUDA 调用与已有安装契约。详细排错见[使用指南](../../docs/usage.md#排错)。升级仍使用全新目录与新数据库。
+本版将 PCM、聚类、新颖度、ASR 文本检测与复核统计收敛到独立 CPU 内核，优化滚动基线和原生模块分配；修复模型下载进度初始化死锁。保留模型/CUDA 调用与已有安装契约。详细排错见[使用指南](../../docs/features/README.md#排错)。升级仍使用全新目录与新数据库。
 
 > **普通用户请先阅读：[Portable 小白使用说明](USER_GUIDE_ZH.md)**。该说明按 Windows 用户从下载、校验、解压、首次启动到第一次录制的顺序编写。
 
-项目入口见[README](../../README.md)，业务链路见[使用指南](../../docs/usage.md)与[热点检测器](../../docs/hotspot-detector.md)，源码冻结和验证约定见[开发与维护](../../docs/development.md)。完整更新记录见[主 Changelog](../../CHANGELOG.md)与[历史归档索引](../../docs/changelog/CHANGELOG_INDEX.md)。
+项目入口见[README](../../README.md)，业务链路见[使用指南](../../docs/features/README.md)与[热点检测器](../../docs/reference/hotspot-detector.md)，源码冻结和验证约定见[开发与维护](../../docs/development/environment.md)。完整更新记录见[主 Changelog](../../CHANGELOG.md)与[历史归档索引](../../docs/changelog/CHANGELOG_INDEX.md)。
 
 BiliLiveCut 是一个**全自动 AI 直播切片系统**：监听 Bilibili 直播间 → 实时录制 + 转写 → 生成场次高光时间线 → 审核动态切片 → 生成剪辑成品 + 文案。
 
@@ -51,7 +51,7 @@ Payload 从 **EXE 内置资源**释放，版本固定并校验 SHA-256，安装�
 
 ## 系统要求
 
-Full 默认随附 CPU 版依赖。使用 NVIDIA GPU 转写前，可运行 `BiliLiveCut-Portable.exe --torch-runtime cu126`（或 `cu130`）安装官方哈希锁定的 CUDA 配套包，完成后退出；选择持久化并在后续启动、虚拟环境修复时保留。完全离线需把对应 ABI 的 CUDA wheel 放入 `vendor/wheels/` 并加 `--offline`，恢复 CPU 使用 `--torch-runtime cpu`。实际显卡、驱动、Torch 与 CTranslate2 能力分别诊断，详见[CUDA 使用说明](../../docs/usage.md#cuda-安装与实际设备确认)。
+Full 默认随附 CPU 版依赖。使用 NVIDIA GPU 转写前，可运行 `BiliLiveCut-Portable.exe --torch-runtime cu126`（或 `cu130`）安装官方哈希锁定的 CUDA 配套包，完成后退出；选择持久化并在后续启动、虚拟环境修复时保留。完全离线需把对应 ABI 的 CUDA wheel 放入 `vendor/wheels/` 并加 `--offline`，恢复 CPU 使用 `--torch-runtime cpu`。实际显卡、驱动、Torch 与 CTranslate2 能力分别诊断，详见[CUDA 使用说明](../../docs/features/asr.md#cuda-安装与实际设备确认)。
 
 | 项目 | 最低 | 推荐 |
 |------|------|------|

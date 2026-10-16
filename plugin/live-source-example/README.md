@@ -38,4 +38,4 @@ python -m pytest tests/integration/test_live_source_example.py --fail-on-skip
 FFmpeg 渲染与文案生成；仅 ASR 模型推理和外部 LLM 调用由离线替身提供。
 还验证录制中停用、来源重启恢复、设置隐藏回显、跨平台 Cookie 隔离和任务幂等。
 
-完整字段、生命周期、安装和 Portable 限制见 [直播源插件文档](../../docs/live-source-plugins.md)。
+完整字段、生命周期、安装和 Portable 限制见 [直播源插件文档](../../docs/development/live-source-plugins.md)。

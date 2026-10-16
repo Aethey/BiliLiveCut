@@ -23,7 +23,7 @@
 
 ### Windows Portable
 
-需要 NVIDIA GPU 转写时，先按 [CUDA 安装与实际设备确认](docs/usage.md#cuda-安装与实际设备确认)安装匹配的运行时，再选择 ASR 设备；只修改 `.env` 为 `cuda` 不会安装 CUDA 版 PyTorch。
+需要 NVIDIA GPU 转写时，先按 [CUDA 安装与实际设备确认](docs/features/asr.md#cuda-安装与实际设备确认)安装匹配的运行时，再选择 ASR 设备；只修改 `.env` 为 `cuda` 不会安装 CUDA 版 PyTorch。
 
 1. 从 [Releases](https://github.com/StarGazerQQD/BiliLiveCut/releases) 下载 Portable **Full** 或 **Lite**。Full 自带 Python、依赖和 FFmpeg；Lite 需要准备 Python 3.11/3.12、FFmpeg，并在首次安装时下载依赖。
 2. 按 [Portable 小白使用说明](packaging/portable/USER_GUIDE_ZH.md) 完成启动和模型准备。两种发行包均不含 ASR 模型，可在线下载，或使用单独的 Engine Pack。
@@ -33,7 +33,7 @@ Engine Pack 的本地构建与导入方式见 [Portable 构建说明](packaging/
 
 ### 源码运行
 
-准备 FFmpeg，在已下载的项目根目录选择一种安装方式。C/Cython 扩展需要编译器与 Python 开发头文件，准备方法见[开发说明](docs/development.md#原生扩展构建与安装排错)。
+准备 FFmpeg，在已下载的项目根目录选择一种安装方式。C/Cython 扩展需要编译器与 Python 开发头文件，准备方法见[开发说明](docs/development/environment.md#原生扩展构建与安装排错)。
 
 使用 [uv](https://docs.astral.sh/uv/getting-started/installation/)（默认 Python 3.12），以下 PowerShell 命令安装运行依赖和全部 ASR、LLM 后端：
 
@@ -44,7 +44,7 @@ uv run --locked --no-dev --extra web --extra asr-all --extra llm blc init
 uv run --locked --no-dev --extra web --extra asr-all --extra llm blc serve
 ```
 
-仅录制和使用 Web 后台时可以省略 `--extra asr-all --extra llm`，后续 `uv run` 也使用同样的 extras。开发环境直接执行 `uv sync --locked`，详见[开发说明](docs/development.md)。
+仅录制和使用 Web 后台时可以省略 `--extra asr-all --extra llm`，后续 `uv run` 也使用同样的 extras。开发环境直接执行 `uv sync --locked`，详见[开发说明](docs/development/environment.md)。
 
 使用传统 venv + pip（Python 3.11/3.12），安装方式继续保留：
 
@@ -57,7 +57,7 @@ python -m app.cli init
 python -m app.cli serve
 ```
 
-默认访问 `http://127.0.0.1:8000`。直播间、录制与大部分业务配置都可在 Web 页面管理；安装镜像、CLI 录制和排错见[使用指南](docs/usage.md)。Docker 部署见 [Docker 说明](packaging/docker/README.md)。
+默认访问 `http://127.0.0.1:8000`。直播间、录制与大部分业务配置都可在 Web 页面管理；安装镜像、CLI 录制和排错见[使用指南](docs/features/README.md)。Docker 部署见 [Docker 说明](packaging/docker/README.md)。
 
 ## 使用与升级注意事项
 
@@ -69,17 +69,19 @@ python -m app.cli serve
 
 ## 文档
 
+按任务浏览[文档导览](docs/guide/README.md)；新用户先看[安装方式](docs/guide/getting-started.md)。文档站的本地预览与 GitHub Pages 配置见[维护说明](docs/development/documentation.md)。
+
 | 需要了解 | 入口 |
 | --- | --- |
 | 下载、首次启动与第一次录制 | [Portable 小白使用说明](packaging/portable/USER_GUIDE_ZH.md) |
-| CLI、转写、审核、上传与排错 | [使用指南](docs/usage.md) |
-| 已有视频、弹幕导入与智能分析 | [录播导入](docs/recording-import.md) |
-| Web 设置、环境变量与生效边界 | [配置参考](docs/configuration.md) |
-| 高光事件、评分与剪辑边界 | [热点检测器](docs/hotspot-detector.md) |
-| 开发、测试与发行维护 | [开发与维护](docs/development.md) |
+| CLI、转写、审核、上传与排错 | [使用指南](docs/features/README.md) |
+| 已有视频、弹幕导入与智能分析 | [录播导入](docs/features/recording-import.md) |
+| Web 设置、环境变量与生效边界 | [配置参考](docs/guide/configuration.md) |
+| 高光事件、评分与剪辑边界 | [热点检测器](docs/reference/hotspot-detector.md) |
+| 开发、测试与发行维护 | [开发与维护](docs/development/environment.md) |
 | 插件接口与示例 | [插件开发](plugin/README.md) |
-| 直播源契约、平台身份及房间登记 | [直播源插件](docs/live-source-plugins.md) |
-| 全部指南与版本历史 | [文档索引](docs/README.md) · [CHANGELOG](CHANGELOG.md) |
+| 直播源契约、平台身份及房间登记 | [直播源插件](docs/development/live-source-plugins.md) |
+| 全部指南与版本历史 | [文档索引](docs/guide/README.md) · [CHANGELOG](CHANGELOG.md) |
 
 ## 鸣谢
 

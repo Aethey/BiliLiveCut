@@ -24,6 +24,9 @@ def open_path(path: str | Path) -> bool:
     :param path: 目录或文件路径。
     :returns: 成功发起打开返回 ``True``;失败返回 ``False``(不抛异常)。
     """
+    if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        logger.debug("无图形会话，跳过打开目录: {}", path)
+        return False
     p = Path(path)
     target = str(p if p.exists() else p.parent)
     try:

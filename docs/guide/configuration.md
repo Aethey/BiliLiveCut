@@ -4,7 +4,7 @@
 
 当前注册表共 165 项：155 项 Settings 与 10 项运行时配置；评分配置含 8 个权重和 6 个标量。表中默认值均来自代码/项目默认，不导出环境凭据。
 
-ASR 设备值只选择推理设备，不安装 GPU 依赖；CPU 版 Torch 无法因填写 `cuda` 而使用 GPU。Portable 的 `--torch-runtime` 为独立安装操作，选择保存在 `config/torch-runtime.json`，不增加业务注册表字段。安装、离线 wheel 和实际设备诊断见[CUDA 使用说明](usage.md#cuda-安装与实际设备确认)。
+ASR 设备值只选择推理设备，不安装 GPU 依赖；CPU 版 Torch 无法因填写 `cuda` 而使用 GPU。Portable 的 `--torch-runtime` 为独立安装操作，选择保存在 `config/torch-runtime.json`，不增加业务注册表字段。安装、离线 wheel 和实际设备诊断见[CUDA 使用说明](../features/asr.md#cuda-安装与实际设备确认)。
 
 业务默认来自环境或项目配置；Web 覆盖以原键保存在 AppSetting。保存先整体校验，再在单一事务中提交；revision 防止旧表单覆盖。字段缺省保持原值，reset 删除覆盖并恢复环境/项目默认；凭据空白保持，clear 明确清空并阻止环境回退。
 
@@ -186,7 +186,7 @@ ASR 设备值只选择推理设备，不安装 GPU 依赖；CPU 版 Torch 无法
 - 房间配置：LiveRoom 的授权、自动录制/分析/剪辑/投稿/审核、预约、阈值、弹幕情绪，以及 room_config_json 的热词、别名、插件模式和评分参数，保留房间接口；具体房间值不被无声改成全局继承。
 - LLM 服务商：llm_providers 保存完整有序列表；按 ID 保留空白密钥，clear_api_key 明确清除，重复 ID 和非有限价格拒绝保存。连接缓存按服务商 ID 与地址索引，通过常量时间比较 SDK 已持有的完整凭据值判断能否复用；凭据及其摘要不进入缓存键，旧连接在活动调用结束后退役。
 - Cookie：登录接口和统一配置读取相同键；清空不会重新启用环境 Cookie。
-- 插件：plugin.<id>.setting.<key> 按插件 schema 整体验证和单事务保存；密码 value/default 均遮蔽；null 明确清空密码，空字符串保持。
+- 插件：`plugin.<id>.setting.<key>` 按插件 schema 整体验证和单事务保存；密码 value/default 均遮蔽；null 明确清空密码，空字符串保持。
 - Launcher：web_port 位于 config/launcher.json，原子替换，下一次启动生效。源码 CLI 未传 --port 时也读取该文件，显式 --port 优先。端口与数据库属于不同保存域；旧联合接口先验证，并在数据库提交失败时补偿恢复端口，进程/系统在跨域提交间崩溃仍不具备跨文件 ACID 保证。
 
 ## 部署和算法边界
@@ -207,7 +207,7 @@ GET /api/settings/configuration 返回脱敏字段清单；PATCH 同地址接受
 
 ## 录制重试保护
 
-`recording_reconnect_max_attempts` 与 `recording_reconnect_max_elapsed_s` 分别限制连续失败次数和重试时长；默认 20 次 / 180 秒。单项为 0 时关闭该项，两项同时为 0 仍保留 20 次安全上限。只有实际媒体达到目标分段时长才视为恢复，短末片不会重置预算。永久录制错误暂停自动重新启动，需处理后手动恢复。诊断与最小日志采集见 [Portable 排错](../packaging/portable/USER_GUIDE_ZH.md#反复显示录制异常)。
+`recording_reconnect_max_attempts` 与 `recording_reconnect_max_elapsed_s` 分别限制连续失败次数和重试时长；默认 20 次 / 180 秒。单项为 0 时关闭该项，两项同时为 0 仍保留 20 次安全上限。只有实际媒体达到目标分段时长才视为恢复，短末片不会重置预算。永久录制错误暂停自动重新启动，需处理后手动恢复。诊断与最小日志采集见 [Portable 排错](../../packaging/portable/USER_GUIDE_ZH.md#反复显示录制异常)。
 
 ## ASR 与 LLM 有限等待
 

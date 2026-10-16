@@ -699,6 +699,7 @@ class TestOpenPath:
     def test_linux_branch(self, monkeypatch: MonkeyPatch) -> None:
         """Linux: subprocess.Popen(['xdg-open', ...]) called."""
         monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setenv("DISPLAY", ":0")
         mock_popen = MagicMock()
         monkeypatch.setattr(subprocess, "Popen", mock_popen)
 
@@ -714,6 +715,7 @@ class TestOpenPath:
     def test_subprocess_exception_returns_false(self, monkeypatch: MonkeyPatch) -> None:
         """Popen exception returns False gracefully."""
         monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setenv("DISPLAY", ":0")
 
         def _fake_popen(*_a, **_kw):
             raise FileNotFoundError("xdg-open not found")
@@ -724,6 +726,33 @@ class TestOpenPath:
 
         result = open_path("test_path")
         assert result is False
+
+    def test_headless_linux_does_not_launch_or_warn(self, monkeypatch: MonkeyPatch) -> None:
+        """无图形会话时安静返回，不尝试启动文件管理器。"""
+        from app.core import osutil
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.delenv("DISPLAY", raising=False)
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        process = MagicMock()
+        log = MagicMock()
+        monkeypatch.setattr(subprocess, "Popen", process)
+        monkeypatch.setattr(osutil, "logger", log)
+        assert osutil.open_path(".") is False
+        process.assert_not_called()
+        log.warning.assert_not_called()
+
+    def test_wayland_desktop_can_open_directory(self, monkeypatch: MonkeyPatch) -> None:
+        """只有 Wayland 会话的 Linux 桌面仍可请求打开目录。"""
+        from app.core.osutil import open_path
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.delenv("DISPLAY", raising=False)
+        monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+        process = MagicMock()
+        monkeypatch.setattr(subprocess, "Popen", process)
+        assert open_path(".") is True
+        process.assert_called_once_with(["xdg-open", "."])
 
     def test_path_object_input(self, monkeypatch: MonkeyPatch) -> None:
         """Path object input handled correctly."""

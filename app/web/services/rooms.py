@@ -40,7 +40,7 @@ from app.web.services.notifications import push_notification
 
 
 async def _on_session_end(session_id: int) -> None:
-    """录制会话结束时的处理:上传模块关闭则弹出切片目录。
+    """登记后续分析并报告录制结果；桌面环境可请求打开成品目录。
 
     :param session_id: 结束的会话 id。
     """
@@ -62,32 +62,47 @@ async def _on_session_end(session_id: int) -> None:
             reason="session_finalized_without_reanalysis",
             force=True,
         )
+    with get_session() as db:
+        session = db.get(RecordingSession, session_id)
+        session_status = session.status if session is not None else None
     clips_path = str(clips_dir())
+    data = {
+        "clips_dir": clips_path,
+        "ready_dir": str(ready_to_upload_dir()),
+        "session_id": session_id,
+        "session_status": session_status,
+        "final_reanalysis": reanalysis_requested,
+        "timeline_summary": summary_requested,
+        "directory_open_requested": False,
+    }
+    if session_status == SessionStatus.ERROR:
+        push_notification(
+            f"会话 #{session_id} 录制异常结束，请查看录制状态与错误日志。"
+            "已有媒体的分析和成品状态请查看任务队列与成品列表。",
+            kind="error",
+            data=data,
+        )
+        logger.info("会话 {} 录制异常结束，后续处理已登记", session_id)
+        return
     if settings_store.upload_active():
         push_notification(
-            f"会话 #{session_id} 已结束。上传模块开启,成品将自动进入上传队列。",
-            kind="success",
-            data={
-                "session_id": session_id,
-                "final_reanalysis": reanalysis_requested,
-                "timeline_summary": summary_requested,
-            },
+            f"会话 #{session_id} 录制已结束，上传模块已开启。分析、成品和上传状态请查看任务队列与成品列表。",
+            kind="info",
+            data=data,
         )
         return
-    # 上传模块关闭:弹出(在本机文件管理器打开)切片所在目录,并通知前端。
-    open_path(clips_path)
+    # 录制收尾不代表尾段分析或渲染已经完成，不宣称目录中已有成品。
+    data["directory_open_requested"] = await asyncio.to_thread(open_path, clips_path)
     push_notification(
-        f"本场直播(会话 #{session_id})已结束,上传模块未开启。切片已保存到:{clips_path}",
-        kind="success",
-        data={
-            "clips_dir": clips_path,
-            "ready_dir": str(ready_to_upload_dir()),
-            "session_id": session_id,
-            "final_reanalysis": reanalysis_requested,
-            "timeline_summary": summary_requested,
-        },
+        f"会话 #{session_id} 录制已结束，上传模块未开启。"
+        f"分析和成品状态请查看任务队列与成品列表。切片目录: {clips_path}",
+        kind="info",
+        data=data,
     )
-    logger.info("会话 {} 结束,上传关闭,已弹出切片目录: {}", session_id, clips_path)
+    if data["directory_open_requested"]:
+        logger.info("会话 {} 录制结束，已请求打开切片目录: {}", session_id, clips_path)
+    else:
+        logger.info("会话 {} 录制结束，切片目录: {}", session_id, clips_path)
 
 
 @dataclass(slots=True)

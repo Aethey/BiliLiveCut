@@ -54,7 +54,7 @@ def require_torch_device(device: str, *, role: str) -> None:
         raise ASRDeviceError(
             f"{role} 请求 {device}，但 PyTorch {build} 是 CPU 版。"
             "仅修改 ASR_*_DEVICE 不会安装 CUDA；Portable 请运行 --torch-runtime cu126 或 cu130，"
-            "源码安装请按 docs/usage.md 的 CUDA 锁文件说明修复。"
+            "源码安装请按 docs/features/asr.md 的 CUDA 锁文件说明修复。"
         )
     if not torch.cuda.is_available() or index >= torch.cuda.device_count():
         raise ASRDeviceError(
