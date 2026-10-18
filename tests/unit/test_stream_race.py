@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import json
+import subprocess
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -9,8 +12,77 @@ from urllib.parse import urlsplit
 import pytest
 
 from app.core.ffmpeg_errors import FfmpegErrorType
+from app.core.process_control import ProcessCancelledError
 from app.plugins.live_source import StreamSpec
 from app.recording.stream_race import StreamAttempt, StreamRace
+
+
+@pytest.mark.parametrize("evidence", ["video", "audio_only", "single_frame", "invalid_json", "timestamp_na"])
+async def test_progress_without_frame_requires_actual_video_packets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, evidence: str
+) -> None:
+    attempt = StreamAttempt(streams("a")[0], tmp_path, "unique_")
+    (tmp_path / "unique_00000.ts").write_bytes(b"local candidate")
+    (tmp_path / "unique_00001.ts").touch()  # 分段切换后的空末片不能遮住已落盘的视频。
+    process = FakeProcess(1)
+    attempt.process = process
+
+    def probe(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert command[-1] == str(tmp_path / "unique_00000.ts")
+        assert command[command.index("-protocol_whitelist") + 1] == "file"
+        assert kwargs["timeout"] == 2.0
+        data = {
+            "streams": [{"codec_type": "audio" if evidence == "audio_only" else "video"}],
+            "packets": [{"dts_time": "1.0"}, {"dts_time": "1.6"}],
+        }
+        if evidence == "single_frame":
+            data["packets"] = [{"dts_time": "1.0"}]
+        if evidence == "timestamp_na":
+            data["packets"] = [{"dts_time": "N/A"}, {"dts_time": "nan"}]
+        return subprocess.CompletedProcess(command, 0, "{" if evidence == "invalid_json" else json.dumps(data))
+
+    monkeypatch.setattr("app.recording.stream_race.run_cancellable", probe)
+    process.stdout.feed_data(b"out_time_us=1000000\nprogress=continue\nout_time_us=1600000\nprogress=continue\n")
+    process.stdout.feed_eof()
+    await attempt.drain_progress()
+    assert attempt.ready.is_set() is (evidence == "video")
+    process.kill()
+
+
+async def test_missing_frame_without_own_output_cannot_win(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    attempt = StreamAttempt(streams("a")[0], tmp_path, "unique_")
+    (tmp_path / "other_00000.ts").write_bytes(b"not this candidate")
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        pytest.fail("不能读取其他候选或历史录制文件")
+
+    monkeypatch.setattr("app.recording.stream_race.run_cancellable", forbidden)
+    assert not await attempt._has_video_packets()
+
+
+async def test_local_video_probe_is_reaped_before_cancellation_finishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempt = StreamAttempt(streams("a")[0], tmp_path, "unique_")
+    (tmp_path / "unique_00000.ts").write_bytes(b"local candidate")
+    entered, exited = threading.Event(), threading.Event()
+
+    def probe(command: list[str], *, cancel_check, **kwargs: object) -> None:
+        entered.set()
+        while not cancel_check():
+            exited.wait(0.01)
+        exited.set()
+        raise ProcessCancelledError("test cancellation")
+
+    monkeypatch.setattr("app.recording.stream_race.run_cancellable", probe)
+    task = asyncio.create_task(attempt._has_video_packets())
+    assert await asyncio.to_thread(entered.wait, 2)
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert exited.is_set()
 
 
 class FakeProcess:

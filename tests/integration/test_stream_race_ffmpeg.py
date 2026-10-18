@@ -14,11 +14,12 @@ import pytest
 from app.core.config import settings
 from app.plugins.live_source import SourceRoom, StreamSpec
 from app.recording.recorder import Recorder
-from app.recording.stream_race import StreamRace
+from app.recording.stream_race import StreamAttempt, StreamRace
 
 
+@pytest.mark.parametrize("legacy_progress", [False, True])
 async def test_real_ffmpeg_keeps_winning_http_connection_and_writes_playable_segments(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy_progress: bool
 ) -> None:
     binary = shutil.which(settings.ffmpeg_path)
     assert binary is not None, "录制集成测试需要 FFmpeg"
@@ -34,9 +35,17 @@ async def test_real_ffmpeg_keeps_winning_http_connection_and_writes_playable_seg
             "-i",
             "testsrc2=size=160x90:rate=15",
             "-t",
-            "12",
+            "60",
             "-c:v",
             "mpeg2video",
+            "-b:v",
+            "500k",
+            "-minrate",
+            "500k",
+            "-maxrate",
+            "500k",
+            "-bufsize",
+            "1000k",
             "-g",
             "15",
             "-f",
@@ -50,6 +59,32 @@ async def test_real_ffmpeg_keeps_winning_http_connection_and_writes_playable_seg
     media = source.read_bytes()
     requests: list[str] = []
     shutdown = threading.Event()
+    probes = []
+    original_probe = StreamAttempt._has_video_packets
+
+    async def probe(attempt: StreamAttempt) -> bool:
+        result = await original_probe(attempt)
+        probes.append(result)
+        return result
+
+    monkeypatch.setattr(StreamAttempt, "_has_video_packets", probe)
+    if legacy_progress:
+        original_drain = StreamAttempt.drain_progress
+
+        async def drain_without_frames(attempt: StreamAttempt) -> None:
+            reader = attempt.process.stdout
+            original_readline = reader.readline
+
+            async def readline() -> bytes:
+                while line := await original_readline():
+                    if not line.startswith(b"frame="):
+                        return line
+                return b""
+
+            monkeypatch.setattr(reader, "readline", readline)
+            await original_drain(attempt)
+
+        monkeypatch.setattr(StreamAttempt, "drain_progress", drain_without_frames)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -61,12 +96,13 @@ async def test_real_ffmpeg_keeps_winning_http_connection_and_writes_playable_seg
                 if self.path == "/slow":
                     shutdown.wait(15)  # HTTP 200 但没有媒体，不能胜出。
                     return
-                while not shutdown.is_set():
-                    for offset in range(0, len(media), 16384):
-                        self.wfile.write(media[offset : offset + 16384])
-                        self.wfile.flush()
-                        if shutdown.wait(0.03):
-                            return
+                # 连续时间轴，避免重复拼接短 TS 引入倒退时间戳和损坏包。
+                for offset in range(0, len(media), 1316):
+                    self.wfile.write(media[offset : offset + 1316])
+                    self.wfile.flush()
+                    if shutdown.wait(0.01):
+                        return
+                shutdown.wait(15)
             except OSError:
                 pass  # 落选连接或测试结束后主动断开。
 
@@ -105,10 +141,15 @@ async def test_real_ffmpeg_keeps_winning_http_connection_and_writes_playable_seg
             assert process is not None and process.returncode is None
             pid = process.pid
             first_size = sum(path.stat().st_size for path in output.glob(f"{winner.prefix}*.ts"))
-            await asyncio.sleep(0.7)
+            for _ in range(30):
+                await asyncio.sleep(0.1)
+                if sum(path.stat().st_size for path in output.glob(f"{winner.prefix}*.ts")) > first_size:
+                    break
             assert process.pid == pid and process.returncode is None
             assert sum(path.stat().st_size for path in output.glob(f"{winner.prefix}*.ts")) > first_size
             assert requests.count("/good") == 1, "胜出线路不应重新连接"
+            if legacy_progress:
+                assert any(probes), "旧版无 frame 报告必须核验真实本地视频包"
             assert race.attempts[0].process.returncode is not None
             assert not list(output.glob(f"{race.attempts[0].prefix}*"))
             process.stdin.write(b"q\n")

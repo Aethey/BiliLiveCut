@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import json
+import math
 import re
+import subprocess
+import threading
 import time
 import uuid
 from collections import deque
@@ -16,7 +20,9 @@ from pathlib import Path
 from loguru import logger
 
 from app.core.async_cleanup import complete_cleanup
+from app.core.config import settings
 from app.core.ffmpeg_errors import FfmpegErrorType, classify_ffmpeg_error
+from app.core.process_control import ProcessCancelledError, run_cancellable
 from app.core.sanitize import sanitize_diagnostic
 from app.plugins.live_source import StreamSpec
 from app.recording.stream_failover import route_key
@@ -45,6 +51,7 @@ class StreamAttempt:
     progress_unsupported: bool = False
     resource_errno: int | None = None
     _output_error: bool = field(default=False, repr=False)
+    _last_video_probe_at: float = field(default=float("-inf"), repr=False)
 
     @property
     def segment_list(self) -> Path:
@@ -96,11 +103,12 @@ class StreamAttempt:
             self.remember(b"[oversized stderr line omitted]" if oversized else pending)
 
     async def drain_progress(self) -> None:
-        """视频包计数和媒体时间跨报告持续推进半秒才就绪，胜出后继续排空。"""
+        """观测实际视频进度；旧版缺少帧计数时核验本地视频包，胜出后继续排空。"""
         assert self.process is not None and self.process.stdout is not None
         frame = None
         times: dict[str, int] = {}
         baseline: tuple[int, int] | None = None
+        legacy_baseline: int | None = None
         while raw := await self.process.stdout.readline():
             key, _, value = raw.decode("ascii", errors="replace").strip().partition("=")
             if key in {"frame", "out_time_us", "out_time_ms"}:
@@ -130,8 +138,92 @@ class StreamAttempt:
                         baseline = (frame, media_us)
                     elif frame > baseline[0] and media_us - baseline[1] >= 500_000:
                         self.ready.set()
+                    legacy_baseline = None
+                elif frame is None and media_us is not None and not self.ready.is_set():
+                    # FFmpeg 6.1 在 -c copy 下没有 frame 字段。仅时间推进也可能只是音频，
+                    # 必须额外确认当前候选已写出的 TS 含有持续至少半秒的视频包。
+                    if legacy_baseline is None or media_us < legacy_baseline:
+                        legacy_baseline = media_us
+                    elif media_us - legacy_baseline >= 500_000 and await self._has_video_packets():
+                        self.ready.set()
                 frame = None
                 times.clear()
+
+    async def _has_video_packets(self) -> bool:
+        """只探测当前候选的本地 TS，不重新访问 CDN；限制频率、包数和执行时间。"""
+        now = time.monotonic()
+        if now - self._last_video_probe_at < 1.0:
+            return False
+        self._last_video_probe_at = now
+        paths = [
+            path
+            for path in self.out_dir.glob(f"{self.prefix}*.ts")
+            if not path.is_symlink() and path.is_file() and path.stat().st_size > 0
+        ]
+        if not paths:
+            return False
+        # 当前末片可能刚建立且仍为空；优先检查本候选首片已经落盘的视频。
+        path = min(paths, key=lambda item: item.name)
+        cancelled = threading.Event()
+        work = asyncio.create_task(
+            asyncio.to_thread(
+                run_cancellable,
+                [
+                    settings.ffprobe_path,
+                    "-v",
+                    "error",
+                    "-protocol_whitelist",
+                    "file",
+                    "-f",
+                    "mpegts",
+                    "-probesize",
+                    "524288",
+                    "-analyzeduration",
+                    "1000000",
+                    "-read_intervals",
+                    "%+#1024",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=codec_type:packet=dts_time,pts_time",
+                    "-of",
+                    "json",
+                    str(path),
+                ],
+                cancel_check=cancelled.is_set,
+                timeout=2.0,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+        )
+        try:
+            result = await asyncio.shield(work)
+            if result.returncode:
+                return False  # 文件仍在写入，下一次报告再核验。
+            data = json.loads(result.stdout)
+            if not any(stream.get("codec_type") == "video" for stream in data.get("streams", [])):
+                return False
+            timestamps = []
+            for packet in data.get("packets", []):
+                value = packet.get("dts_time", packet.get("pts_time"))
+                try:
+                    stamp = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(stamp):
+                    timestamps.append(stamp)
+            return len(timestamps) >= 2 and max(timestamps) - min(timestamps) >= 0.5
+        except (ProcessCancelledError, subprocess.TimeoutExpired, ValueError):
+            return False
+        finally:
+            cancelled.set()
+
+            async def finish() -> None:
+                # 取消也等到探测进程退出，随后才能安全删除落选候选的文件。
+                await asyncio.gather(work, return_exceptions=True)
+
+            await complete_cleanup(finish())
 
     async def close(self, *, discard: bool) -> None:
         """先回收进程和管道，再逐个删除本候选的临时文件。"""
