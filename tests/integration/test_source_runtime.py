@@ -288,6 +288,424 @@ async def test_reconnect_refreshes_credentials_and_reuses_durable_idempotent_pip
     assert not session_has_danmaku(recorder.session_id)
 
 
+async def test_recording_rotates_cdn_and_formats_with_fresh_credentials_and_finite_budget(
+    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from urllib.parse import urlsplit
+
+    room = await register_room("123", True, "external")
+    recorder = Recorder(room_source(room), room.id, metadata_prepared=True)
+    received: list[tuple[str, str, str]] = []
+    waits: list[float] = []
+    messages: list[str] = []
+    routes = [
+        ("a.invalid", "hls", "ts"),
+        ("b.invalid", "hls", "ts"),
+        ("c.invalid", "hls", "fmp4"),
+        ("d.invalid", "flv", "flv"),
+    ]
+
+    async def streams(room: SourceRoom, preference: StreamPreference) -> list[StreamSpec]:
+        runtime.stream_calls += 1
+        return [
+            StreamSpec(
+                url=f"https://{host}/private-path-{runtime.stream_calls}?token=private-{runtime.stream_calls}",
+                transport=transport,
+                container=container,
+                headers={"X-Secret": f"header-private-{runtime.stream_calls}"},
+            )
+            for host, transport, container in routes
+        ]
+
+    async def media(stream: StreamSpec, directory: Path) -> int:
+        assert runtime.stream_calls == len(received) + 1
+        assert stream.url.endswith(f"token=private-{runtime.stream_calls}")
+        assert stream.headers["X-Secret"] == f"header-private-{runtime.stream_calls}"
+        received.append((urlsplit(stream.url).hostname, stream.transport, stream.container))
+        recorder._remember_stderr(b"[https @ 0001] Error reading HTTP response: Error number -138 occurred")
+        return 4294967158
+
+    async def wait(seconds: float) -> None:
+        if seconds >= settings.room_metadata_refresh_interval_s:
+            await recorder._stop.wait()
+            return
+        waits.append(seconds)
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(runtime, "get_streams", streams)
+    monkeypatch.setattr(recorder, "_record_once", media)
+    monkeypatch.setattr(recorder, "_sleep_or_stop", wait)
+    monkeypatch.setattr(settings, "recording_reconnect_max_attempts", 5)
+    monkeypatch.setattr(settings, "recording_reconnect_max_elapsed_s", 0)
+    sink = logger.add(lambda message: messages.append(str(message)))
+    try:
+        await recorder.run()
+    finally:
+        logger.remove(sink)
+    assert received == [*routes, routes[0]]
+    assert all(0 <= delay <= 1 for delay in waits[:3])
+    assert recorder.retry_budget_exhausted and runtime.stream_calls == 5
+    assert not any("private" in message for message in messages)
+    assert sum("category=TRANSIENT_NETWORK" in message for message in messages) == 5
+    assert any("candidate=4/4" in message and "container=flv" in message for message in messages)
+    with get_session() as db:
+        session = db.get(RecordingSession, recorder.session_id)
+        assert session.status == "error" and session.ended_at is not None
+
+
+@pytest.mark.parametrize("stop_during_wait", [False, True])
+async def test_failover_resets_after_stable_media_and_respects_stop(
+    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch, stop_during_wait: bool
+) -> None:
+    room = await register_room("123", True, "external")
+    recorder = Recorder(room_source(room), room.id, metadata_prepared=True)
+    received: list[str] = []
+
+    async def streams(room: SourceRoom, preference: StreamPreference) -> list[StreamSpec]:
+        return [StreamSpec(url=f"https://{host}.invalid/live", transport="flv", container="flv") for host in ("a", "b")]
+
+    async def media(stream: StreamSpec, directory: Path) -> int:
+        received.append(stream.url)
+        if len(received) == 2:
+            recorder._seq += 1
+            recorder._attempt_media_seconds = settings.segment_duration_s
+        if len(received) == 3:
+            recorder.stop()
+        recorder._remember_stderr(b"Connection timed out")
+        return 1
+
+    async def wait(seconds: float) -> None:
+        if seconds >= settings.room_metadata_refresh_interval_s:
+            await recorder._stop.wait()
+            return
+        if stop_during_wait:
+            recorder.stop()
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(runtime, "get_streams", streams)
+    monkeypatch.setattr(recorder, "_record_once", media)
+    monkeypatch.setattr(recorder, "_sleep_or_stop", wait)
+    await asyncio.wait_for(recorder.run(), 3)
+    expected = ["https://a.invalid/live"]
+    if not stop_during_wait:
+        expected.extend(["https://b.invalid/live", "https://a.invalid/live"])
+    assert received == expected
+    assert not recorder.retry_budget_exhausted
+
+
+@pytest.mark.parametrize("stop_in_race", [False, True])
+async def test_race_registers_only_winner_and_reaps_all_processes(
+    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch, stop_in_race: bool
+) -> None:
+    from urllib.parse import urlsplit
+
+    from app.pipeline.orchestrator import make_pipeline_callback
+
+    room = await register_room("123", True, "external")
+    with get_session() as db:
+        saved = db.get(LiveRoom, room.id)
+        saved.auto_analyze = True
+        db.add(saved)
+    processes = []
+    received = []
+    pipeline = make_pipeline_callback(room_id=room.id)
+    recorder = None
+
+    class Process:
+        stdin = None
+        returncode = None
+
+        def __init__(self) -> None:
+            self.pid = len(processes) + 1
+            self.stdout, self.stderr = asyncio.StreamReader(), asyncio.StreamReader()
+            self.exited = asyncio.Event()
+
+        async def wait(self) -> int:
+            await self.exited.wait()
+            return self.returncode
+
+        def kill(self) -> None:
+            if self.returncode is None:
+                self.returncode = -9
+                self.stdout.feed_eof()
+                self.stderr.feed_eof()
+                self.exited.set()
+
+        terminate = kill
+
+    async def source_streams(room: SourceRoom, preference: StreamPreference) -> list[StreamSpec]:
+        return [
+            StreamSpec(url=f"https://{host}.invalid/live?token=private", transport="flv", container="flv")
+            for host in ("slow", "good", "unused")
+        ]
+
+    async def spawn(*args: str, **kwargs: object) -> Process:
+        proc = Process()
+        processes.append(proc)
+        output = Path(args[-1].replace("%05d", "00000"))
+        output.write_bytes(b"candidate media")
+        # 连落选者都已经产出清单，必须确保它没有被登记或驱动分析。
+        Path(args[args.index("-segment_list") + 1]).write_text(f"{output.name},0,5\n")
+        if stop_in_race:
+            recorder.stop()
+        elif urlsplit(args[args.index("-i") + 1]).hostname == "good.invalid":
+            proc.stdout.feed_data(
+                b"frame=1\nout_time_us=0\nprogress=continue\nframe=20\nout_time_us=1000000\nprogress=continue\n"
+            )
+        return proc
+
+    async def on_segment(segment: RawSegment) -> None:
+        received.append(segment)
+        await pipeline(segment)
+        recorder.stop()
+
+    monkeypatch.setattr(settings, "recording_stream_race_parallel", 2)
+    monkeypatch.setattr(runtime, "get_streams", source_streams)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    recorder = Recorder(room_source(room), room.id, on_segment=on_segment, metadata_prepared=True)
+    before = asyncio.all_tasks()
+    await asyncio.wait_for(recorder.run(), 3)
+    assert processes and all(proc.returncode is not None for proc in processes)
+    assert not (asyncio.all_tasks() - before)
+    with get_session() as db:
+        segments = db.exec(select(RawSegment)).all()
+        tasks = db.exec(select(SegmentTask)).all()
+        assert len(segments) == len(tasks) == len(received) == (0 if stop_in_race else 1)
+        session = db.get(RecordingSession, recorder.session_id)
+        assert session.status == "stopped" and session.ended_at is not None
+        if not stop_in_race:
+            assert recorder._selected_stream.url.startswith("https://good.invalid/")
+            folder = Path(segments[0].file_path).parent
+            assert list(folder.glob("*.ts")) == [Path(segments[0].file_path)]
+
+
+async def test_initial_failed_race_is_included_in_elapsed_retry_budget(
+    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from app.recording import recorder as recorder_module
+    from app.recording.stream_race import StreamRace
+
+    room = await register_room("123", True, "external")
+    now = 100.0
+    calls = 0
+
+    async def source_streams(room: SourceRoom, preference: StreamPreference) -> list[StreamSpec]:
+        nonlocal calls
+        calls += 1
+        return [StreamSpec(url=f"https://{host}.invalid/live", transport="flv", container="flv") for host in ("a", "b")]
+
+    async def failed_race(self: StreamRace) -> None:
+        nonlocal now
+        now += 10  # 首轮竞争已把预算用尽，不能再开一轮。
+
+    monkeypatch.setattr(runtime, "get_streams", source_streams)
+    monkeypatch.setattr(StreamRace, "run", failed_race)
+    monkeypatch.setattr(recorder_module, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(settings, "recording_stream_race_parallel", 2)
+    monkeypatch.setattr(settings, "recording_reconnect_max_attempts", 0)
+    monkeypatch.setattr(settings, "recording_reconnect_max_elapsed_s", 10)
+    recorder = Recorder(room_source(room), room.id, metadata_prepared=True)
+    await asyncio.wait_for(recorder.run(), 3)
+    assert calls == 1 and recorder.retry_budget_exhausted
+
+
+@pytest.mark.parametrize(
+    "message,permanent",
+    [
+        (b"Error opening input: Invalid argument", False),
+        (b"HTTP error 403\nError opening input: Permission denied", False),
+        (b"Error opening output: No space left on device", True),
+    ],
+)
+async def test_race_input_errors_retry_but_local_output_fault_stops_room(
+    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch, message: bytes, permanent: bool
+) -> None:
+    from app.recording.stream_race import StreamAttempt, StreamRace
+
+    room = await register_room("123", True, "external")
+    calls = 0
+
+    async def source_streams(room: SourceRoom, preference: StreamPreference) -> list[StreamSpec]:
+        nonlocal calls
+        calls += 1
+        return [StreamSpec(url=f"https://{host}.invalid/live", transport="flv", container="flv") for host in ("a", "b")]
+
+    async def fail(self: StreamRace, attempt: StreamAttempt) -> bool:
+        attempt.remember(message)
+        return False
+
+    recorder = Recorder(room_source(room), room.id, metadata_prepared=True)
+
+    async def wait(seconds: float) -> None:
+        if seconds >= settings.room_metadata_refresh_interval_s:
+            await recorder._stop.wait()
+        else:
+            await asyncio.sleep(0)
+
+    monkeypatch.setattr(runtime, "get_streams", source_streams)
+    monkeypatch.setattr(StreamRace, "_compete", fail)
+    monkeypatch.setattr(recorder, "_sleep_or_stop", wait)
+    monkeypatch.setattr(settings, "recording_stream_race_parallel", 2)
+    monkeypatch.setattr(settings, "recording_reconnect_max_attempts", 2)
+    monkeypatch.setattr(settings, "recording_reconnect_max_elapsed_s", 0)
+    await asyncio.wait_for(recorder.run(), 3)
+    assert calls == (1 if permanent else 2)
+    assert recorder.recording_action_required is permanent
+    assert recorder.retry_budget_exhausted is not permanent
+
+
+async def test_unsupported_progress_falls_back_once_and_keeps_legacy_recording(
+    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.recording.stream_race import StreamRace
+
+    room = await register_room("123", True, "external")
+    recorder = Recorder(room_source(room), room.id, metadata_prepared=True)
+    fetched = 0
+    races = 0
+    recorded = []
+
+    async def source_streams(room: SourceRoom, preference: StreamPreference) -> list[StreamSpec]:
+        nonlocal fetched
+        fetched += 1
+        return [
+            StreamSpec(url=f"https://{host}.invalid/live?token={fetched}", transport="flv", container="flv")
+            for host in ("a", "b")
+        ]
+
+    async def unsupported(self: StreamRace) -> None:
+        nonlocal races
+        races += 1
+        attempt = self.attempts[0]
+        attempt.remember(b"Unrecognized option 'progress'.")
+        self.failures.append(attempt)
+
+    async def single(stream: StreamSpec, out_dir: Path) -> int:
+        recorded.append(stream.url)
+        if len(recorded) == 2:
+            recorder.stop()
+            return 0
+        recorder._remember_stderr(b"Connection timed out")
+        return 1
+
+    async def wait(seconds: float) -> None:
+        if seconds >= settings.room_metadata_refresh_interval_s:
+            await recorder._stop.wait()
+        else:
+            await asyncio.sleep(0)
+
+    monkeypatch.setattr(settings, "recording_stream_race_parallel", 2)
+    monkeypatch.setattr(runtime, "get_streams", source_streams)
+    monkeypatch.setattr(StreamRace, "run", unsupported)
+    monkeypatch.setattr(recorder, "_record_single", single)
+    monkeypatch.setattr(recorder, "_sleep_or_stop", wait)
+    await asyncio.wait_for(recorder.run(), 3)
+    assert races == 1 and fetched == len(recorded) == 2
+    assert recorded == ["https://a.invalid/live?token=1", "https://b.invalid/live?token=2"]
+    assert not recorder.recording_action_required and not recorder._stream_race_supported
+    with get_session() as db:
+        session = db.get(RecordingSession, recorder.session_id)
+        assert session.status == "stopped" and session.ended_at is not None
+
+
+@pytest.mark.parametrize("stop_stage", ["selection", "guard_cleanup"])
+async def test_stop_during_compatibility_fallback_never_starts_media(
+    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stop_stage: str
+) -> None:
+    from app.recording.stream_race import StreamRace
+
+    room = await register_room("123", True, "external")
+    recorder = Recorder(room_source(room), room.id, metadata_prepared=True)
+    recorder._stream_candidates = [
+        StreamSpec(url=f"https://{host}.invalid/live", transport="flv", container="flv") for host in ("a", "b")
+    ]
+    guard_started = asyncio.Event()
+
+    async def unsupported(self: StreamRace) -> None:
+        await guard_started.wait()
+        attempt = self.attempts[0]
+        attempt.remember(b"Unrecognized option 'progress'.")
+        self.failures.append(attempt)
+        if stop_stage == "selection":
+            recorder.stop()
+
+    async def guard() -> None:
+        guard_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            if stop_stage == "guard_cleanup":
+                recorder.stop()
+
+    async def forbidden(*args: object) -> int:
+        pytest.fail("停止后不应通过兼容回退启动媒体进程")
+
+    monkeypatch.setattr(StreamRace, "run", unsupported)
+    monkeypatch.setattr(recorder, "_monitor_disk", guard)
+    monkeypatch.setattr(recorder, "_record_single", forbidden)
+    assert await asyncio.wait_for(recorder._record_race(tmp_path), 2) == -1
+
+
+async def test_compatibility_fallback_does_not_mask_other_global_errors(
+    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from app.recording.stream_race import StreamRace
+
+    room = await register_room("123", True, "external")
+    recorder = Recorder(room_source(room), room.id, metadata_prepared=True)
+    recorder._stream_candidates = [
+        StreamSpec(url=f"https://{host}.invalid/live", transport="flv", container="flv") for host in ("a", "b")
+    ]
+
+    async def failed(self: StreamRace) -> None:
+        for attempt, message in zip(
+            self.attempts, (b"Unrecognized option 'progress'.", b"Unrecognized option 'other'."), strict=True
+        ):
+            attempt.remember(message)
+            self.failures.append(attempt)
+
+    async def forbidden(*args: object) -> int:
+        pytest.fail("其他全局参数错误不应被兼容回退掩盖")
+
+    monkeypatch.setattr(StreamRace, "run", failed)
+    monkeypatch.setattr(recorder, "_record_single", forbidden)
+    assert await asyncio.wait_for(recorder._record_race(tmp_path), 2) == 1
+    assert recorder._stream_race_supported
+    assert "other" in " ".join(recorder._stderr_tail)
+
+
+@pytest.mark.parametrize("resource_errno", [errno.EMFILE, errno.ENFILE, errno.ENOMEM, errno.EAGAIN])
+async def test_race_resource_exhaustion_uses_existing_local_failure_cleanup(
+    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch, resource_errno: int
+) -> None:
+    room = await register_room("123", True, "external")
+    recorder = Recorder(room_source(room), room.id, metadata_prepared=True)
+    calls = 0
+
+    async def source_streams(room: SourceRoom, preference: StreamPreference) -> list[StreamSpec]:
+        return [StreamSpec(url=f"https://{host}.invalid/live", transport="flv", container="flv") for host in ("a", "b")]
+
+    async def spawn(*args: object, **kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        raise OSError(resource_errno, "private details")
+
+    monkeypatch.setattr(settings, "recording_stream_race_parallel", 2)
+    monkeypatch.setattr(runtime, "get_streams", source_streams)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    with pytest.raises(OSError) as captured:
+        await asyncio.wait_for(recorder.run(), 3)
+    assert captured.value.errno == resource_errno and calls == 1
+    assert recorder.recording_action_required and not recorder.retry_budget_exhausted
+    assert errno.errorcode[resource_errno] in recorder.recording_error
+    assert "private" not in recorder.recording_error
+    with get_session() as db:
+        session = db.get(RecordingSession, recorder.session_id)
+        assert session.status == "error" and session.ended_at is not None
+
+
 async def test_disable_during_stream_fetch_never_starts_media(
     runtime: RuntimeSource,
     monkeypatch: pytest.MonkeyPatch,

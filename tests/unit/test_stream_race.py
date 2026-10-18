@@ -1,0 +1,486 @@
+from __future__ import annotations
+
+import asyncio
+import errno
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from urllib.parse import urlsplit
+
+import pytest
+
+from app.core.ffmpeg_errors import FfmpegErrorType
+from app.plugins.live_source import StreamSpec
+from app.recording.stream_race import StreamAttempt, StreamRace
+
+
+class FakeProcess:
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.stdin = None
+        self.stdout = asyncio.StreamReader()
+        self.stderr = asyncio.StreamReader()
+        self.returncode: int | None = None
+        self.exited = asyncio.Event()
+
+    async def wait(self) -> int:
+        await self.exited.wait()
+        assert self.returncode is not None
+        return self.returncode
+
+    def kill(self) -> None:
+        if self.returncode is None:
+            self.returncode = -9
+            self.stdout.feed_eof()
+            self.stderr.feed_eof()
+            self.exited.set()
+
+    def terminate(self) -> None:
+        self.kill()
+
+    def progress(self, *, frames: int = 20, media_us: int = 1_000_000) -> None:
+        self.stdout.feed_data(
+            f"frame={frames}\nout_time_us=0\nprogress=continue\n"
+            f"frame={frames + 1 if frames else 0}\nout_time_us={media_us}\nprogress=continue\n".encode()
+        )
+
+
+def streams(*names: str) -> list[StreamSpec]:
+    return [
+        StreamSpec(url=f"https://{name}.invalid/signed?token=private", transport="flv", container="flv")
+        for name in names
+    ]
+
+
+def command(stream: StreamSpec, directory: Path, prefix: str, manifest: Path) -> list[str]:
+    return ["ffmpeg", "-i", stream.url, "-segment_list", str(manifest), str(directory / f"{prefix}%05d.ts")]
+
+
+def race_for(tmp_path: Path, candidates: list[StreamSpec]) -> StreamRace:
+    return StreamRace(
+        candidates, tmp_path, 0, command, asyncio.Event(), lambda _: None, parallel=2, timeout_s=0.03, budget_s=2
+    )
+
+
+async def test_winner_process_is_reused_and_only_loser_files_are_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    processes: list[FakeProcess] = []
+
+    async def spawn(*args: str, **kwargs: object) -> FakeProcess:
+        proc = FakeProcess(len(processes) + 1)
+        processes.append(proc)
+        output = Path(args[-1].replace("%05d", "00000"))
+        output.write_bytes(b"candidate media")
+        Path(args[args.index("-segment_list") + 1]).write_text(f"{output.name},0,3\n")
+        if urlsplit(args[args.index("-i") + 1]).hostname == "good.invalid":
+            proc.progress()
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    before = asyncio.all_tasks()
+    race = race_for(tmp_path, streams("slow", "good", "unused"))
+    existing = tmp_path / "part_old.ts"
+    existing.write_bytes(b"existing recording")
+    try:
+        winner = await race.run()
+        assert winner is race.attempts[1] and winner.process is processes[1]
+        assert len(processes) == 2 and processes[0].returncode is not None
+        assert processes[1].returncode is None
+        assert not list(tmp_path.glob(f"{race.attempts[0].prefix}*"))
+        assert list(tmp_path.glob(f"{winner.prefix}*.ts"))
+        assert winner.progress_task is not None and not winner.progress_task.done()
+    finally:
+        await race.close()
+    assert all(proc.returncode is not None for proc in processes)
+    assert not (asyncio.all_tasks() - before)
+    assert existing.read_bytes() == b"existing recording"
+    assert list(tmp_path.glob(f"{race.winner.prefix}*.ts"))
+
+
+async def test_timeout_and_invalid_progress_refill_slots_with_bounded_concurrency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    processes: list[FakeProcess] = []
+    peak = 0
+
+    async def spawn(*args: str, **kwargs: object) -> FakeProcess:
+        nonlocal peak
+        proc = FakeProcess(len(processes))
+        processes.append(proc)
+        peak = max(peak, sum(item.returncode is None for item in processes))
+        host = urlsplit(args[args.index("-i") + 1]).hostname
+        proc.progress(frames=0 if host == "audio.invalid" else 1, media_us=0 if host == "empty.invalid" else 1_000_000)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    race = race_for(tmp_path, streams("audio", "empty", "good"))
+    try:
+        winner = await race.run()
+        assert winner is race.attempts[2]
+        assert peak <= 2 and len(race.failures) == 2
+        assert all(FfmpegErrorType.TRANSIENT_NETWORK in attempt.categories for attempt in race.failures)
+    finally:
+        await race.close()
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_stop_or_cancel_during_process_creation_reaps_late_spawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel: bool
+) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    processes: list[FakeProcess] = []
+
+    async def spawn(*args: str, **kwargs: object) -> FakeProcess:
+        entered.set()
+        await release.wait()
+        proc = FakeProcess(len(processes))
+        processes.append(proc)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    before = asyncio.all_tasks()
+    race = race_for(tmp_path, streams("slow", "slow2"))
+    task = asyncio.create_task(race.run())
+    await entered.wait()
+    if cancel:
+        task.cancel()
+    else:
+        race.stop.set()
+    await asyncio.sleep(0)
+    if cancel:
+        task.cancel()  # 收尾期间的再次取消也不能遗留正在创建的进程。
+    release.set()
+    try:
+        if cancel:
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            assert await task is None
+    finally:
+        await race.close()
+    assert processes and all(proc.returncode is not None for proc in processes)
+    assert not (asyncio.all_tasks() - before)
+
+
+@pytest.mark.parametrize("failure", ["permission", "pipe", "all_timeout", "budget"])
+async def test_failure_paths_reap_all_processes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    processes: list[FakeProcess] = []
+
+    async def spawn(*args: str, **kwargs: object) -> FakeProcess:
+        if failure == "permission":
+            raise OSError(errno.EACCES, "private")
+        proc = FakeProcess(len(processes))
+        processes.append(proc)
+        if failure == "pipe":
+            proc.stderr.set_exception(OSError(errno.EIO, "private"))
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    before = asyncio.all_tasks()
+    race = race_for(tmp_path, streams("a", "b", "c"))
+    if failure == "budget":
+        race.timeout_s, race.budget_s = 1, 0.02
+    try:
+        assert await race.run() is None
+        assert race.failures
+        if failure == "permission":
+            assert FfmpegErrorType.PERMISSION_DENIED in race.failures[0].categories
+    finally:
+        await race.close()
+    assert all(proc.returncode is not None for proc in processes)
+    assert not (asyncio.all_tasks() - before)
+    assert all("private" not in " ".join(attempt.tail) for attempt in race.attempts)
+
+
+async def test_diagnostics_are_bounded_and_redacted(tmp_path: Path) -> None:
+    attempt = StreamAttempt(streams("a")[0], tmp_path, "unique_")
+    proc = FakeProcess(1)
+    attempt.process = proc
+    proc.stderr.feed_data(b"Cookie: private-cookie" * 10000 + b"\n")
+    for _ in range(50):
+        proc.stderr.feed_data(b"HTTP error 403 https://a.invalid/private?token=private\n")
+    proc.stderr.feed_data(b"[tls @ 001] Unable to read from socket")
+    proc.stderr.feed_eof()
+    await attempt.drain_stderr()
+    assert len(attempt.tail) == 20 and all(len(line) <= 512 for line in attempt.tail)
+    assert "private" not in " ".join(attempt.tail)
+    assert attempt.http_status == 403
+    assert FfmpegErrorType.TRANSIENT_NETWORK in attempt.categories
+    proc.kill()
+
+
+@pytest.mark.parametrize("expired", [False, True])
+async def test_quality_tiers_and_expired_queued_urls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, expired: bool
+) -> None:
+    candidates = streams("high", "low")
+    candidates[0] = candidates[0].model_copy(update={"quality_id": "10000"})
+    candidates[1] = candidates[1].model_copy(update={"quality_id": "400"})
+    if expired:
+        candidates[0] = candidates[0].model_copy(update={"expires_at": datetime.now(UTC) - timedelta(seconds=1)})
+    launched = []
+
+    async def spawn(*args: str, **kwargs: object) -> FakeProcess:
+        launched.append(urlsplit(args[args.index("-i") + 1]).hostname)
+        proc = FakeProcess(len(launched))
+        proc.progress()
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    race = race_for(tmp_path, candidates)
+    try:
+        winner = await race.run()
+        assert winner is race.attempts[1 if expired else 0]
+        assert launched == ["low.invalid" if expired else "high.invalid"]
+    finally:
+        await race.close()
+
+
+async def test_zero_budget_or_already_stopped_never_spawns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def forbidden(*args: object, **kwargs: object) -> None:
+        pytest.fail("停止或预算已耗尽后不能启动拉流进程")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden)
+    for stopped in (False, True):
+        race = race_for(tmp_path, streams("a", "b"))
+        if stopped:
+            race.stop.set()
+        else:
+            race.budget_s = 0
+        assert await race.run() is None
+        await race.close()
+
+
+async def test_ready_requires_relative_media_and_video_progress(tmp_path: Path) -> None:
+    attempt = StreamAttempt(streams("a")[0], tmp_path, "unique_")
+    proc = FakeProcess(1)
+    attempt.process = proc
+    reader = asyncio.create_task(attempt.drain_progress())
+
+    async def sample(frames: int, media_us: int) -> None:
+        proc.stdout.feed_data(f"frame={frames}\nout_time_us={media_us}\nprogress=continue\n".encode())
+        await asyncio.sleep(0)
+
+    try:
+        await sample(1, 3_600_000_000)  # 大绝对时间戳不是成功出流证据。
+        assert not attempt.ready.is_set()
+        await sample(1, 3_601_000_000)  # 仅音频推进，视频没有继续输出。
+        assert not attempt.ready.is_set()
+        await sample(2, 10)  # 时间戳回退，重新建立基线。
+        assert not attempt.ready.is_set()
+        await sample(3, 400_010)
+        assert not attempt.ready.is_set()
+        await sample(4, 500_010)
+        assert attempt.ready.is_set()
+    finally:
+        proc.kill()
+        await reader
+
+
+@pytest.mark.parametrize("failure", ["invalid_input", "http_permission"])
+async def test_same_host_different_paths_are_tried_and_input_failure_is_not_global(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    first = streams("cdn")[0]
+    second = first.model_copy(update={"url": "https://cdn.invalid/other-path?token=private"})
+    launched = []
+
+    async def spawn(*args: str, **kwargs: object) -> FakeProcess:
+        url = args[args.index("-i") + 1]
+        launched.append(url)
+        proc = FakeProcess(len(launched))
+        if url == first.url:
+            proc.stderr.feed_data(
+                b"Error opening input: Invalid argument\n"
+                if failure == "invalid_input"
+                else b"HTTP error 403\nError opening input: Permission denied\n"
+            )
+            proc.kill()
+            proc.returncode = 1
+        else:
+            proc.progress()
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    race = race_for(tmp_path, [first, first, second])
+    try:
+        winner = await race.run()
+        assert len(race.attempts) == 2 and winner.stream is second
+        assert launched == [first.url, second.url]
+        assert len(race.failures) == 1 and not race.failures[0].global_error
+    finally:
+        await race.close()
+
+
+@pytest.mark.parametrize("message", [b"No space left on device", b"Error opening output file x: Permission denied"])
+async def test_real_output_fault_is_global(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, message: bytes) -> None:
+    launched = []
+
+    async def spawn(*args: str, **kwargs: object) -> FakeProcess:
+        launched.append(args)
+        proc = FakeProcess(1)
+        proc.stderr.feed_data(message + b"\n")
+        proc.kill()
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    race = race_for(tmp_path, streams("a", "b"))
+    try:
+        assert await race.run() is None
+        assert len(launched) == 1 and race.failures[0].global_error
+    finally:
+        await race.close()
+
+
+@pytest.mark.parametrize("first_healthy", [False, True])
+async def test_staggered_race_avoids_extra_process_for_fast_primary_but_hedges_stalled_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_healthy: bool
+) -> None:
+    processes = []
+
+    async def spawn(*args: str, **kwargs: object) -> FakeProcess:
+        if processes:
+            assert processes[0].returncode is None, "备用线路应在首选仍等待时启动，无需等到超时"
+        proc = FakeProcess(len(processes))
+        processes.append(proc)
+        if first_healthy or len(processes) == 2:
+            proc.progress()
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    race = race_for(tmp_path, streams("a", "b", "c"))
+    race.timeout_s, race.launch_delay_s = 1, 0.01
+    try:
+        assert await race.run() is not None
+        assert len(processes) == (1 if first_healthy else 2)
+    finally:
+        await race.close()
+
+
+@pytest.mark.parametrize("output_fault", [False, True])
+async def test_winner_that_fails_during_loser_cleanup_is_not_handed_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output_fault: bool
+) -> None:
+    processes = []
+    race = race_for(tmp_path, streams("slow", "good"))
+    race.timeout_s, race.launch_delay_s = 1, 0.01
+
+    async def spawn(*args: str, **kwargs: object) -> FakeProcess:
+        proc = FakeProcess(len(processes))
+        processes.append(proc)
+        if len(processes) == 2:
+            proc.progress()
+        return proc
+
+    original_close = StreamAttempt.close
+
+    async def close(attempt: StreamAttempt, *, discard: bool) -> None:
+        if race.winner is not None and attempt is not race.winner and discard:
+            if output_fault:
+                race.winner.remember(b"Error writing output: No space left on device")
+            else:
+                race.winner.process.kill()
+        await original_close(attempt, discard=discard)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(StreamAttempt, "close", close)
+    try:
+        assert await race.run() is None
+        assert race.winner is None and race.failures
+        assert all(process.returncode is not None for process in processes)
+    finally:
+        await race.close()
+
+
+@pytest.mark.parametrize("style", ["old_ms", "formatted", "na_us", "prefer_us"])
+async def test_legacy_progress_fields_keep_microsecond_units(tmp_path: Path, style: str) -> None:
+    attempt = StreamAttempt(streams("a")[0], tmp_path, "unique_")
+    process = FakeProcess(1)
+    attempt.process = process
+    reader = asyncio.create_task(attempt.drain_progress())
+
+    async def sample(frame: int, microseconds: int) -> None:
+        formatted = f"00:00:00.{microseconds:06d}"
+        if style == "old_ms":
+            fields = f"out_time_ms={microseconds}"
+        elif style == "formatted":
+            fields = f"out_time={formatted}"
+        elif style == "na_us":
+            fields = f"out_time_us=N/A\nout_time_ms={microseconds}\nout_time={formatted}"
+        else:
+            fields = f"out_time_ms={microseconds * 1000}\nout_time_us={microseconds}\nout_time={formatted}"
+        process.stdout.feed_data(f"frame={frame}\n{fields}\nprogress=continue\n".encode())
+        await asyncio.sleep(0)
+
+    try:
+        await sample(1, 1000)
+        await sample(2, 1500)  # 旧版 ms 名称容易被误当毫秒；这里只推进了 500 微秒。
+        assert not attempt.ready.is_set()
+        await sample(3, 501000)
+        assert attempt.ready.is_set()
+    finally:
+        process.kill()
+        await reader
+
+
+async def test_legacy_ffmpeg_works_without_new_optional_arguments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    processes = []
+
+    async def spawn(*args: str, **kwargs: object) -> FakeProcess:
+        assert "-stats_period" not in args
+        assert args[args.index("-progress") + 1] == "pipe:1"
+        process = FakeProcess(len(processes))
+        processes.append(process)
+        process.stdout.feed_data(
+            b"frame=1\nout_time_ms=0\nprogress=continue\nframe=20\nout_time_ms=1000000\nprogress=continue\n"
+        )
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    race = race_for(tmp_path, streams("a", "b"))
+    try:
+        winner = await race.run()
+        assert winner.process is processes[0] and len(processes) == 1
+    finally:
+        await race.close()
+
+
+@pytest.mark.parametrize(
+    "message,unsupported",
+    [
+        (b"Unrecognized option 'progress'.", True),
+        (b"Option progress not found.", True),
+        (b"Unrecognized option 'other'.", False),
+        (b"Failed to open progress URL pipe:1: Permission denied", False),
+    ],
+)
+def test_progress_capability_failure_is_precise(tmp_path: Path, message: bytes, unsupported: bool) -> None:
+    attempt = StreamAttempt(streams("a")[0], tmp_path, "unique_")
+    attempt.remember(message)
+    assert attempt.progress_unsupported is unsupported
+
+
+@pytest.mark.parametrize("resource_errno", [errno.EMFILE, errno.ENFILE, errno.ENOMEM, errno.EAGAIN])
+async def test_local_resource_errors_stop_competition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, resource_errno: int
+) -> None:
+    calls = 0
+
+    async def spawn(*args: str, **kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        raise OSError(resource_errno, "private details")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    race = race_for(tmp_path, streams("a", "b"))
+    try:
+        assert await race.run() is None
+        assert calls == 1 and race.failures[0].resource_errno == resource_errno
+        assert race.failures[0].global_error
+        assert "private" not in " ".join(race.failures[0].tail)
+        assert errno.errorcode[resource_errno] in " ".join(race.failures[0].tail)
+    finally:
+        await race.close()

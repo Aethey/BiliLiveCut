@@ -34,6 +34,8 @@ LABELS: dict[str, str] = {
     "room_metadata_refresh_timeout_s": "标题查询超时",
     "recording_reconnect_max_attempts": "断流最大重试次数（0 单项关闭；两项均 0 时限 20 次）",
     "recording_reconnect_max_elapsed_s": "断流重试最长时间（0 单项关闭）",
+    "recording_stream_race_parallel": "录制选线最大并发数（1 为串行）",
+    "recording_stream_race_timeout_s": "单路等待有效视频的最长时间",
     "live_offline_confirm_count": "下播连续确认次数",
     "live_session_end_delay_s": "下播收尾延迟",
     "recording_max_duration_s": "单场录制时长上限",

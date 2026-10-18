@@ -109,16 +109,29 @@ def classify_ffmpeg_error(return_code: int, stderr: str) -> FfmpegErrorType:
         and any(message in line for message in ("end of file", "unexpected eof", "error in the pull function"))
         for line in stderr_lower.splitlines()
     )
-    if transport_eof or any(
-        keyword in stderr_lower
-        for keyword in (
-            "connection refused",
-            "connection reset",
-            "network is unreachable",
-            "name or service not known",
-            "failed to resolve",
-            "timed out",
-            "timeout",
+    # MinGW 的 ETIMEDOUT 为 138；仅在网络上下文内识别，避免误判媒体错误码。
+    transport_read_error = any(
+        any(tag in line for tag in ("[http @", "[https @", "[tls @", "[tcp @"))
+        and any(
+            message in line
+            for message in ("unable to read from socket", "error reading http response", "error number -138 occurred")
+        )
+        for line in stderr_lower.splitlines()
+    )
+    if (
+        transport_eof
+        or transport_read_error
+        or any(
+            keyword in stderr_lower
+            for keyword in (
+                "connection refused",
+                "connection reset",
+                "network is unreachable",
+                "name or service not known",
+                "failed to resolve",
+                "timed out",
+                "timeout",
+            )
         )
     ):
         return FfmpegErrorType.TRANSIENT_NETWORK

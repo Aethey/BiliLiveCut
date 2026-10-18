@@ -52,6 +52,8 @@ from app.plugins.live_source import (
     StreamSpec,
 )
 from app.recording.danmaku import DanmakuCapture
+from app.recording.stream_failover import StreamFailover
+from app.recording.stream_race import StreamAttempt, StreamRace
 from app.sources.registry import source_registry
 
 # 下游回调签名:接收刚登记入库的 RawSegment(已含 id)。
@@ -149,6 +151,13 @@ class Recorder:
         self._attempt_media_seconds = 0.0
         self._upstream_status: int | None = None
         self._last_exit_abnormal = False
+        self._stream_failover = StreamFailover()
+        self._stream_candidates: list[StreamSpec] = []
+        self._selected_stream: StreamSpec | None = None
+        self._race_budget_s = 180.0
+        self._failed_selection_started_at: float | None = None
+        self._race_input_failure = False
+        self._stream_race_supported = True
 
     @property
     def session_id(self) -> int | None:
@@ -285,6 +294,7 @@ class Recorder:
         self._emit_state(SessionStatus.STARTING)
         self._seq = 0  # 每次 run() 重新开始片段计数
         self._paths = set()  # 重置路径缓存
+        self._stream_failover.reset()
         out_dir = session_raw_dir(self._session_id)
         backoff = 1
         reconnect_episode = False  # 当前录制是否为重连后的一次尝试
@@ -341,7 +351,18 @@ class Recorder:
             self._stderr_tail = []
             self._stderr_categories = set()
             self._upstream_status = None
+            self._selected_stream = None
+            self._failed_selection_started_at = None
+            self._race_input_failure = False
+            # 竞争和重连共用时间预算，不能因为候选较多而无限延长一轮。
+            _, max_elapsed = self._reconnect_limits()
+            self._race_budget_s = (
+                max(0.0, max_elapsed - (time.monotonic() - reconnect_budget.started_at))
+                if max_elapsed and reconnect_budget.started_at is not None
+                else float(max_elapsed or 180)
+            )
             exit_code = await self._record_once(stream, out_dir)
+            stream = self._selected_stream or stream
             if self._stop.is_set():
                 break
             self._last_exit_abnormal = exit_code != 0
@@ -353,6 +374,7 @@ class Recorder:
             stable_recording = self._seq > seq_before and self._attempt_media_seconds >= settings.segment_duration_s
             if stable_recording:
                 reconnect_budget.reset()
+                self._stream_failover.reset()
 
             # ---- 重连成功后重置退避 ----
             # 短末片不能证明恢复；实际媒体达到目标分段长度才重置退避。
@@ -382,6 +404,12 @@ class Recorder:
                 FfmpegErrorType.UNSUPPORTED_CODEC,
             }
             retry_started_at = time.monotonic()
+            if self._failed_selection_started_at is not None:
+                # 首轮全失败的竞争也必须计时，不能从竞争结束才开始预算。
+                reconnect_budget.begin(self._failed_selection_started_at)
+            if not permanent:
+                # 无论是断流还是提前 EOF，都尝试其他线路；人工停止在上面已退出。
+                self._stream_failover.failed(stream, now=retry_started_at)
             if stable_recording:
                 reconnect_budget.begin(retry_started_at)
             else:
@@ -392,6 +420,9 @@ class Recorder:
             exhausted = False if permanent else self._retry_exhausted(reconnect_budget)
             retry = not permanent and not exhausted
             delay = min(backoff * random.uniform(0.8, 1.2), settings.reconnect_max_backoff_s) if retry else 0.0
+            try_alternative = self._stream_failover.has_untried_alternative
+            if try_alternative:
+                delay = min(delay, 1.0)
             delay = self._retry_delay(delay, reconnect_budget)
             if exit_code != 0:
                 if exhausted:
@@ -411,7 +442,7 @@ class Recorder:
             self._increment_reconnect()
             self._update_session(status=SessionStatus.RECONNECTING)
             await self._sleep_or_stop(delay)
-            backoff = min(backoff * 2, settings.reconnect_max_backoff_s)
+            backoff = 1 if try_alternative else min(backoff * 2, settings.reconnect_max_backoff_s)
 
     async def _finalize_session(self) -> None:
         """正常停止、取消和异常都执行一次会话收尾。"""
@@ -515,6 +546,7 @@ class Recorder:
         """每次重连重新取流；永久来源错误结束当前录制，临时失败使用原预算。"""
         self._source_retry_delay = 0.0
         self._source_error = None
+        self._stream_candidates = []
         try:
             streams = await source_registry.get_streams(
                 self.source_room, StreamPreference(preferred_transport=settings.preferred_stream_protocol)
@@ -544,7 +576,20 @@ class Recorder:
             self._update_session(error_message=f"来源需要处理：{exc.code}")
             self.stop()
             return None
-        return streams[0] if streams else None
+        self._stream_candidates = self._stream_failover.ranked(streams, now=time.monotonic())
+        stream = self._stream_candidates[0] if self._stream_candidates else None
+        if stream is not None:
+            logger.info(
+                "录制线路选择 room={} session={} candidate={}/{} endpoint={} transport={} container={}",
+                self.db_room_id,
+                self._session_id,
+                next(index for index, candidate in enumerate(streams, 1) if candidate is stream),
+                len(streams),
+                sanitize_diagnostic(stream.url),
+                stream.transport,
+                stream.container,
+            )
+        return stream
 
     def _save_stream_selection(self, stream: StreamSpec) -> None:
         """只保存非敏感播放描述，临时 URL 和请求头不进入普通持久字段。"""
@@ -580,6 +625,16 @@ class Recorder:
         :param out_dir: 片段输出目录。
         :returns: FFmpeg 进程退出码。
         """
+        if (
+            len(self._stream_candidates) > 1
+            and settings.recording_stream_race_parallel > 1
+            and self._stream_race_supported
+        ):
+            return await self._record_race(out_dir)
+        return await self._record_single(stream, out_dir)
+
+    async def _record_single(self, stream: StreamSpec, out_dir: Path) -> int:
+        """沿用上游单进程录制，供串行模式及能力不受支持时回退。"""
         segment_list = out_dir / _SEGMENT_LIST_NAME
         # 为本次录制使用唯一的文件名前缀,避免重连后覆盖既有片段。
         prefix = f"part{self._seq:03d}_{uuid.uuid4().hex[:12]}_"
@@ -608,10 +663,136 @@ class Recorder:
             self._diagnostic_secrets = ()
             return 1
 
+        stderr_task = asyncio.create_task(self._drain_stderr(proc))
+        return await self._supervise_process(proc, out_dir, prefix, segment_list, stderr_task)
+
+    def _adopt_attempt_diagnostics(self, attempt: StreamAttempt) -> None:
+        """共享胜出者的有界诊断缓冲，后续读取仍能补充错误分类。"""
+        self._stderr_tail = attempt.tail
+        self._stderr_categories = attempt.categories
+        self._upstream_status = attempt.http_status
+
+    async def _record_race(self, out_dir: Path) -> int:
+        """竞争期间没有入库回调，胜出后复用原进程及已经写入的视频。"""
+        race = StreamRace(
+            self._stream_candidates,
+            out_dir,
+            self._seq,
+            self._build_ffmpeg_cmd,
+            self._stop,
+            lambda stream: self._stream_failover.failed(stream, now=time.monotonic()),
+            parallel=settings.recording_stream_race_parallel,
+            timeout_s=settings.recording_stream_race_timeout_s,
+            budget_s=self._race_budget_s,
+        )
+        logger.info(
+            "并发录制选线 room={} session={} candidates={} parallel={}",
+            self.db_room_id,
+            self._session_id,
+            len(race.attempts),
+            settings.recording_stream_race_parallel,
+        )
+        selection_started_at = time.monotonic()
+        selection = asyncio.create_task(race.run())
+        disk_guard = asyncio.create_task(self._monitor_disk())
+        attempt = None
+        try:
+            done, _ = await asyncio.wait({selection, disk_guard}, return_when=asyncio.FIRST_COMPLETED)
+            if disk_guard in done:
+                try:
+                    await disk_guard
+                except Exception:
+                    self._recording_action_required = True
+                    self._recording_error = "录制辅助任务失败 stage=disk"
+                    raise
+            attempt = await selection
+            if self._stop.is_set():
+                return -1
+            if attempt is None:
+                resource_errno = next(
+                    (failed.resource_errno for failed in race.failures if failed.resource_errno is not None), None
+                )
+                if resource_errno is not None:
+                    raise OSError(resource_errno, f"本机录制资源不足：{errno.errorcode[resource_errno]}")
+                if any(failed.progress_unsupported for failed in race.failures) and not any(
+                    failed.global_error and not failed.progress_unsupported for failed in race.failures
+                ):
+                    # 缺少观测能力不意味着无法录制；本场次回到上游已有单进程路径。
+                    self._stream_race_supported = False
+                    logger.info(
+                        "FFmpeg 不支持 progress，回退串行录制 room={} session={}", self.db_room_id, self._session_id
+                    )
+                    disk_guard.cancel()
+                    await asyncio.gather(disk_guard, return_exceptions=True)
+                    if self._stop.is_set():
+                        return -1
+                    self._selected_stream = self._stream_candidates[0]
+                    return await self._record_single(self._selected_stream, out_dir)
+                self._failed_selection_started_at = selection_started_at
+                self._race_input_failure = bool(race.failures) and not any(
+                    failed.global_error for failed in race.failures
+                )
+                for failed in race.failures:
+                    self._stderr_categories.update(failed.categories)
+                    self._stderr_tail.extend(failed.tail)
+                    self._upstream_status = failed.http_status or self._upstream_status
+                del self._stderr_tail[:-_STDERR_TAIL_LINES]
+                return 1
+            assert attempt.process is not None and attempt.stderr_task is not None and attempt.progress_task is not None
+            self._selected_stream = attempt.stream
+            self._adopt_attempt_diagnostics(attempt)
+            self._diagnostic_secrets = tuple(attempt.stream.headers.values())
+            self._update_session(stream_format=attempt.stream.transport)
+            self._save_stream_selection(attempt.stream)
+            logger.info(
+                "录制线路胜出 room={} session={} endpoint={} transport={} container={} pid={} reuse=True",
+                self.db_room_id,
+                self._session_id,
+                sanitize_diagnostic(attempt.stream.url),
+                attempt.stream.transport,
+                attempt.stream.container,
+                attempt.process.pid,
+            )
+            disk_guard.cancel()
+            # 直接进入带 finally 的监控，避免交接期间出现无人负责的取消窗口。
+            return await self._supervise_process(
+                attempt.process,
+                out_dir,
+                attempt.prefix,
+                attempt.segment_list,
+                attempt.stderr_task,
+                extra_tasks=(attempt.progress_task,),
+            )
+        finally:
+
+            async def cleanup() -> None:
+                selection.cancel()
+                disk_guard.cancel()
+                await asyncio.gather(selection, disk_guard, return_exceptions=True)
+                try:
+                    await race.close()
+                finally:
+                    if attempt is not None:
+                        self._upstream_status = attempt.http_status
+                    self._active_process = None
+                    self._diagnostic_secrets = ()
+
+            await complete_cleanup(cleanup())
+
+    async def _supervise_process(
+        self,
+        proc: asyncio.subprocess.Process,
+        out_dir: Path,
+        prefix: str,
+        segment_list: Path,
+        stderr_task: asyncio.Task[None],
+        *,
+        extra_tasks: tuple[asyncio.Task[None], ...] = (),
+    ) -> int:
+        """复用已启动的进程，统一监控分片、管道、磁盘与停止信号。"""
         self._active_process = proc
         # 并发:监听片段清单 + 转储 ffmpeg stderr 到日志。
         watcher = asyncio.create_task(self._watch_segments(segment_list, out_dir))
-        stderr_task = asyncio.create_task(self._drain_stderr(proc))
         # 监听停止信号,主动终止 ffmpeg。
         stopper = asyncio.create_task(self._terminate_on_stop(proc))
         disk_guard = asyncio.create_task(self._monitor_disk())
@@ -619,6 +800,7 @@ class Recorder:
 
         try:
             supervisors = {watcher: "segments", stderr_task: "stderr", stopper: "stop", disk_guard: "disk"}
+            supervisors.update({task: "progress" for task in extra_tasks})
             pending = {waiter, *supervisors}
             while pending:
                 done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
@@ -656,9 +838,11 @@ class Recorder:
                     # 进程已退出后排空管道，避免取消读取导致最后一条根异常丢失。
                     await stderr_task
                 finally:
-                    for task in (watcher, stderr_task, stopper, disk_guard, waiter):
+                    for task in (watcher, stderr_task, stopper, disk_guard, waiter, *extra_tasks):
                         task.cancel()
-                    await asyncio.gather(watcher, stderr_task, stopper, disk_guard, waiter, return_exceptions=True)
+                    await asyncio.gather(
+                        watcher, stderr_task, stopper, disk_guard, waiter, *extra_tasks, return_exceptions=True
+                    )
                     try:
                         # 兜底:登记可能尚未从清单读到的最后片段。
                         await self._scan_orphan_segments(segment_list, out_dir, prefix=prefix)
@@ -1035,6 +1219,17 @@ class Recorder:
         if exit_code == -1:
             return FfmpegErrorType.CANCELLED  # 主动停止
         categories = self._stderr_categories | {classify_ffmpeg_error(exit_code, stderr_text)}
+        if self._race_input_failure:
+            # 诊断保留原文，但单路输入的 Invalid argument/权限拒绝不能暂停整个房间。
+            categories -= {
+                FfmpegErrorType.PERMISSION_DENIED,
+                FfmpegErrorType.INVALID_ARGUMENT,
+                FfmpegErrorType.MISSING_BINARY,
+                FfmpegErrorType.UNSUPPORTED_CODEC,
+            }
+            categories.add(
+                FfmpegErrorType.UPSTREAM_UNAVAILABLE if self._upstream_status else FfmpegErrorType.TRANSIENT_NETWORK
+            )
         # 先前的网络警告不能遮住随后发生的磁盘/配置故障。
         priority = (
             FfmpegErrorType.DISK_FULL,
