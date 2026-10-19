@@ -1,7 +1,10 @@
 <section id="tab-settings" class="panel">
   <div class="card settings-heading">
     <div><h2>设置中心</h2><p class="hint">日常参数在此保存。活动任务保留开始时的设置；每项均注明来源和生效时机。</p></div>
-    <button id="configuration-refresh">读取最新值并保留草稿</button>
+    <div class="row">
+      <button id="local-files-trigger" type="button">📁 本地文件管理</button>
+      <button id="configuration-refresh" type="button">读取最新值并保留草稿</button>
+    </div>
   </div>
   <div class="settings-layout">
     <aside class="card settings-filters" aria-label="设置筛选">
@@ -35,3 +38,13 @@
     </div>
   </div>
 </section>
+
+<dialog id="local-files-dialog" class="local-files-dialog" aria-labelledby="local-files-title">
+  <div class="row local-files-dialog-heading">
+    <h3 id="local-files-title">本地文件管理</h3>
+    <button id="local-files-close" type="button" aria-label="关闭本地文件管理弹窗">关闭</button>
+  </div>
+  <p class="hint">点击下方文件夹，即可在运行 BiliLiveCut 的电脑上打开。远程访问或 Docker 容器模式可能无法打开你当前电脑的文件夹。</p>
+  <div id="local-files-list" class="local-files-list"></div>
+  <p id="local-files-status" class="hint" role="status" aria-live="polite"></p>
+</dialog>
