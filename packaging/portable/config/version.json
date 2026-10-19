@@ -1,8 +1,8 @@
 {
   "release_version": "0.1.19.2-alpha",
   "version_label": "V0.1.19.2 Alpha",
-  "source_commit_short": "b604842",
-  "source_commit_full": "b6048421fb9edaffbe9ace642bf8ad0e5ea1f8c2",
+  "source_commit_short": "3b6c8f4",
+  "source_commit_full": "3b6c8f471cdf37b1d6fa01e1a00fe6d0cd944b82",
   "engine_pack_version": "0.1.19.2-alpha",
   "runtime_schema": 5,
   "core_schema": 6,
