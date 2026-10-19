@@ -52,6 +52,11 @@ class StreamAttempt:
     resource_errno: int | None = None
     _output_error: bool = field(default=False, repr=False)
     _last_video_probe_at: float = field(default=float("-inf"), repr=False)
+    _output_root: Path = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        """固定输出目录，清理时拒绝被重定向到其他目录的路径。"""
+        self._output_root = self.out_dir.resolve()
 
     @property
     def segment_list(self) -> Path:
@@ -252,14 +257,51 @@ class StreamAttempt:
                         task.cancel()
                     await asyncio.gather(*readers, return_exceptions=True)
         if discard:
-            for path in [*self.out_dir.glob(f"{self.prefix}*.ts"), self.segment_list]:
-                # 不做递归删除；拒绝链接和目录，只清理本次生成的唯一前缀。
-                if path.is_symlink() or path.parent.resolve() != self.out_dir.resolve():
+            await self.cleanup_files(discard=True)
+
+    async def cleanup_files(self, *, discard: bool) -> None:
+        """回收已停止候选的副产物；胜出者仅在完成末片登记后清理清单。"""
+        if self.process is not None and self.process.returncode is None:
+            raise RuntimeError("不能清理仍在写入的录制候选")
+        # Windows 上杀毒扫描或刚关闭的文件句柄可能暂时阻止删除。
+        # 重试有界，永久权限错误留存文件并记录，不拖住录制收尾。
+        for retry in range(3):
+            failures = await asyncio.to_thread(self._unlink_files, discard)
+            if not failures:
+                return
+            if retry < 2:
+                await asyncio.sleep(0.1 * (retry + 1))
+        for name, error in failures:
+            logger.warning(
+                "录制候选临时文件清理失败 file={} errno={} winerror={}",
+                name,
+                error.errno,
+                getattr(error, "winerror", None),
+            )
+
+    def _unlink_files(self, discard: bool) -> list[tuple[str, OSError]]:
+        """只删除本候选的精确文件名，不递归、不跟随链接。"""
+        failures: list[tuple[str, OSError]] = []
+        try:
+            if self.out_dir.resolve() != self._output_root:
+                logger.warning("录制候选输出目录已重定向，拒绝清理 prefix={}", self.prefix)
+                return failures
+            pattern = re.compile(rf"{re.escape(self.prefix)}(?:[0-9]{{5,}}\.ts|segments\.csv)")
+            paths = list(self.out_dir.iterdir()) if discard else [self.segment_list]
+            for path in paths:
+                if not pattern.fullmatch(path.name):
                     continue
                 try:
+                    if path.is_symlink() or path.parent.resolve() != self._output_root or not path.is_file():
+                        continue
                     path.unlink(missing_ok=True)
-                except OSError:
-                    logger.warning("落选线路临时文件清理失败 file={}", path.name)
+                except OSError as exc:
+                    failures.append((path.name, exc))
+        except FileNotFoundError:
+            pass  # 未启动的候选或已被回收的目录没有输出。
+        except OSError as exc:
+            failures.append((self.out_dir.name, exc))
+        return failures
 
 
 class StreamRace:

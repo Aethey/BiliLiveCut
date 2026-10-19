@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from app.core.async_cleanup import complete_cleanup
 from app.core.ffmpeg_errors import FfmpegErrorType
 from app.core.process_control import ProcessCancelledError
 from app.plugins.live_source import StreamSpec
@@ -132,6 +133,125 @@ def race_for(tmp_path: Path, candidates: list[StreamSpec]) -> StreamRace:
     return StreamRace(
         candidates, tmp_path, 0, command, asyncio.Event(), lambda _: None, parallel=2, timeout_s=0.03, budget_s=2
     )
+
+
+@pytest.mark.parametrize("discard", [False, True])
+async def test_cleanup_removes_only_exact_owned_files(tmp_path: Path, discard: bool) -> None:
+    attempt = StreamAttempt(streams("a")[0], tmp_path, "part007_abc123_")
+    media = tmp_path / f"{attempt.prefix}00000.ts"
+    large_index = tmp_path / f"{attempt.prefix}100000.ts"
+    unrelated = [tmp_path / name for name in ("other_00000.ts", f"{attempt.prefix}notes.ts", "segments.csv")]
+    directory = tmp_path / f"{attempt.prefix}00001.ts"
+    directory.mkdir()
+    (directory / "keep.txt").write_text("user data")
+    for path in [media, large_index, attempt.segment_list, *unrelated]:
+        path.write_bytes(b"keep unless owned")
+    await attempt.cleanup_files(discard=discard)
+    await attempt.cleanup_files(discard=discard)  # 重复收尾幂等。
+    assert not attempt.segment_list.exists()
+    assert media.exists() is not discard and large_index.exists() is not discard
+    assert all(path.read_bytes() == b"keep unless owned" for path in unrelated)
+    assert (directory / "keep.txt").read_text() == "user data"
+
+
+@pytest.mark.parametrize("failures", [1, 2, 3])
+async def test_cleanup_retries_busy_files_without_losing_other_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failures: int
+) -> None:
+    from loguru import logger
+
+    attempt = StreamAttempt(streams("a")[0], tmp_path, "unique_")
+    media = tmp_path / "unique_00000.ts"
+    media.write_bytes(b"candidate")
+    attempt.segment_list.write_text("manifest")
+    original_unlink = Path.unlink
+    calls = 0
+    messages: list[str] = []
+
+    def busy(path: Path, missing_ok: bool = False) -> None:
+        nonlocal calls
+        if path == media:
+            calls += 1
+            if calls <= failures:
+                raise PermissionError(errno.EACCES, "sharing violation")
+        original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", busy)
+    sink = logger.add(lambda message: messages.append(str(message)), level="WARNING")
+    try:
+        await attempt.cleanup_files(discard=True)
+    finally:
+        logger.remove(sink)
+    assert calls == min(failures + 1, 3)
+    assert media.exists() is (failures == 3)
+    assert not attempt.segment_list.exists()
+    assert any(media.name in message and "errno=13" in message for message in messages) is (failures == 3)
+    if failures == 3:
+        await attempt.cleanup_files(discard=True)
+        assert not media.exists()  # 下一次收尾会再次尝试，没有被标成已清理。
+
+
+async def test_cleanup_refuses_running_process(tmp_path: Path) -> None:
+    attempt = StreamAttempt(streams("a")[0], tmp_path, "unique_")
+    attempt.process = FakeProcess(1)
+    attempt.segment_list.write_text("still writing")
+    with pytest.raises(RuntimeError, match="仍在写入"):
+        await attempt.cleanup_files(discard=True)
+    assert attempt.segment_list.read_text() == "still writing"
+    await attempt.close(discard=True)
+    assert not attempt.segment_list.exists()
+
+
+async def test_cleanup_keeps_link_and_redirected_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    attempt = StreamAttempt(streams("a")[0], tmp_path, "unique_")
+    media = tmp_path / "unique_00000.ts"
+    media.write_bytes(b"link target")
+    original_is_symlink = Path.is_symlink
+    monkeypatch.setattr(Path, "is_symlink", lambda path: path == media or original_is_symlink(path))
+    await attempt.cleanup_files(discard=True)
+    assert media.read_bytes() == b"link target"
+    attempt.segment_list.write_text("redirect target")
+    original_resolve = Path.resolve
+    monkeypatch.setattr(
+        Path,
+        "resolve",
+        lambda path, *args, **kwargs: (
+            tmp_path / "redirect" if path == tmp_path else original_resolve(path, *args, **kwargs)
+        ),
+    )
+    await attempt.cleanup_files(discard=False)
+    assert attempt.segment_list.read_text() == "redirect target"
+
+
+async def test_repeated_cancellation_waits_for_candidate_file_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempt = StreamAttempt(streams("a")[0], tmp_path, "unique_")
+    media = tmp_path / "unique_00000.ts"
+    media.write_bytes(b"candidate")
+    entered, release = threading.Event(), threading.Event()
+    original_unlink = Path.unlink
+
+    def delayed(path: Path, missing_ok: bool = False) -> None:
+        if path == media:
+            entered.set()
+            assert release.wait(5), "cleanup not released"
+        original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", delayed)
+    task = asyncio.create_task(complete_cleanup(attempt.close(discard=True)))
+    try:
+        assert await asyncio.to_thread(entered.wait, 3)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done() and media.exists()
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert not media.exists()
 
 
 async def test_winner_process_is_reused_and_only_loser_files_are_removed(

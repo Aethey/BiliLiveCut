@@ -696,6 +696,7 @@ class Recorder:
         selection = asyncio.create_task(race.run())
         disk_guard = asyncio.create_task(self._monitor_disk())
         attempt = None
+        supervised = False
         try:
             done, _ = await asyncio.wait({selection, disk_guard}, return_when=asyncio.FIRST_COMPLETED)
             if disk_guard in done:
@@ -755,6 +756,7 @@ class Recorder:
             )
             disk_guard.cancel()
             # 直接进入带 finally 的监控，避免交接期间出现无人负责的取消窗口。
+            supervised = True
             return await self._supervise_process(
                 attempt.process,
                 out_dir,
@@ -762,6 +764,7 @@ class Recorder:
                 attempt.segment_list,
                 attempt.stderr_task,
                 extra_tasks=(attempt.progress_task,),
+                race_attempt=attempt,
             )
         finally:
 
@@ -770,6 +773,9 @@ class Recorder:
                 disk_guard.cancel()
                 await asyncio.gather(selection, disk_guard, return_exceptions=True)
                 try:
+                    if not supervised:
+                        # 交接前停止或保存线路信息失败：没有候选进入登记流程。
+                        race.winner = None
                     await race.close()
                 finally:
                     if attempt is not None:
@@ -788,6 +794,7 @@ class Recorder:
         stderr_task: asyncio.Task[None],
         *,
         extra_tasks: tuple[asyncio.Task[None], ...] = (),
+        race_attempt: StreamAttempt | None = None,
     ) -> int:
         """复用已启动的进程，统一监控分片、管道、磁盘与停止信号。"""
         self._active_process = proc
@@ -846,6 +853,10 @@ class Recorder:
                     try:
                         # 兜底:登记可能尚未从清单读到的最后片段。
                         await self._scan_orphan_segments(segment_list, out_dir, prefix=prefix)
+                        if race_attempt is not None:
+                            # watcher 和进程均已退出，末片登记成功后才删除清单。
+                            # 登记异常时保留 CSV 与录像，避免破坏恢复依据。
+                            await race_attempt.cleanup_files(discard=False)
                     finally:
                         self._active_process = None
                         self._diagnostic_secrets = ()

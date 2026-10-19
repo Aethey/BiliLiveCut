@@ -454,9 +454,9 @@ async def test_failover_resets_after_stable_media_and_respects_stop(
     assert not recorder.retry_budget_exhausted
 
 
-@pytest.mark.parametrize("stop_in_race", [False, True])
+@pytest.mark.parametrize("stop_in_race,finalization_error", [(False, False), (False, True), (True, False)])
 async def test_race_registers_only_winner_and_reaps_all_processes(
-    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch, stop_in_race: bool
+    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch, stop_in_race: bool, finalization_error: bool
 ) -> None:
     from urllib.parse import urlsplit
 
@@ -524,8 +524,22 @@ async def test_race_registers_only_winner_and_reaps_all_processes(
     monkeypatch.setattr(runtime, "get_streams", source_streams)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
     recorder = Recorder(room_source(room), room.id, on_segment=on_segment, metadata_prepared=True)
+    original_scan = recorder._scan_orphan_segments
+
+    async def scan(manifest: Path, directory: Path, *, prefix: str) -> None:
+        assert manifest.exists(), "末片登记前不能删除清单"
+        assert all(proc.returncode is not None for proc in processes)
+        await original_scan(manifest, directory, prefix=prefix)
+        if finalization_error:
+            raise PermissionError("final registration unavailable")
+
+    monkeypatch.setattr(recorder, "_scan_orphan_segments", scan)
     before = asyncio.all_tasks()
-    await asyncio.wait_for(recorder.run(), 3)
+    if finalization_error:
+        with pytest.raises(PermissionError, match="final registration"):
+            await asyncio.wait_for(recorder.run(), 3)
+    else:
+        await asyncio.wait_for(recorder.run(), 3)
     assert processes and all(proc.returncode is not None for proc in processes)
     assert not (asyncio.all_tasks() - before)
     with get_session() as db:
@@ -533,11 +547,72 @@ async def test_race_registers_only_winner_and_reaps_all_processes(
         tasks = db.exec(select(SegmentTask)).all()
         assert len(segments) == len(tasks) == len(received) == (0 if stop_in_race else 1)
         session = db.get(RecordingSession, recorder.session_id)
-        assert session.status == "stopped" and session.ended_at is not None
+        assert session.status == ("error" if finalization_error else "stopped") and session.ended_at is not None
         if not stop_in_race:
             assert recorder._selected_stream.url.startswith("https://good.invalid/")
             folder = Path(segments[0].file_path).parent
             assert list(folder.glob("*.ts")) == [Path(segments[0].file_path)]
+            assert len(list(folder.glob("*.csv"))) == (1 if finalization_error else 0)
+
+
+@pytest.mark.parametrize("handoff", ["stop", "save_error"])
+async def test_unaccepted_winner_is_discarded(
+    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, handoff: str
+) -> None:
+    from app.recording.stream_race import StreamAttempt, StreamRace
+
+    room = await register_room("123", True, "external")
+    recorder = Recorder(room_source(room), room.id, metadata_prepared=True)
+    recorder._stream_candidates = [StreamSpec(url="https://cdn.invalid/live", transport="flv", container="flv")]
+
+    class Process:
+        returncode: int | None = None
+        pid = 42
+
+        def __init__(self) -> None:
+            self.stdout, self.stderr = asyncio.StreamReader(), asyncio.StreamReader()
+
+        def kill(self) -> None:
+            self.returncode = -9
+            self.stdout.feed_eof()
+            self.stderr.feed_eof()
+
+        async def wait(self) -> int:
+            assert self.returncode is not None
+            return self.returncode
+
+    process = Process()
+
+    async def select_candidate(race: StreamRace) -> StreamAttempt:
+        attempt = race.attempts[0]
+        attempt.process = process
+        attempt.stderr_task = asyncio.create_task(attempt.drain_stderr())
+        attempt.progress_task = asyncio.create_task(attempt.drain_progress())
+        (tmp_path / f"{attempt.prefix}00000.ts").write_bytes(b"unaccepted media")
+        attempt.segment_list.write_text("pending manifest")
+        race.winner = attempt
+        if handoff == "stop":
+            recorder.stop()
+        return attempt
+
+    def fail_save(stream: StreamSpec) -> None:
+        raise PermissionError("selection save unavailable")
+
+    monkeypatch.setattr(StreamRace, "run", select_candidate)
+    monkeypatch.setattr(recorder, "_save_stream_selection", fail_save)
+    old = tmp_path / "part_old.ts"
+    old.write_bytes(b"existing recording")
+    before = asyncio.all_tasks()
+    if handoff == "stop":
+        assert await recorder._record_race(tmp_path) == -1
+    else:
+        with pytest.raises(PermissionError, match="selection save"):
+            await recorder._record_race(tmp_path)
+    assert process.returncode is not None and not (asyncio.all_tasks() - before)
+    assert list(tmp_path.glob("*.ts")) == [old]
+    assert not list(tmp_path.glob("*.csv"))
+    with get_session() as db:
+        assert not db.exec(select(RawSegment)).all()
 
 
 async def test_initial_failed_race_is_included_in_elapsed_retry_budget(
