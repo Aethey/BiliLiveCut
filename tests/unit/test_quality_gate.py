@@ -148,7 +148,7 @@ def test_release_build_jobs_have_read_only_tokens_and_keep_tls_verification() ->
                     assert re.fullmatch(r"[0-9a-f]{40}", action.split("@", 1)[1])
 
 
-@pytest.mark.parametrize("tag", ['v0.1.19.1-Alpha"; touch injected; #', "$(touch injected)"])
+@pytest.mark.parametrize("tag", ['v0.1.19.2-Alpha"; touch injected; #', "$(touch injected)"])
 def test_release_rejects_injected_tag_without_executing_it(tmp_path: Path, tag: str) -> None:
     workflow = yaml.safe_load((ci_gate.REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8"))
     step = next(item for item in workflow["jobs"]["validate-tag"]["steps"] if item.get("name") == "Validate tag input")

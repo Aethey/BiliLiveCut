@@ -1,6 +1,6 @@
 # BiliLiveCut Docker 部署
 
-本目录提供 BiliLiveCut `v0.1.19.1-Alpha` 的 CPU 镜像。构建上下文为仓库根目录；容器以 UID/GID 1000 的 `appuser` 运行单实例 Web 服务，内含 FFmpeg、中文字体、C/Cython/Rust 扩展及配套 CPU PyTorch/TorchAudio。业务操作见[使用指南](../../docs/features/README.md)。
+本目录提供 BiliLiveCut `v0.1.19.2-Alpha` 的 CPU 镜像。构建上下文为仓库根目录；容器以 UID/GID 1000 的 `appuser` 运行单实例 Web 服务，内含 FFmpeg、中文字体、C/Cython/Rust 扩展及配套 CPU PyTorch/TorchAudio。业务操作见[使用指南](../../docs/features/README.md)。
 
 ## 首次启动
 
