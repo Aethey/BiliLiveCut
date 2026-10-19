@@ -11,6 +11,7 @@ from app.web.services import clips as clips_service
 from app.web.services import notifications as notifications_service
 from app.web.services import publishing as publishing_service
 from app.web.services import settings as settings_service
+from app.web.services import local_files as local_files_service
 
 _MAX_QUERY_LIMIT = 500
 _MAX_QUERY_DAYS = 365
@@ -60,6 +61,23 @@ def patch_configuration(req: ConfigurationChange) -> dict[str, Any]:
 def get_settings() -> dict[str, Any]:
     """返回可切换的运行时开关与上传配置概览。"""
     return settings_service.get_settings_view()
+
+
+@router.get("/settings/local-folders")
+def get_local_folders() -> list[dict[str, Any]]:
+    """返回程序管理的本地文件夹（固定类型，无任意路径输入）。"""
+    return local_files_service.list_local_folders()
+
+
+@router.post("/settings/local-folders/{folder_id}/open")
+def open_local_folder(folder_id: str) -> dict[str, str]:
+    """请求服务器本机的文件管理器打开指定目录。"""
+    try:
+        return local_files_service.open_local_folder(folder_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.patch("/settings/port")
