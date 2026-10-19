@@ -38,8 +38,8 @@ list.addEventListener("click", async event => {
   status.textContent = "正在请求打开文件夹…";
   try {
     await api("POST", `/api/settings/local-folders/${encodeURIComponent(button.dataset.folderId)}/open`);
-    status.textContent = "已请求在运行 BiliLiveCut 的电脑上打开文件夹。";
     await loadFolders();
+    status.textContent = "已请求在运行 BiliLiveCut 的电脑上打开文件夹。";
   } catch (error) {
     status.textContent = `打开失败：${error.message}`;
   } finally {
