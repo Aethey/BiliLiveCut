@@ -6,6 +6,8 @@ import asyncio
 import shutil
 import subprocess
 import threading
+import time
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -58,6 +60,9 @@ async def test_real_ffmpeg_keeps_winning_http_connection_and_writes_playable_seg
     )
     media = source.read_bytes()
     requests: list[str] = []
+    sent_bytes: dict[str, int] = {}
+    progress_reports: dict[str, deque[tuple[float, dict[str, str]]]] = {}
+    started = time.monotonic()
     shutdown = threading.Event()
     probes = []
     original_probe = StreamAttempt._has_video_packets
@@ -68,23 +73,31 @@ async def test_real_ffmpeg_keeps_winning_http_connection_and_writes_playable_seg
         return result
 
     monkeypatch.setattr(StreamAttempt, "_has_video_packets", probe)
-    if legacy_progress:
-        original_drain = StreamAttempt.drain_progress
+    original_drain = StreamAttempt.drain_progress
 
-        async def drain_without_frames(attempt: StreamAttempt) -> None:
-            reader = attempt.process.stdout
-            original_readline = reader.readline
+    async def observe_progress(attempt: StreamAttempt) -> None:
+        assert attempt.process is not None and attempt.process.stdout is not None
+        reader = attempt.process.stdout
+        original_readline = reader.readline
+        reports = progress_reports.setdefault(attempt.stream.url, deque(maxlen=6))
+        fields: dict[str, str] = {}
 
-            async def readline() -> bytes:
-                while line := await original_readline():
-                    if not line.startswith(b"frame="):
-                        return line
-                return b""
+        async def readline() -> bytes:
+            while line := await original_readline():
+                key, _, value = line.decode("ascii", errors="replace").strip().partition("=")
+                if key in {"frame", "out_time_us", "out_time", "progress"}:
+                    fields[key] = value
+                if key == "progress":
+                    reports.append((round(time.monotonic() - started, 3), fields.copy()))
+                    fields.clear()
+                if not legacy_progress or not line.startswith(b"frame="):
+                    return line
+            return b""
 
-            monkeypatch.setattr(reader, "readline", readline)
-            await original_drain(attempt)
+        monkeypatch.setattr(reader, "readline", readline)
+        await original_drain(attempt)
 
-        monkeypatch.setattr(StreamAttempt, "drain_progress", drain_without_frames)
+    monkeypatch.setattr(StreamAttempt, "drain_progress", observe_progress)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -100,6 +113,7 @@ async def test_real_ffmpeg_keeps_winning_http_connection_and_writes_playable_seg
                 for offset in range(0, len(media), 1316):
                     self.wfile.write(media[offset : offset + 1316])
                     self.wfile.flush()
+                    sent_bytes[self.path] = min(offset + 1316, len(media))
                     if shutdown.wait(0.01):
                         return
                 shutdown.wait(15)
@@ -136,7 +150,10 @@ async def test_real_ffmpeg_keeps_winning_http_connection_and_writes_playable_seg
         )
         try:
             winner = await asyncio.wait_for(race.run(), 12)
-            assert winner is not None and winner.stream.url.endswith("/good")
+            assert winner is not None and winner.stream.url.endswith("/good"), (
+                f"requests={requests}, sent_bytes={sent_bytes}, fixture_bytes={len(media)}, "
+                f"progress={progress_reports}, probes={probes}"
+            )
             process = winner.process
             assert process is not None and process.returncode is None
             pid = process.pid

@@ -353,6 +353,67 @@ async def test_recording_rotates_cdn_and_formats_with_fresh_credentials_and_fini
         assert session.status == "error" and session.ended_at is not None
 
 
+@pytest.mark.parametrize("unsupported_progress", [False, True])
+async def test_serial_reconnect_rotates_same_host_endpoints_with_refreshed_credentials(
+    runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch, unsupported_progress: bool
+) -> None:
+    room = await register_room("123", True, "external")
+    recorder = Recorder(room_source(room), room.id, metadata_prepared=True)
+    received: list[str] = []
+    probes: list[str] = []
+
+    async def streams(room: SourceRoom, preference: StreamPreference) -> list[StreamSpec]:
+        runtime.stream_calls += 1
+        return [
+            StreamSpec(
+                url=f"https://cdn.invalid/{name}?token=private-{runtime.stream_calls}",
+                headers={"X-Key": f"private-header-{runtime.stream_calls}"},
+                transport="hls",
+                container="ts",
+            )
+            for name in ("first", "backup")
+        ]
+
+    class FailedProcess:
+        stdin = None
+        returncode = 1
+
+        def __init__(self, message: bytes) -> None:
+            self.stdout = asyncio.StreamReader()
+            self.stdout.feed_eof()
+            self.stderr = asyncio.StreamReader()
+            self.stderr.feed_data(message)
+            self.stderr.feed_eof()
+
+        async def wait(self) -> int:
+            return self.returncode
+
+    async def spawn(*args: str, **kwargs: object) -> FailedProcess:
+        url = args[args.index("-i") + 1]
+        if "-progress" in args:
+            probes.append(url)
+            return FailedProcess(b"Unrecognized option 'progress'.\n")
+        received.append(url)
+        assert f"private-header-{runtime.stream_calls}" in args[args.index("-headers") + 1]
+        return FailedProcess(b"[https @ 1] Connection timed out\n")
+
+    monkeypatch.setattr(runtime, "get_streams", streams)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(settings, "recording_stream_race_parallel", 2 if unsupported_progress else 1)
+    monkeypatch.setattr(settings, "recording_reconnect_max_attempts", 3)
+    monkeypatch.setattr(settings, "recording_reconnect_max_elapsed_s", 30)
+    await asyncio.wait_for(recorder.run(), 15)
+    assert received == [
+        "https://cdn.invalid/first?token=private-1",
+        "https://cdn.invalid/backup?token=private-2",
+        "https://cdn.invalid/first?token=private-3",
+    ]
+    assert bool(probes) == unsupported_progress
+    assert recorder._stream_race_supported != unsupported_progress
+    assert runtime.stream_calls == 3 and recorder.retry_budget_exhausted
+    assert not recorder.recording_action_required
+
+
 @pytest.mark.parametrize("stop_during_wait", [False, True])
 async def test_failover_resets_after_stable_media_and_respects_stop(
     runtime: RuntimeSource, monkeypatch: pytest.MonkeyPatch, stop_during_wait: bool

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+import json
+from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 from app.plugins.live_source import StreamSpec
@@ -31,6 +33,15 @@ def route_key(stream: StreamSpec) -> RouteKey:
 class _Failure:
     count: int
     last_at: float
+    next_slot: int = 0
+    next_candidate: bytes | None = None
+    tried_slots: set[int] = field(default_factory=set)
+
+
+def _candidate_key(stream: StreamSpec) -> bytes:
+    """区分本轮完整端点，仅保存摘要，不把播放路径或凭据留在失败记录中。"""
+    value = (stream.url, sorted((name.lower(), value) for name, value in stream.headers.items()))
+    return hashlib.sha256(json.dumps(value, ensure_ascii=True).encode("utf-8")).digest()
 
 
 class StreamFailover:
@@ -38,7 +49,7 @@ class StreamFailover:
 
     def __init__(self) -> None:
         self._failures: dict[RouteKey, _Failure] = {}
-        self._available: set[RouteKey] = set()
+        self._candidates: dict[RouteKey, dict[bytes, int]] = {}
 
     def reset(self) -> None:
         """新场次或稳定产出后清除历史惩罚，避免永久排除恢复的节点。"""
@@ -54,13 +65,35 @@ class StreamFailover:
         self._failures = {
             key: failure for key, failure in self._failures.items() if now - failure.last_at < _FAILURE_TTL_S
         }
-        self._available = {route_key(stream) for stream in streams}
+        candidates: dict[RouteKey, dict[bytes, int]] = {}
+        keys = [(stream, route_key(stream), _candidate_key(stream)) for stream in streams]
+        for _, route, candidate in keys:
+            slots = candidates.setdefault(route, {})
+            slots.setdefault(candidate, len(slots))
+        for route, slots in candidates.items():
+            failure = self._failures.get(route)
+            if failure is not None:
+                # 完整端点未变时跟随端点；签名全部刷新时沿用来源列表中的轮换位置。
+                old_slots = self._candidates.get(route, {})
+                failure.tried_slots = {
+                    slots.get(key, slot)
+                    for key, slot in old_slots.items()
+                    if slot in failure.tried_slots and slots.get(key, slot) < len(slots)
+                }
+        self._candidates = candidates
 
-        def priority(stream: StreamSpec) -> tuple[int, float]:
-            failure = self._failures.get(route_key(stream))
-            return (failure.count, failure.last_at) if failure is not None else (0, 0.0)
+        def priority(item: tuple[StreamSpec, RouteKey, bytes]) -> tuple[int, float, int]:
+            _, route, candidate = item
+            failure = self._failures.get(route)
+            if failure is None:
+                return (0, 0.0, 0)
+            slots = candidates[route]
+            start = (
+                slots.get(failure.next_candidate, failure.next_slot) if failure.next_candidate else failure.next_slot
+            )
+            return (failure.count, failure.last_at, (slots[candidate] - start) % len(slots))
 
-        return sorted(streams, key=priority)
+        return [stream for stream, _, _ in sorted(keys, key=priority)]
 
     def failed(self, stream: StreamSpec, *, now: float) -> None:
         """记录一次断流；全部失败后仍能轮流重试，历史记录数量有界。"""
@@ -69,9 +102,21 @@ class StreamFailover:
         if previous is None and len(self._failures) >= _MAX_FAILED_ROUTES:
             oldest = min(self._failures, key=lambda item: self._failures[item].last_at)
             del self._failures[oldest]
-        self._failures[key] = _Failure(count=previous.count + 1 if previous is not None else 1, last_at=now)
+        failure = previous or _Failure(count=0, last_at=now)
+        failure.count += 1
+        failure.last_at = now
+        slots = self._candidates.get(key, {})
+        slot = slots.get(_candidate_key(stream))
+        if slot is not None:
+            failure.tried_slots.add(slot)
+            failure.next_slot = (slot + 1) % len(slots)
+            failure.next_candidate = next(candidate for candidate, index in slots.items() if index == failure.next_slot)
+        self._failures[key] = failure
 
     @property
     def has_untried_alternative(self) -> bool:
         """本次地址列表是否还有未失败线路，可免去较长退避等待。"""
-        return any(key not in self._failures for key in self._available)
+        return any(
+            route not in self._failures or len(self._failures[route].tried_slots) < len(slots)
+            for route, slots in self._candidates.items()
+        )
