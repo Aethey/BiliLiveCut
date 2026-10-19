@@ -537,3 +537,36 @@ button.ok:hover { background: var(--green-soft); border-color: rgba(85, 214, 160
 .import-preview { max-height: 20rem; overflow: auto; margin: 12px 0; overflow-wrap: anywhere; }
 .import-preview ol { padding-left: 24px; }
 .import-preview li { margin: 8px 0; }
+
+/* 设置中心 · 本地文件管理 */
+.local-files-dialog {
+  width: min(680px, calc(100vw - 32px));
+  max-height: min(80vh, 760px);
+  overflow-y: auto;
+  padding: 24px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.6);
+}
+.local-files-dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
+.local-files-dialog-heading { justify-content: space-between; }
+.local-files-dialog-heading h3 { margin: 0; }
+.local-files-list { display: grid; gap: 10px; margin-top: 18px; }
+.local-files-folder {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  padding: 14px 16px;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel2);
+}
+.local-files-folder:hover { background: var(--panel-hover); border-color: var(--accent); }
+.local-files-folder-name { color: var(--text); font-size: 15px; font-weight: 600; }
+.local-files-folder-desc { color: var(--text-soft); font-size: 12px; }
+.local-files-folder-path { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.local-files-folder-action { color: var(--accent); font-size: 12px; justify-self: end; }
