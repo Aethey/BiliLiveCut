@@ -20,8 +20,9 @@ from app.recording.stream_race import StreamAttempt, StreamRace
 
 
 @pytest.mark.parametrize("legacy_progress", [False, True])
+@pytest.mark.parametrize("timer_resolution_s", [0.0, 0.05], ids=["normal-clock", "coarse-clock"])
 async def test_real_ffmpeg_keeps_winning_http_connection_and_writes_playable_segments(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy_progress: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy_progress: bool, timer_resolution_s: float
 ) -> None:
     binary = shutil.which(settings.ffmpeg_path)
     assert binary is not None, "录制集成测试需要 FFmpeg"
@@ -110,11 +111,17 @@ async def test_real_ffmpeg_keeps_winning_http_connection_and_writes_playable_seg
                     shutdown.wait(15)  # HTTP 200 但没有媒体，不能胜出。
                     return
                 # 连续时间轴，避免重复拼接短 TS 引入倒退时间戳和损坏包。
-                for offset in range(0, len(media), 1316):
-                    self.wfile.write(media[offset : offset + 1316])
+                stream_started = time.monotonic()
+                chunk_size = 1316
+                bytes_per_second = chunk_size / 0.01
+                for offset in range(0, len(media), chunk_size):
+                    self.wfile.write(media[offset : offset + chunk_size])
                     self.wfile.flush()
-                    sent_bytes[self.path] = min(offset + 1316, len(media))
-                    if shutdown.wait(0.01):
+                    sent_bytes[self.path] = min(offset + chunk_size, len(media))
+                    # 按绝对发送时刻补偿唤醒延迟，避免粗定时器把测试流降到媒体码率以下。
+                    remaining = stream_started + sent_bytes[self.path] / bytes_per_second - time.monotonic()
+                    wait_s = max(remaining, timer_resolution_s) if remaining > 0 else 0.0
+                    if shutdown.wait(wait_s):
                         return
                 shutdown.wait(15)
             except OSError:

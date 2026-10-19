@@ -7,6 +7,7 @@ import subprocess
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 import pytest
@@ -409,18 +410,29 @@ async def test_real_output_fault_is_global(tmp_path: Path, monkeypatch: pytest.M
 async def test_staggered_race_avoids_extra_process_for_fast_primary_but_hedges_stalled_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_healthy: bool
 ) -> None:
-    processes = []
+    processes: list[FakeProcess] = []
+    clock_s = 0.0
+
+    def advance_to_hedge() -> None:
+        nonlocal clock_s
+        assert len(processes) == 1, "错峰期限前不能启动备用线路"
+        clock_s = race.launch_delay_s
 
     async def spawn(*args: str, **kwargs: object) -> FakeProcess:
         if processes:
             assert processes[0].returncode is None, "备用线路应在首选仍等待时启动，无需等到超时"
+            assert clock_s == race.launch_delay_s, "备用线路应在错峰期限到达后启动"
         proc = FakeProcess(len(processes))
         processes.append(proc)
         if first_healthy or len(processes) == 2:
             proc.progress()
+        else:
+            asyncio.get_running_loop().call_soon(advance_to_hedge)
         return proc
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    # 仅控制被测调度器的时钟；事件循环仍正常运行，不要求 CI 主机在 10ms 内完成调度。
+    monkeypatch.setattr("app.recording.stream_race.time", SimpleNamespace(monotonic=lambda: clock_s))
     race = race_for(tmp_path, streams("a", "b", "c"))
     race.timeout_s, race.launch_delay_s = 1, 0.01
     try:
