@@ -1,5 +1,6 @@
 // 完整配置表单：草稿仅在内存保留，刷新不覆盖，提交按版本整体保存。
 import { $, api, esc } from "./common.js";
+import "./local-files.js";
 
 const effects = { new_room: "新建房间时", next_task: "下一任务", next_recording: "下次录制", next_poll: "下次调度检查", immediate: "下一次读取", restart: "重启后", deployment: "部署配置" };
 const groups = { recording: "录制与自动化", asr: "本地语音模型", llm: "大模型与预算", trends: "网感采集", highlights: "高光与评分", review: "审核", output: "成片与编码", storage: "存储与清理", publishing: "上传与发布", notifications: "通知", system: "账号与系统" };
